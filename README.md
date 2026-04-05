@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="evo banner" width="100%" />
+</p>
+
 # evo
 
 A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that optimizes code through experiments. You give it a codebase. It finds what to optimize, sets up the evaluation, and starts running experiments in a loop -- trying things, keeping what improves the score, throwing away what doesn't.
