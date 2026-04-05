@@ -1,5 +1,7 @@
 ---
+name: optimize
 description: Run the evo optimization loop with parallel subagents until interrupted.
+argument-hint: "[subagents=N] [budget=N] [stall=N]"
 ---
 
 Run the `evo` optimization loop. Spawns parallel subagents that explore different directions simultaneously. Each subagent is semi-autonomous -- it reads traces, formulates hypotheses, and can run multiple iterations within its branch.
@@ -82,7 +84,7 @@ Spawn all subagents in a **single message** using the Agent tool. **All subagent
 Use `model: "sonnet"` for straightforward hypotheses, `model: "opus"` for harder ones requiring deeper reasoning.
 
 Each subagent prompt must include:
-- An instruction to read `.claude/commands/subagent.md` and follow its protocol
+- An instruction to read `skills/subagent/SKILL.md` and follow its protocol
 - The assigned direction and specific ideas to try
 - The parent experiment ID to branch from
 - Key task IDs / traces to study

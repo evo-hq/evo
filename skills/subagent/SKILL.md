@@ -1,5 +1,7 @@
 ---
+name: subagent
 description: Internal protocol for evo optimization subagents. Not user-invocable -- read by subagents spawned from /optimize.
+disable-model-invocation: true
 ---
 
 # Evo Subagent Protocol

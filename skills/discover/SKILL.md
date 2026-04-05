@@ -1,5 +1,7 @@
 ---
+name: discover
 description: Initialize evo for the current repository by identifying the target and benchmark, creating the workspace, and running the baseline experiment.
+argument-hint: <context about what to optimize>
 ---
 
 Set up `evo` for the current repository.
@@ -35,9 +37,20 @@ Create a gate script if appropriate.
 
 Before running the full baseline, validate the toolchain with the cheapest possible end-to-end execution (single task, smallest split, dry-run flag, mock mode -- whatever is fastest):
 
-Run the benchmark command directly (outside `evo`) with `EVO_TRACES_DIR` set to a temp directory. Verify:
+Run the benchmark command directly (outside `evo`) with `EVO_TRACES_DIR` set to a temp directory. **Pipe stdout through the validation script** to enforce the JSON contract:
+
+```bash
+EVO_TRACES_DIR=/tmp/evo_validate <benchmark_command> 2>/tmp/evo_validate_stderr.log | python ${CLAUDE_SKILL_DIR}/scripts/validate_stdout.py
+```
+
+The validator checks:
+- stdout is **only** valid JSON (no progress bars, tables, or logging mixed in)
+- JSON contains a `"score"` field with a numeric value
+
+If validation fails, the script prints a diagnostic explaining what polluted stdout. Fix the benchmark wrapper and re-validate before proceeding.
+
+Also verify:
 - All dependencies resolve and the command runs to completion.
-- Stdout is **only** valid JSON with a `"score"` field.
 - Traces appear in the traces directory (if applicable).
 - The gate script (if any) also runs cleanly.
 
