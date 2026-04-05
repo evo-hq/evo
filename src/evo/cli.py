@@ -35,6 +35,7 @@ from .core import (
     node_target_path,
     notes_path,
     parse_score,
+    path_to_node,
     project_path,
     relative_target,
     repo_root,
@@ -408,10 +409,41 @@ def cmd_get(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_path(args: argparse.Namespace) -> int:
+    root = repo_root()
+    _config, graph = _require_workspace(root)
+    if args.exp_id not in graph["nodes"]:
+        raise RuntimeError(f"unknown experiment: {args.exp_id}")
+    chain = path_to_node(graph, args.exp_id)
+    for node in chain:
+        score_str = f"  score={node['score']}" if node.get("score") is not None else ""
+        hyp = f"  {node.get('hypothesis', '')}" if node["id"] != "root" else ""
+        prefix = "  -> " if node["id"] != "root" else ""
+        print(f"{prefix}{node['id']}{score_str}{hyp}")
+    return 0
+
+
 def cmd_diff(args: argparse.Namespace) -> int:
     root = repo_root()
-    target = experiments_dir_for(root, args.exp_id) / "diff.patch"
-    print(target.read_text(encoding="utf-8") if target.exists() else "")
+    if args.other_id is None:
+        target = experiments_dir_for(root, args.exp_id) / "diff.patch"
+        print(target.read_text(encoding="utf-8") if target.exists() else "")
+        return 0
+    config, graph = _require_workspace(root)
+    node_a = _read_node(root, args.exp_id)
+    node_b = _read_node(root, args.other_id)
+    ref_a = node_a.get("commit") or node_a.get("branch")
+    ref_b = node_b.get("commit") or node_b.get("branch")
+    if not ref_a or not ref_b:
+        raise RuntimeError("both experiments must have a commit or branch to diff")
+    result = subprocess.run(
+        ["git", "diff", ref_a, ref_b, "--", relative_target(config)],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    print(result.stdout)
     return 0
 
 
@@ -558,8 +590,13 @@ def build_parser() -> argparse.ArgumentParser:
     get_p.add_argument("filename", nargs="?")
     get_p.set_defaults(func=cmd_get)
 
+    path_p = sub.add_parser("path")
+    path_p.add_argument("exp_id")
+    path_p.set_defaults(func=cmd_path)
+
     diff_p = sub.add_parser("diff")
     diff_p.add_argument("exp_id")
+    diff_p.add_argument("other_id", nargs="?")
     diff_p.set_defaults(func=cmd_diff)
 
     traces_p = sub.add_parser("traces")

@@ -62,4 +62,11 @@ uv run evo run exp_0000
 
 ## 8. Inspect results
 
+```bash
+uv run evo get <id>            # full experiment detail with scores
+uv run evo traces <id> <task>  # per-task trace
+uv run evo annotate <id> <task> "analysis"  # record failure analysis
+uv run evo scratchpad          # full state: tree, best path, frontier, annotations, diffs
+```
+
 Read benchmark logs, traces, and score. Annotate failing tasks if applicable.

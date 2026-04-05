@@ -50,10 +50,13 @@ Repeat until interrupted or stall limit reached:
 ### 1. Read current state
 
 ```bash
-uv run evo scratchpad
-uv run evo frontier
-uv run evo status
-uv run evo annotations
+uv run evo scratchpad          # full state: tree, best path, frontier, annotations, diffs, what-not-to-try
+uv run evo frontier            # explorable nodes (JSON)
+uv run evo status              # one-line summary
+uv run evo annotations         # all annotations (filterable with --task/--exp)
+uv run evo path <id>           # root-to-node chain with scores
+uv run evo diff <id>           # diff vs parent
+uv run evo diff <id> <other>   # diff between any two experiments
 ```
 
 On the first iteration, also read `.evo/project.md` to understand the optimization surface.

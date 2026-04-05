@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from .core import (
+    ascii_tree,
+    best_committed_node,
     best_committed_score,
+    experiments_path,
     frontier_nodes,
     graph_path,
     infra_path,
@@ -13,6 +16,7 @@ from .core import (
     load_config,
     load_graph,
     notes_path,
+    path_to_node,
     scratchpad_path,
 )
 
@@ -22,6 +26,58 @@ def _truncate(text: str, limit: int = 240) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3] + "..."
+
+
+def _diff_summary(root: Path, exp_id: str) -> str | None:
+    """Read diff.patch for an experiment and return a compact summary."""
+    patch = experiments_path(root) / exp_id / "diff.patch"
+    if not patch.exists():
+        return None
+    content = patch.read_text(encoding="utf-8")
+    if not content.strip():
+        return None
+    files: list[str] = []
+    added = 0
+    removed = 0
+    for line in content.splitlines():
+        if line.startswith("diff --git"):
+            parts = line.split()
+            if len(parts) >= 4:
+                files.append(parts[3].lstrip("b/"))
+        elif line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    if not files:
+        return None
+    file_str = ", ".join(files[:3])
+    if len(files) > 3:
+        file_str += f" (+{len(files) - 3} more)"
+    return f"{file_str} (+{added}/-{removed})"
+
+
+def _group_annotations_by_task(annotations: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
+    """Group annotations by task_id, keeping only the latest per task."""
+    latest: dict[str, dict[str, Any]] = {}
+    for entry in annotations:
+        task = entry.get("task_id") or "global"
+        existing = latest.get(task)
+        if existing is None or entry.get("timestamp", "") >= existing.get("timestamp", ""):
+            latest[task] = entry
+    return sorted(latest.items(), key=lambda item: item[0])
+
+
+def _dedup_discarded(discarded: list[dict[str, Any]], limit: int = 15) -> list[tuple[str, int]]:
+    """Deduplicate discarded hypotheses by normalized text. Returns (hypothesis, count) pairs."""
+    counts: dict[str, int] = {}
+    display: dict[str, str] = {}
+    for node in discarded:
+        hyp = node.get("hypothesis", "")
+        key = " ".join(hyp.lower().split())
+        counts[key] = counts.get(key, 0) + 1
+        display[key] = hyp  # keep the original casing from the latest
+    sorted_items = sorted(counts.items(), key=lambda item: -item[1])
+    return [(display[key], count) for key, count in sorted_items[:limit]]
 
 
 def build_scratchpad(root: Path) -> str:
@@ -53,15 +109,36 @@ def build_scratchpad(root: Path) -> str:
         f"- Committed: `{len(committed)}`",
         f"- Discarded: `{len(discarded)}`",
         f"- Active workers: `{len(active)}`",
-        "",
-        "## Frontier",
     ]
+
+    # Tree
+    lines.extend(["", "## Tree", "```"])
+    lines.append(ascii_tree(graph, metric))
+    lines.extend(["```"])
+
+    # Best path
+    best_node = best_committed_node(graph, metric)
+    if best_node and best_node["id"] != "root":
+        chain = path_to_node(graph, best_node["id"])
+        lines.extend(["", "## Best Path"])
+        path_parts = []
+        for node in chain:
+            if node["id"] == "root":
+                path_parts.append("root")
+            else:
+                score_str = f" ({node.get('score')})" if node.get("score") is not None else ""
+                path_parts.append(f"{node['id']}{score_str}")
+        lines.append(" -> ".join(path_parts))
+
+    # Frontier
+    lines.extend(["", "## Frontier"])
     if frontier:
         for node in frontier[:10]:
             lines.append(f"- `{node['id']}` score=`{node.get('score')}` epoch=`{node.get('eval_epoch')}` {node.get('hypothesis','')}")
     else:
         lines.append("- No frontier nodes yet.")
 
+    # Recent experiments
     lines.extend(["", "## Recent Experiments"])
     if recent:
         for node in recent:
@@ -71,21 +148,35 @@ def build_scratchpad(root: Path) -> str:
     else:
         lines.append("- No experiments yet.")
 
+    # Recent diffs
+    recent_committed = [n for n in recent if n.get("status") == "committed" and n["id"] != "root"][:5]
+    if recent_committed:
+        lines.extend(["", "## Recent Diffs"])
+        for node in recent_committed:
+            summary = _diff_summary(root, node["id"])
+            if summary:
+                lines.append(f"- `{node['id']}`: {summary}")
+
+    # Annotations grouped by task
     lines.extend(["", "## Annotations"])
     if annotations:
-        for entry in annotations[-10:]:
-            task = entry.get("task_id") or "global"
-            lines.append(f"- task `{task}` / `{entry['experiment_id']}`: {_truncate(entry['analysis'])}")
+        grouped = _group_annotations_by_task(annotations)
+        for task_id, entry in grouped:
+            lines.append(f"- task `{task_id}` / `{entry['experiment_id']}`: {_truncate(entry['analysis'])}")
     else:
         lines.append("- No annotations yet.")
 
+    # What Not To Try (deduplicated)
     lines.extend(["", "## What Not To Try"])
     if discarded:
-        for node in discarded[-10:]:
-            lines.append(f"- `{node['id']}`: {_truncate(node.get('hypothesis', ''))}")
+        deduped = _dedup_discarded(discarded)
+        for hyp, count in deduped:
+            suffix = f" (x{count})" if count > 1 else ""
+            lines.append(f"- {_truncate(hyp)}{suffix}")
     else:
         lines.append("- No discarded hypotheses yet.")
 
+    # Infrastructure log
     lines.extend(["", "## Infrastructure Log"])
     if infra:
         for event in infra[-8:]:
@@ -94,6 +185,7 @@ def build_scratchpad(root: Path) -> str:
     else:
         lines.append("- No infrastructure events yet.")
 
+    # Notes
     lines.extend(["", "## Notes"])
     lines.append(_truncate(notes, limit=1200) if notes.strip() else "No notes yet.")
     lines.append("")

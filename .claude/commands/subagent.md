@@ -14,10 +14,24 @@ All `uv run evo ...` commands run from the **main repo root** (not inside the wo
 Only file reads/edits use the **worktree path** returned by `evo new`. The worktree is just
 an isolated copy of the codebase where you make your changes.
 
+## Useful Commands
+
+```bash
+uv run evo scratchpad          # full state summary (tree, best path, frontier, annotations, diffs)
+uv run evo status              # one-line: metric, best score, experiment counts
+uv run evo traces <id> <task>  # per-task trace detail
+uv run evo path <id>           # root-to-node chain with scores
+uv run evo diff <id>           # diff vs parent
+uv run evo diff <id> <other>   # diff between any two experiments
+uv run evo annotations         # all annotations (filterable with --task/--exp)
+uv run evo get <id>            # full experiment detail
+```
+
 ## First Steps
 
 1. Read `.evo/project.md` to understand the target, what can be changed, and how to interpret results.
 2. Read the scratchpad for current state: `uv run evo scratchpad`
+   The scratchpad contains: status, ASCII tree, best path, frontier, recent experiments, recent diffs, annotations (grouped by task), what not to try, infra log, and notes.
 3. Study the traces the orchestrator pointed you to:
    ```bash
    uv run evo traces <exp_id> <task_id>
@@ -27,6 +41,21 @@ an isolated copy of the codebase where you make your changes.
 ## Iteration Loop
 
 Repeat up to **budget** times:
+
+### 0. Re-read shared state (skip on first iteration)
+
+Before formulating your next hypothesis, refresh your view of what other agents have done:
+
+```bash
+uv run evo status
+uv run evo scratchpad
+```
+
+Check for:
+- **Best score reached ceiling** (1.0 for max, 0.0 for min) -- if so, stop and report.
+- **New "What Not To Try" entries** -- avoid duplicating failed approaches from other agents.
+- **New annotations** -- learn from others' findings on failing tasks.
+- **Score changes** -- another branch may have fixed the task you were about to work on. Adjust or stop.
 
 ### 1. Formulate hypothesis
 

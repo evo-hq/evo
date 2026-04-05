@@ -316,6 +316,14 @@ def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str
             check=True,
         )
 
+        # Propagate project.md into the worktree so it's accessible even
+        # though it's not committed to git.
+        project_src = project_path(root)
+        if project_src.exists():
+            worktree_evo = worktree / WORKSPACE_NAME
+            worktree_evo.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(project_src), str(worktree_evo / PROJECT_FILE))
+
         node = {
             "id": exp_id,
             "parent": parent_id,
@@ -471,6 +479,32 @@ def best_committed_score(graph: dict[str, Any], metric: str, epoch: int | None =
     if not scores:
         return None
     return max(scores) if metric == "max" else min(scores)
+
+
+def best_committed_node(graph: dict[str, Any], metric: str) -> dict[str, Any] | None:
+    best: dict[str, Any] | None = None
+    for node in graph["nodes"].values():
+        if node.get("status") != "committed" or node.get("score") is None:
+            continue
+        if best is None:
+            best = node
+        elif metric == "max" and float(node["score"]) > float(best["score"]):
+            best = node
+        elif metric == "min" and float(node["score"]) < float(best["score"]):
+            best = node
+    return best
+
+
+def path_to_node(graph: dict[str, Any], node_id: str) -> list[dict[str, Any]]:
+    """Return the chain of nodes from root to the given node."""
+    nodes = graph["nodes"]
+    chain: list[dict[str, Any]] = []
+    current: str | None = node_id
+    while current is not None:
+        chain.append(nodes[current])
+        current = nodes[current].get("parent")
+    chain.reverse()
+    return chain
 
 
 def frontier_nodes(graph: dict[str, Any]) -> list[dict[str, Any]]:
