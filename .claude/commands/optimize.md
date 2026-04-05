@@ -1,41 +1,124 @@
 ---
-description: Run one evo optimization iteration from an existing committed frontier node.
+description: Run the evo optimization loop with parallel subagents until interrupted.
 ---
 
-Run one `evo` optimization iteration.
+Run the `evo` optimization loop. Spawns parallel subagents that explore different directions simultaneously. Each subagent is semi-autonomous -- it reads traces, formulates hypotheses, and can run multiple iterations within its branch.
 
-Workflow:
-1. Read the current state:
+Runs continuously until interrupted or the stall limit is reached.
+
+## Configuration
+
+These defaults can be overridden via arguments: `/optimize [subagents=N] [budget=N] [stall=N]`
+
+- **subagents**: number of parallel subagents per round (default: 5)
+- **budget**: max iterations each subagent can run within its branch (default: 5)
+- **stall**: consecutive rounds with no improvement before auto-stopping (default: 5)
+
+## Prerequisites
+
+- Workspace must be initialized (`uv run evo status` should succeed)
+- A baseline experiment must be committed (run `/discover` first)
+- All benchmark dependencies must be available in the environment
+
+## Architecture
+
+```
+Orchestrator (this agent):
+  - Reads state, identifies failure patterns, picks strategic directions
+  - Gives each subagent a direction + specific ideas to try
+  - Collects results, prunes dead branches, adjusts strategy
+
+  Subagent A (direction + ideas, budget: N iterations):
+    - Reads traces itself, analyzes failures in its focus area
+    - Formulates specific hypothesis informed by orchestrator's ideas
+    - Creates experiment, edits target, runs benchmark, analyzes
+    - If budget remains and it sees a promising follow-up, continues
+    - Can run up to N serial experiments on its own branch
+    - Returns: what it tried, what worked, what it learned
+
+  Subagent B (different direction + ideas, budget: N iterations):
+    - Same autonomy, different focus area
+    ...
+```
+
+Both layers analyze traces. The orchestrator does cross-cutting analysis (which patterns are most common, which branches plateau). Subagents do focused analysis within their assigned direction.
+
+## The Loop
+
+Repeat until interrupted or stall limit reached:
+
+### 1. Read current state
 
 ```bash
-uv run evo status
 uv run evo scratchpad
 uv run evo frontier
+uv run evo status
+uv run evo annotations
 ```
 
-2. Pick one committed frontier node.
-3. Create a child experiment:
+On the first iteration, also read `.evo/project.md` to understand the optimization surface.
 
-```bash
-uv run evo new --parent <exp_id> -m "hypothesis"
-```
+### 2. Analyze and plan directions
 
-4. Edit the target file in the returned worktree.
-5. Run it:
+From the scratchpad, frontier, traces, and annotations, determine:
+- Which frontier nodes are most promising
+- What failure patterns are most common and impactful
+- What strategies have been tried and their outcomes
+- Which branches are plateauing or exhausted
 
-```bash
-uv run evo run <new_exp_id>
-```
+Formulate N directions (one per subagent). Each direction should include:
+- A **focus area** (e.g., "tool-use accuracy", "multi-step reasoning", "context management")
+- **Specific ideas** to try (e.g., "add a confirmation step before writes", "summarize conversation every 5 turns") -- give the subagent concrete starting points, not just vague themes
+- Which **frontier node** to branch from
+- Key **traces to study** (task IDs with interesting failures relevant to this direction)
 
-6. If useful, inspect traces/logs and annotate:
+### 3. Spawn parallel subagents
 
-```bash
-uv run evo traces <exp_id> [task]
-uv run evo annotate <exp_id> [task] "analysis"
-```
+Spawn all subagents in a **single message** using the Agent tool. **All subagents must run in the background** (`run_in_background: true`) so they execute in parallel.
 
-7. Prune dead committed branches manually with:
+Use `model: "sonnet"` for straightforward hypotheses, `model: "opus"` for harder ones requiring deeper reasoning.
 
-```bash
-uv run evo prune <exp_id> --reason "dead branch"
-```
+Each subagent prompt must include:
+- An instruction to read `.claude/commands/subagent.md` and follow its protocol
+- The assigned direction and specific ideas to try
+- The parent experiment ID to branch from
+- Key task IDs / traces to study
+- The iteration budget
+- A brief scratchpad summary (current best score, frontier nodes, recent failures)
+
+### 4. Collect results and update state
+
+After all subagents complete:
+
+- Review each subagent's summary
+- Record the round's best score and compare to the previous best
+- If no subagent improved the score, increment the stall counter
+- If any improved, reset the stall counter
+- Prune dead branches where 3+ children all regressed:
+  ```bash
+  uv run evo prune <exp_id> --reason "exhausted: N children all regressed"
+  ```
+- Update notes with cross-cutting learnings:
+  ```bash
+  uv run evo set <exp_id> --note "key insight from round N"
+  ```
+
+### 5. Continue or stop
+
+**Continue** if:
+- Stall counter < stall limit
+- User hasn't interrupted
+- Score hasn't reached the theoretical maximum
+
+**Stop** if:
+- Stall counter >= stall limit (N consecutive rounds with no improvement)
+- Score reached theoretical maximum (1.0 for max metric, 0.0 for min metric)
+- User interrupted
+
+On stop, print a final summary:
+- Best score achieved and experiment ID
+- Total experiments run across all rounds
+- The winning diff: `uv run evo diff <best_exp_id>`
+- Suggested next steps if the score hasn't converged
+
+Go back to step 1.

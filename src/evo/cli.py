@@ -148,6 +148,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     root = repo_root()
     config, graph = _require_workspace(root)
     node = _read_node(root, args.exp_id)
+    if node.get("status") not in (None, "pending", "active"):
+        print(f"ERROR: {args.exp_id} has status '{node['status']}' -- cannot run again", file=sys.stderr)
+        return 1
     _block_if_epoch_requires_baseline(root, node["parent"], no_compare=False)
 
     def _mark_active(current_node: dict, _graph: dict) -> None:
@@ -240,6 +243,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 def _record_done_result(root: Path, args: argparse.Namespace) -> int:
     config, graph = _require_workspace(root)
     node = _read_node(root, args.exp_id)
+    if node.get("status") not in (None, "pending", "active"):
+        print(f"ERROR: {args.exp_id} has status '{node['status']}' -- cannot record again", file=sys.stderr)
+        return 1
     if args.traces:
         traces_dir = experiments_dir_for(root, args.exp_id) / "traces"
         traces_dir.mkdir(parents=True, exist_ok=True)
