@@ -8,3 +8,4 @@ _ref/
 .evo/scratchpad.md
 .evo/infra_log.json
 .evo/*.lock
+.evo/dashboard.pid

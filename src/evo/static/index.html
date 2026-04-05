@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>evo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+  <!-- Top bar -->
+  <header id="topbar">
+    <span class="logo">evo</span>
+    <div class="divider"></div>
+    <span id="target-file" class="target"></span>
+    <div id="status-pill" class="pill pill-idle">
+      <span class="dot"></span>
+      <span id="status-text">connecting</span>
+    </div>
+    <div class="spacer"></div>
+    <span id="meta-info" class="meta"></span>
+  </header>
+
+  <!-- Hero metrics -->
+  <section id="hero">
+    <div class="hero-score">
+      <span class="hero-label">BEST SCORE</span>
+      <div class="hero-value-row">
+        <span id="best-score" class="hero-value">--</span>
+        <span id="score-delta" class="hero-delta"></span>
+      </div>
+      <span id="baseline-info" class="hero-sub"></span>
+    </div>
+    <div class="hero-stats">
+      <div class="hero-stat">
+        <span class="hero-label">EXPERIMENTS</span>
+        <span id="total-exp" class="hero-num">--</span>
+        <div id="exp-breakdown" class="hero-breakdown"></div>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-label">KEEP RATE</span>
+        <span id="keep-rate" class="hero-num">--</span>
+        <span id="keep-detail" class="hero-sub"></span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-label">FRONTIER</span>
+        <span id="frontier-count" class="hero-num">--</span>
+        <span class="hero-sub">open branches</span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-label">ACTIVE</span>
+        <span id="active-count" class="hero-num">--</span>
+        <span class="hero-sub">running now</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Charts row -->
+  <section id="charts">
+    <div id="chart-panel" class="panel">
+      <span class="panel-title">Score Progression</span>
+      <div class="chart-container">
+        <canvas id="score-chart"></canvas>
+      </div>
+    </div>
+    <div id="tree-panel" class="panel">
+      <span class="panel-title">Experiment Tree</span>
+      <div id="tree-container" class="tree-container">
+        <svg id="tree-svg"></svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- Experiment table -->
+  <section id="table-section">
+    <div class="table-header">
+      <span class="panel-title">Experiments</span>
+      <div class="spacer"></div>
+      <div id="table-filters" class="filters"></div>
+    </div>
+    <div class="table-head-row">
+      <span class="col-id">ID</span>
+      <span class="col-score">SCORE</span>
+      <span class="col-status">STATUS</span>
+      <span class="col-parent">PARENT</span>
+      <span class="col-hyp">HYPOTHESIS</span>
+      <span class="col-tasks">TASKS</span>
+      <span class="col-time">TIME</span>
+    </div>
+    <div id="table-body"></div>
+  </section>
+
+  <!-- Drawer overlay -->
+  <div id="drawer-overlay" class="drawer-overlay hidden" onclick="closeDrawer()">
+    <div id="drawer" class="drawer" onclick="event.stopPropagation()">
+      <div id="drawer-content"></div>
+    </div>
+  </div>
+
+  <!-- Scratchpad modal -->
+  <div id="scratchpad-overlay" class="modal-overlay hidden" onclick="closeScratchpad()">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <span class="modal-title">Scratchpad</span>
+        <span class="modal-sub">auto-generated from graph + annotations</span>
+        <div class="spacer"></div>
+        <span class="close-btn" onclick="closeScratchpad()">&times;</span>
+      </div>
+      <div id="scratchpad-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

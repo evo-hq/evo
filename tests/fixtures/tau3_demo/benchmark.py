@@ -71,7 +71,14 @@ def main() -> None:
         seed=300,
     )
 
-    results = run_domain(config)
+    # tau-bench prints rich tables to stdout; redirect to stderr so only our
+    # JSON lands on stdout (required by evo's score parser).
+    real_stdout = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        results = run_domain(config)
+    finally:
+        sys.stdout = real_stdout
 
     traces_dir = os.environ.get("EVO_TRACES_DIR")
     if traces_dir:

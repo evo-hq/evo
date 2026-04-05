@@ -80,12 +80,36 @@ def _update_graph_and_write(root: Path, graph: dict) -> None:
         atomic_write_json(graph_path(root), graph)
 
 
+def _start_dashboard_background(root: Path, port: int = 8080) -> None:
+    """Start the dashboard as a background process."""
+    pid_file = workspace_path(root) / "dashboard.pid"
+    # Don't start if already running
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)  # check if process is alive
+            return
+        except (OSError, ValueError):
+            pid_file.unlink(missing_ok=True)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "evo.dashboard"],
+        cwd=root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    pid_file.write_text(str(proc.pid))
+    print(f"Dashboard running at http://127.0.0.1:{port} (pid {proc.pid})")
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     root = repo_root()
     if args.metric not in {"max", "min"}:
         raise RuntimeError("--metric must be `max` or `min`")
     init_workspace(root, target=args.target, benchmark=args.benchmark, metric=args.metric, gate=args.gate)
     write_scratchpad(root)
+    _start_dashboard_background(root, port=args.port)
     print(f"Initialized evo workspace at {workspace_path(root)}")
     return 0
 
@@ -341,10 +365,24 @@ def cmd_gc(args: argparse.Namespace) -> int:
     return 0
 
 
+def _stop_dashboard(root: Path) -> None:
+    """Stop the background dashboard if running."""
+    pid_file = workspace_path(root) / "dashboard.pid"
+    if not pid_file.exists():
+        return
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 15)  # SIGTERM
+    except (OSError, ValueError):
+        pass
+    pid_file.unlink(missing_ok=True)
+
+
 def cmd_reset(args: argparse.Namespace) -> int:
     if not args.yes:
         raise RuntimeError("reset is destructive; re-run with --yes")
     root = repo_root()
+    _stop_dashboard(root)
     reset_runtime_state(root)
     print("Reset evo runtime state")
     return 0
@@ -537,6 +575,7 @@ def build_parser() -> argparse.ArgumentParser:
     init_p.add_argument("--benchmark", required=True)
     init_p.add_argument("--metric", required=True, choices=["max", "min"])
     init_p.add_argument("--gate")
+    init_p.add_argument("--port", type=int, default=8080)
     init_p.set_defaults(func=cmd_init)
 
     new_p = sub.add_parser("new")

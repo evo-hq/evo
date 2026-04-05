@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from flask import Flask, Response, jsonify
+from flask import Flask, Response, jsonify, send_from_directory
 
 from .core import (
     best_committed_score,
@@ -19,65 +19,19 @@ from .core import (
 )
 from .scratchpad import write_scratchpad
 
+STATIC_DIR = Path(__file__).parent / "static"
+
 
 def create_app(root: Path | None = None) -> Flask:
-    app = Flask(__name__)
+    app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
     app.config["EVO_ROOT"] = str(root or repo_root())
 
     def _root() -> Path:
         return Path(app.config["EVO_ROOT"])
 
     @app.get("/")
-    def index() -> str:
-        return """<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>evo</title>
-    <style>
-      body { font-family: sans-serif; margin: 24px; background: #f7f4ea; color: #1f1f1f; }
-      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-      pre, code { background: #fffdf7; border: 1px solid #d8d0bf; padding: 12px; overflow: auto; }
-      .chips { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px; }
-      .chip { background: #1f1f1f; color: #fff; padding: 8px 12px; border-radius: 999px; }
-    </style>
-  </head>
-  <body>
-    <h1>evo</h1>
-    <div class="chips" id="stats"></div>
-    <div class="grid">
-      <section>
-        <h2>Tree</h2>
-        <pre id="tree"></pre>
-      </section>
-      <section>
-        <h2>Scratchpad</h2>
-        <pre id="scratchpad"></pre>
-      </section>
-    </div>
-    <script>
-      async function refresh() {
-        const [stats, tree, scratchpad] = await Promise.all([
-          fetch('/api/stats').then(r => r.json()),
-          fetch('/api/tree').then(r => r.text()),
-          fetch('/api/scratchpad').then(r => r.text())
-        ]);
-        document.getElementById('stats').innerHTML = `
-          <div class="chip">metric: ${stats.metric}</div>
-          <div class="chip">best: ${stats.best_score ?? 'n/a'}</div>
-          <div class="chip">experiments: ${stats.total_experiments}</div>
-          <div class="chip">committed: ${stats.committed}</div>
-          <div class="chip">discarded: ${stats.discarded}</div>
-          <div class="chip">active: ${stats.active}</div>
-        `;
-        document.getElementById('tree').textContent = tree;
-        document.getElementById('scratchpad').textContent = scratchpad;
-      }
-      refresh();
-      setInterval(refresh, 5000);
-    </script>
-  </body>
-</html>"""
+    def index():
+        return send_from_directory(STATIC_DIR, "index.html")
 
     @app.get("/api/stats")
     def stats():
@@ -85,10 +39,17 @@ def create_app(root: Path | None = None) -> Flask:
         graph = load_graph(_root())
         nodes = [node for node in graph["nodes"].values() if node["id"] != "root"]
         metric = config.get("metric", "max")
+        baseline = None
+        for node in graph["nodes"].values():
+            if node.get("parent") == "root" and node.get("score") is not None:
+                baseline = node["score"]
+                break
         return jsonify(
             {
                 "metric": metric,
+                "target": config.get("target", ""),
                 "best_score": best_committed_score(graph, metric),
+                "baseline_score": baseline,
                 "total_experiments": len(nodes),
                 "committed": sum(1 for node in nodes if node.get("status") == "committed"),
                 "discarded": sum(1 for node in nodes if node.get("status") == "discarded"),
@@ -96,8 +57,13 @@ def create_app(root: Path | None = None) -> Flask:
                 "failed": sum(1 for node in nodes if node.get("status") == "failed"),
                 "pruned": sum(1 for node in nodes if node.get("status") == "pruned"),
                 "frontier": len(frontier_nodes(graph)),
+                "eval_epoch": config.get("current_eval_epoch", 1),
             }
         )
+
+    @app.get("/api/graph")
+    def graph():
+        return jsonify(load_graph(_root()))
 
     @app.get("/api/tree")
     def tree():
@@ -142,6 +108,8 @@ def create_app(root: Path | None = None) -> Flask:
     @app.get("/api/node/<exp_id>/log/<filename>")
     def node_log(exp_id: str, filename: str):
         path = experiments_dir_for(_root(), exp_id) / filename
+        if not path.exists():
+            return Response("", mimetype="text/plain")
         return Response(path.read_text(encoding="utf-8"), mimetype="text/plain")
 
     @app.get("/api/active")
