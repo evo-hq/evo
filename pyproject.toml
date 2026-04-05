@@ -1,0 +1,32 @@
+[project]
+name = "evo"
+version = "0.1.0"
+description = "Structured experiment-driven code optimization with git worktrees, traces, and a local dashboard."
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "flask>=3.0.0",
+  "pyyaml>=6.0.0",
+]
+
+[project.optional-dependencies]
+tau3 = [
+  "openai",
+  "tau2",
+]
+
+[project.scripts]
+evo = "evo.cli:main"
+evo-dashboard = "evo.dashboard:main"
+
+[build-system]
+requires = ["setuptools>=68.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+tau2 = { git = "https://github.com/sierra-research/tau2-bench.git", rev = "73dc24445d28762075e69465d966aee4a9dcbfcb" }
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
