@@ -33,6 +33,11 @@ Prefer wrapping an existing benchmark rather than mutating it in place.
 
 Ask the user if they're OK installing `evo-sdk` (`pip install evo-sdk` or add to project dependencies). If yes, instrument using the SDK:
 
+The SDK separates **logging** (observability) from **reporting** (evaluation):
+
+- `run.log(task_id, data)` -- append anything (str, dict, whatever) as the task runs. Called many times.
+- `run.report(task_id, score)` -- record the final eval result. Called once per task.
+
 **Benchmark wrapper:**
 
 ```python
@@ -40,13 +45,16 @@ from evo_sdk import Run
 
 with Run() as run:
     for task in tasks:
+        run.log(task["id"], "starting task")
+        # ... run the task, log intermediate steps ...
+        run.log(task["id"], {"role": "user", "content": task["input"]})
         result = evaluate(task, agent)
-        run.log_task(
+        run.log(task["id"], {"role": "assistant", "content": result.output})
+        run.report(
             task["id"],
             score=result.score,
             summary=f"...",
             failure_reason=None if result.passed else "task_failed",
-            events=[...],  # conversation history for failure analysis
         )
 # finish() called automatically: prints score JSON to stdout, writes traces to $EVO_TRACES_DIR
 ```
@@ -63,7 +71,7 @@ with Gate() as gate:
 # finish() called automatically: prints summary to stderr, exits 0 or 1
 ```
 
-The SDK automatically reads `$EVO_TRACES_DIR`, `$EVO_EXPERIMENT_ID`, and `$EVO_WORKTREE` from the environment (set by `evo run`). Traces are written immediately as each `log_task()` is called, enabling live monitoring.
+The SDK automatically reads `$EVO_TRACES_DIR`, `$EVO_EXPERIMENT_ID`, and `$EVO_WORKTREE` from the environment (set by `evo run`). Log entries accumulate per task and are flushed into the trace file when `report()` is called. Traces are written immediately on each `report()`, enabling live monitoring.
 
 ### Option B: Raw protocol (for non-Python or minimal-dependency setups)
 

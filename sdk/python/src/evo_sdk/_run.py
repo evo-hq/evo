@@ -15,15 +15,24 @@ def _utc_now() -> str:
 
 
 class Run:
-    """Collects per-task results and emits a final score.
+    """Collects logs and eval results, then emits a final score.
+
+    Two separate concerns:
+
+    - **log(task_id, data)** -- observability. Append anything (str, dict,
+      whatever) as the task runs. Called many times per task.
+    - **report(task_id, score)** -- evaluation. Record the final score for
+      a task. Called once per task.
 
     Usage::
 
         from evo_sdk import Run
 
         with Run() as run:
-            run.log_task("0", score=1.0, events=[...])
-            run.log_task("1", score=0.0, failure_reason="wrong_action")
+            run.log("0", "starting task")
+            run.log("0", {"role": "user", "content": "hello"})
+            run.log("0", {"role": "assistant", "content": "hi"})
+            run.report("0", score=1.0, summary="completed")
         # finish() called automatically, prints score JSON to stdout
     """
 
@@ -44,11 +53,23 @@ class Run:
             experiment_id=self._experiment_id,
         )
         self._tasks: dict[str, float] = {}
+        self._logs: dict[str, list[Any]] = {}
         self._lock = threading.Lock()
         self._started_at = _utc_now()
         self._finished = False
 
-    def log_task(
+    def log(self, task_id: str, data: Any) -> None:
+        """Append a log entry to a task. Can be called many times.
+
+        *data* can be anything -- a string, a dict, a number. The SDK
+        doesn't interpret it; it's stored as-is in the trace's ``log``
+        array.
+        """
+        task_id = str(task_id)
+        with self._lock:
+            self._logs.setdefault(task_id, []).append(data)
+
+    def report(
         self,
         task_id: str,
         score: float,
@@ -57,14 +78,17 @@ class Run:
         pass_threshold: float = 0.5,
         summary: str | None = None,
         failure_reason: str | None = None,
-        events: list[dict[str, Any]] | None = None,
         cost: dict[str, Any] | None = None,
         started_at: str | None = None,
         ended_at: str | None = None,
         artifacts: dict[str, str] | None = None,
         **extra: Any,
     ) -> None:
-        """Record a single task result and write its trace immediately."""
+        """Record the eval result for a task and write its trace.
+
+        This flushes any accumulated ``log()`` entries for this task into
+        the trace file alongside the eval fields.
+        """
         task_id = str(task_id)
         if status is None:
             status = "passed" if score >= pass_threshold else "failed"
@@ -79,8 +103,6 @@ class Run:
             trace["summary"] = summary
         if failure_reason is not None:
             trace["failure_reason"] = failure_reason
-        if events is not None:
-            trace["events"] = events
         if cost is not None:
             trace["cost"] = cost
         if started_at is not None:
@@ -94,13 +116,16 @@ class Run:
 
         with self._lock:
             self._tasks[task_id] = score
+            logs = self._logs.get(task_id)
+            if logs:
+                trace["log"] = list(logs)
 
         self._backend.write_trace(trace)
 
     def finish(self, *, score: float | None = None) -> dict[str, Any]:
         """Emit the final result to stdout and return it.
 
-        If *score* is not provided, computes the mean of all logged tasks.
+        If *score* is not provided, computes the mean of all reported tasks.
         """
         if self._finished:
             return {}
