@@ -9,3 +9,4 @@ _ref/
 .evo/infra_log.json
 .evo/*.lock
 .evo/dashboard.pid
+.evo_archive/

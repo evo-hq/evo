@@ -77,6 +77,27 @@ body {
 .pill-idle .dot { background: var(--text-4); }
 .meta { font-size: 12px; color: var(--text-5); }
 
+.run-switcher {
+  margin-right: 12px;
+}
+.run-select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+}
+.run-select:hover { border-color: var(--text-5); }
+.run-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-4);
+}
+
 /* ─── Hero metrics ────────────────────────────────────── */
 #hero {
   display: flex;
@@ -144,13 +165,16 @@ body {
 /* ─── Charts row ──────────────────────────────────────── */
 #charts {
   display: flex;
-  height: 420px;
+  height: 50vh;
   border-bottom: 1px solid var(--border);
+  overflow: hidden;
 }
 .panel {
   display: flex;
   flex-direction: column;
   padding: 16px 20px;
+  overflow: hidden;
+  min-height: 0;
 }
 #chart-panel {
   flex: 3;
@@ -165,15 +189,22 @@ body {
 }
 .chart-container {
   flex: 1;
+  min-height: 0;
   background: var(--inset);
   border-radius: 8px;
   border: 1px solid var(--border);
   position: relative;
   padding: 8px;
+  overflow: hidden;
 }
 .chart-container canvas {
-  width: 100% !important;
-  height: 100% !important;
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  width: calc(100% - 16px) !important;
+  height: calc(100% - 16px) !important;
   cursor: grab;
 }
 .chart-container canvas:active {
@@ -193,7 +224,20 @@ body {
 }
 
 /* ─── Experiment table ────────────────────────────────── */
-#table-section { padding: 12px 20px 20px; overflow-x: hidden; }
+#table-section {
+  padding: 12px 20px 20px;
+  overflow-x: hidden;
+  max-height: 30vh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  z-index: 1;
+}
+#table-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
 .table-header {
   display: flex;
   align-items: center;
@@ -243,6 +287,29 @@ body {
   padding-left: 10px;
 }
 .table-row:hover { background: rgba(255,255,255,0.02); }
+.table-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 0 4px;
+  font-size: 11px;
+  color: var(--text-4);
+  font-family: 'JetBrains Mono', monospace;
+}
+.table-pager button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.table-pager button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
 .table-row.active-row {
   border-left: 2px solid var(--blue);
   padding-left: 8px;

@@ -11,6 +11,9 @@ const state = {
   // Preserve zoom/pan across re-renders
   chartZoom: null,   // { x: {min,max}, y: {min,max} }
   treeTransform: null, // d3.zoomTransform
+  treeUserPanned: false, // true once user manually pans/zooms the tree
+  tablePage: 0,
+  tablePageSize: 10,
 };
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -90,16 +93,27 @@ function getExperiments() {
 // ─── API ─────────────────────────────────────────────────
 async function fetchAll() {
   try {
-    const [stats, graph] = await Promise.all([
+    const [stats, graph, runs] = await Promise.all([
       fetch('/api/stats').then(r => r.json()),
       fetch('/api/graph').then(r => r.json()),
+      fetch('/api/runs').then(r => r.json()),
     ]);
     state.stats = stats;
     state.graph = graph;
+    state.runs = runs;
     render();
   } catch (e) {
     console.error('fetch error:', e);
   }
+}
+
+async function switchRun(runId) {
+  await fetch(`/api/runs/${runId}/activate`, { method: 'POST' });
+  state.treeUserPanned = false;
+  state.treeTransform = null;
+  state.chartZoom = null;
+  state.tablePage = 0;
+  fetchAll();
 }
 
 // ─── Render: Top bar ─────────────────────────────────────
@@ -117,6 +131,23 @@ function renderTopbar() {
   }
   document.getElementById('meta-info').textContent =
     `epoch ${s.eval_epoch || 1} \u00b7 ${s.metric || 'max'} \u00b7 auto-refresh`;
+
+  // Run switcher
+  const runs = state.runs || [];
+  const switcher = document.getElementById('run-switcher');
+  if (runs.length > 1) {
+    const active = runs.find(r => r.active);
+    const options = runs.map(r =>
+      `<option value="${r.id}" ${r.active ? 'selected' : ''}>${r.id}</option>`
+    ).join('');
+    switcher.innerHTML = `<select class="run-select" onchange="switchRun(this.value)">${options}</select>`;
+    switcher.classList.remove('hidden');
+  } else if (runs.length === 1) {
+    switcher.innerHTML = `<span class="run-label">${runs[0].id}</span>`;
+    switcher.classList.remove('hidden');
+  } else {
+    switcher.classList.add('hidden');
+  }
 }
 
 // ─── Render: Hero ────────────────────────────────────────
@@ -227,6 +258,14 @@ function renderChart() {
           pointRadius: 3.5,
           order: 1,
         },
+        {
+          label: 'Active',
+          data: allData.filter(d => d.status === 'active'),
+          backgroundColor: '#3b82f6',
+          pointRadius: 5,
+          pointStyle: 'rectRot',
+          order: 0,
+        },
       ],
     },
     options: {
@@ -283,7 +322,8 @@ function renderChart() {
       },
       scales: {
         x: {
-          min: -0.5,
+          min: 0,
+          suggestedMax: Math.max(allData.length - 1, 1),
           offset: true,
           title: { display: true, text: 'experiment #', color: '#52525b', font: { size: 11 } },
           grid: { color: '#1e1e22' },
@@ -291,10 +331,12 @@ function renderChart() {
             color: '#71717a',
             font: { family: "'JetBrains Mono', monospace", size: 11 },
             stepSize: 1,
-            callback: (v) => v >= 0 ? v : '',
+            callback: (v) => v >= 0 ? Math.round(v) : '',
           },
         },
         y: {
+          suggestedMin: 0,
+          suggestedMax: 1,
           title: { display: false },
           grid: { color: '#1e1e22' },
           ticks: {
@@ -330,8 +372,10 @@ function renderTree() {
   const container = document.getElementById('tree-container');
   const svg = d3.select('#tree-svg');
 
-  // Save current zoom transform before clearing
-  try { state.treeTransform = d3.zoomTransform(svg.node()); } catch(e) {}
+  // Save current zoom transform before clearing (only if user panned)
+  if (state.treeUserPanned) {
+    try { state.treeTransform = d3.zoomTransform(svg.node()); } catch(e) {}
+  }
 
   svg.selectAll('*').remove();
 
@@ -351,37 +395,54 @@ function renderTree() {
   if (!rootData) return;
 
   const root = d3.hierarchy(rootData);
-  const width = container.clientWidth;
-  const height = container.clientHeight;
-  const margin = { top: 30, right: 20, bottom: 20, left: 20 };
+  const width = container.clientWidth || 400;
+  const height = container.clientHeight || 350;
 
-  const treeLayout = d3.tree().nodeSize([40, 50]);
+  const treeLayout = d3.tree().nodeSize([40, 60]);
   treeLayout(root);
 
-  // Center the tree: find bounds and translate
-  let minX = Infinity, maxX = -Infinity;
-  root.each(d => { minX = Math.min(minX, d.x); maxX = Math.max(maxX, d.x); });
-  const treeWidth = maxX - minX;
-  const offsetX = (width - margin.left - margin.right) / 2 - (minX + treeWidth / 2);
+  // Find tree bounds
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  root.each(d => {
+    minX = Math.min(minX, d.x); maxX = Math.max(maxX, d.x);
+    minY = Math.min(minY, d.y); maxY = Math.max(maxY, d.y);
+  });
+  const treeW = maxX - minX || 1;
+  const treeH = maxY - minY || 1;
+  const treeCX = minX + treeW / 2;
+  const treeCY = minY + treeH / 2;
 
-  const g = svg.append('g')
-    .attr('transform', `translate(${margin.left + offsetX},${margin.top})`);
+  const g = svg.append('g');
 
   // Pan + zoom
   const zoom = d3.zoom()
     .scaleExtent([0.3, 4])
-    .on('zoom', (e) => g.attr('transform', e.transform));
+    .on('zoom', (e) => {
+      g.attr('transform', e.transform);
+      // Only save transform if triggered by user interaction (not programmatic)
+      if (e.sourceEvent) {
+        state.treeTransform = e.transform;
+        state.treeUserPanned = true;
+      }
+    });
 
   svg.call(zoom)
     .on('dblclick.zoom', null); // disable default dblclick zoom
 
-  // Restore saved transform if user had panned/zoomed, else use initial
-  const initialTransform = d3.zoomIdentity.translate(margin.left + offsetX, margin.top);
-  svg.call(zoom.transform, state.treeTransform || initialTransform);
+  // Center tree in container with a comfortable zoom level
+  const defaultScale = 1.5;
+  const initialTransform = d3.zoomIdentity
+    .translate(width / 2 - treeCX * defaultScale, height / 2 - treeCY * defaultScale)
+    .scale(defaultScale);
+
+  // Only reuse saved transform if user explicitly panned/zoomed AND container size is stable
+  const useTransform = (state.treeUserPanned && state.treeTransform) ? state.treeTransform : initialTransform;
+  svg.call(zoom.transform, useTransform);
 
   // Double-click to reset
   svg.on('dblclick', () => {
     state.treeTransform = null;
+    state.treeUserPanned = false;
     svg.transition().duration(300).call(zoom.transform, initialTransform);
   });
 
@@ -470,8 +531,12 @@ function renderTable() {
 
   const tbody = document.getElementById('table-body');
   const experiments = getExperiments();
+  const totalPages = Math.max(1, Math.ceil(experiments.length / state.tablePageSize));
+  if (state.tablePage >= totalPages) state.tablePage = totalPages - 1;
+  const start = state.tablePage * state.tablePageSize;
+  const pageExps = experiments.slice(start, start + state.tablePageSize);
 
-  tbody.innerHTML = experiments.map(n => {
+  tbody.innerHTML = pageExps.map(n => {
     const delta = scoreDelta(n);
     const deltaClass = delta.startsWith('+') && delta !== '+0.00' ? 'color:var(--green)' :
                        delta.startsWith('-') ? 'color:var(--red)' : 'color:var(--text-4)';
@@ -505,7 +570,24 @@ function renderTable() {
       <span class="col-time">${relTime(n.created_at)}</span>
     </div>`;
   }).join('');
+
+  // Pagination controls
+  const pager = document.getElementById('table-pager');
+  if (totalPages > 1) {
+    pager.innerHTML = `
+      <button onclick="tablePrev()" ${state.tablePage === 0 ? 'disabled' : ''}>Prev</button>
+      <span>${state.tablePage + 1} / ${totalPages}</span>
+      <button onclick="tableNext()" ${state.tablePage >= totalPages - 1 ? 'disabled' : ''}>Next</button>
+    `;
+    pager.classList.remove('hidden');
+  } else {
+    pager.innerHTML = '';
+    pager.classList.add('hidden');
+  }
 }
+
+function tablePrev() { state.tablePage = Math.max(0, state.tablePage - 1); renderTable(); }
+function tableNext() { state.tablePage++; renderTable(); }
 
 // ─── Drawer ──────────────────────────────────────────────
 async function openDrawer(expId) {
@@ -544,7 +626,7 @@ async function openDrawer(expId) {
     </div>
     ${node.status === 'committed' ? '<span style="font-size:12px;color:var(--text-4);margin-top:4px;display:block">Score improved. Gate passed. Changes committed.</span>' : ''}
     ${node.status === 'discarded' ? '<span style="font-size:12px;color:var(--text-4);margin-top:4px;display:block">Score did not improve vs parent. Discarded.</span>' : ''}
-    ${node.status === 'failed' ? '<span style="font-size:12px;color:var(--red);margin-top:4px;display:block">Benchmark or gate failed.</span>' : ''}
+    ${node.status === 'failed' ? `<span style="font-size:12px;color:var(--red);margin-top:4px;display:block">Failed: ${esc(node.error || 'benchmark or gate error')}</span>` : ''}
   </div>`;
 
   // Metadata
@@ -581,23 +663,37 @@ async function openDrawer(expId) {
     }
   } catch (e) { /* no diff */ }
 
-  // Tasks
+  // Tasks -- from completed benchmark result, or live traces for active experiments
+  let traces = {};
+  try {
+    traces = await fetch(`/api/node/${expId}/traces`).then(r => r.json());
+  } catch (e) { /* no traces */ }
+
   const tasks = node.benchmark_result?.tasks;
+  const isActive = node.status === 'active';
+
+  // Build unified task map: completed results take priority, live traces fill in during active runs
+  const taskMap = {};
   if (tasks) {
-    const total = Object.keys(tasks).length;
-    const passed = Object.values(tasks).filter(v => v >= 0.5).length;
+    for (const [tid, score] of Object.entries(tasks)) {
+      taskMap[tid] = score;
+    }
+  } else if (isActive && Object.keys(traces).length > 0) {
+    // Active experiment with no result yet -- build task map from live traces
+    for (const [filename, trace] of Object.entries(traces)) {
+      taskMap[trace.task_id] = trace.score;
+    }
+  }
+
+  if (Object.keys(taskMap).length > 0) {
+    const total = Object.keys(taskMap).length;
+    const passed = Object.values(taskMap).filter(v => v >= 0.5).length;
     let tasksHtml = '';
 
-    // Try to load traces
-    let traces = {};
-    try {
-      traces = await fetch(`/api/node/${expId}/traces`).then(r => r.json());
-    } catch (e) { /* no traces */ }
-
-    const sortedTasks = Object.entries(tasks).sort((a, b) => a[1] - b[1]);
+    const sortedTasks = Object.entries(taskMap).sort((a, b) => a[1] - b[1]);
     for (const [tid, score] of sortedTasks) {
-      const passed = score >= 0.5;
-      const color = passed ? 'var(--green)' : 'var(--red)';
+      const taskPassed = score >= 0.5;
+      const color = taskPassed ? 'var(--green)' : 'var(--red)';
       const traceKey = `task_${tid}.json`;
       const trace = traces[traceKey];
       const summary = trace?.summary || '';
@@ -646,12 +742,18 @@ async function openDrawer(expId) {
       }
     }
 
+    const label = isActive && !tasks ? `${passed}/${total} (running...)` : `${passed}/${total}`;
     html += `<div class="drawer-section">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
         <span class="drawer-section-title" style="margin-bottom:0">Benchmark Tasks</span>
-        <span class="mono" style="font-size:11px;color:var(--text-1);font-weight:500">${passed}/${total}</span>
+        <span class="mono" style="font-size:11px;color:var(--text-1);font-weight:500">${label}</span>
       </div>
       ${tasksHtml}
+    </div>`;
+  } else if (isActive) {
+    html += `<div class="drawer-section">
+      <span class="drawer-section-title">Benchmark Tasks</span>
+      <div style="font-size:12px;color:var(--text-4)">Running... waiting for first task to complete.</div>
     </div>`;
   }
 

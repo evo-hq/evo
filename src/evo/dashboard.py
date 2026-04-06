@@ -6,10 +6,14 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, send_from_directory
 
 from .core import (
+    _load_meta,
+    _save_meta,
     best_committed_score,
+    evo_dir,
     experiments_dir_for,
     frontier_nodes,
     infra_path,
+    list_runs,
     load_annotations,
     load_config,
     load_graph,
@@ -125,6 +129,20 @@ def create_app(root: Path | None = None) -> Flask:
     @app.get("/api/annotations")
     def annotations():
         return jsonify(load_annotations(_root()))
+
+    @app.get("/api/runs")
+    def runs():
+        return jsonify(list_runs(_root()))
+
+    @app.post("/api/runs/<run_id>/activate")
+    def activate_run(run_id: str):
+        run_dir = evo_dir(_root()) / run_id
+        if not run_dir.exists():
+            return jsonify({"error": f"run {run_id} not found"}), 404
+        meta = _load_meta(_root())
+        meta["active"] = run_id
+        _save_meta(_root(), meta)
+        return jsonify({"active": run_id})
 
     return app
 

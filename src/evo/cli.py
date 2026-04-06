@@ -21,6 +21,7 @@ from .core import (
     config_path,
     current_branch,
     delete_discarded_experiment,
+    evo_dir,
     experiment_log_path,
     experiment_result_path,
     experiments_dir_for,
@@ -85,7 +86,7 @@ def _update_graph_and_write(root: Path, graph: dict) -> None:
 
 def _start_dashboard_background(root: Path, port: int = 8080) -> None:
     """Start the dashboard as a background process."""
-    pid_file = workspace_path(root) / "dashboard.pid"
+    pid_file = evo_dir(root) / "dashboard.pid"
     # Don't start if already running
     if pid_file.exists():
         try:
@@ -110,10 +111,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     root = repo_root()
     if args.metric not in {"max", "min"}:
         raise RuntimeError("--metric must be `max` or `min`")
-    init_workspace(root, target=args.target, benchmark=args.benchmark, metric=args.metric, gate=args.gate)
+    run_id = init_workspace(root, target=args.target, benchmark=args.benchmark, metric=args.metric, gate=args.gate)
     write_scratchpad(root)
     _start_dashboard_background(root, port=args.port)
-    print(f"Initialized evo workspace at {workspace_path(root)}")
+    print(f"Initialized evo workspace {run_id} at {workspace_path(root)}")
     return 0
 
 
@@ -276,11 +277,33 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"DISCARDED {args.exp_id} {score}")
         return 0
     except Exception as exc:  # noqa: BLE001
+        # Try to salvage score from traces written before failure
+        salvaged_score = None
+        salvaged_result = None
+        try:
+            trace_files = sorted(traces_dir.glob("*.json"))
+            if trace_files:
+                task_scores = {}
+                for tf in trace_files:
+                    t = json.loads(tf.read_text(encoding="utf-8"))
+                    task_scores[t["task_id"]] = t.get("score", 0.0)
+                if task_scores:
+                    salvaged_score = round(sum(task_scores.values()) / len(task_scores), 4)
+                    salvaged_result = {"score": salvaged_score, "tasks": task_scores}
+        except Exception:
+            pass
+
+        error_msg = str(exc)
+
         def _mark_failed(current_node: dict, _graph: dict) -> None:
             current_node["status"] = "failed"
+            current_node["error"] = error_msg
+            if salvaged_score is not None:
+                current_node["score"] = salvaged_score
+                current_node["benchmark_result"] = salvaged_result
 
         update_node(root, args.exp_id, _mark_failed)
-        _finalize_result(root, args.exp_id, node, None, "failed", {"error": str(exc)})
+        _finalize_result(root, args.exp_id, node, salvaged_score, "failed", {"error": str(exc)})
         write_scratchpad(root)
         print(f"FAILED {args.exp_id} {exc}")
         return 1
@@ -388,7 +411,7 @@ def cmd_gc(args: argparse.Namespace) -> int:
 
 def _stop_dashboard(root: Path) -> None:
     """Stop the background dashboard if running."""
-    pid_file = workspace_path(root) / "dashboard.pid"
+    pid_file = evo_dir(root) / "dashboard.pid"
     if not pid_file.exists():
         return
     try:

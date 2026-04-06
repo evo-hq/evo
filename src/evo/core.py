@@ -13,11 +13,11 @@ from typing import Any
 from .locking import advisory_lock
 
 WORKSPACE_NAME = ".evo"
-WORKTREES_DIR = ".evo/worktrees"
 GRAPH_FILE = "graph.json"
 CONFIG_FILE = "config.json"
 ANNOTATIONS_FILE = "annotations.json"
 INFRA_FILE = "infra_log.json"
+META_FILE = "meta.json"
 PROJECT_FILE = "project.md"
 SCRATCHPAD_FILE = "scratchpad.md"
 NOTES_FILE = "notes.md"
@@ -39,12 +39,42 @@ def repo_root(cwd: Path | None = None) -> Path:
     return Path(result.stdout.strip())
 
 
-def workspace_path(root: Path) -> Path:
+def evo_dir(root: Path) -> Path:
+    """Top-level .evo/ container."""
     return root / WORKSPACE_NAME
 
 
+def _meta_path(root: Path) -> Path:
+    return evo_dir(root) / META_FILE
+
+
+def _load_meta(root: Path) -> dict[str, Any]:
+    path = _meta_path(root)
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return {"active": None, "next_run": 0}
+
+
+def _save_meta(root: Path, meta: dict[str, Any]) -> None:
+    path = _meta_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, meta)
+
+
+def workspace_path(root: Path) -> Path:
+    """Path to the active run directory (e.g. .evo/run_0000/)."""
+    meta = _load_meta(root)
+    active = meta.get("active")
+    if active:
+        return evo_dir(root) / active
+    # Legacy fallback: if no meta.json but .evo/config.json exists, treat .evo/ itself as workspace
+    if (evo_dir(root) / CONFIG_FILE).exists():
+        return evo_dir(root)
+    return evo_dir(root)
+
+
 def worktrees_path(root: Path) -> Path:
-    return root / WORKTREES_DIR
+    return workspace_path(root) / "worktrees"
 
 
 def experiments_path(root: Path) -> Path:
@@ -113,7 +143,7 @@ def default_config(root: Path, target: str, benchmark: str, metric: str, gate: s
     return {
         "repo_root": str(root),
         "workspace_dir": WORKSPACE_NAME,
-        "worktrees_dir": WORKTREES_DIR,
+        "worktrees_dir": "worktrees",
         "target": target,
         "benchmark": benchmark,
         "gate": gate,
@@ -169,7 +199,39 @@ def save_graph(root: Path, graph: dict[str, Any]) -> None:
         atomic_write_json(path, graph)
 
 
-def init_workspace(root: Path, target: str, benchmark: str, metric: str, gate: str | None) -> None:
+def _allocate_run(root: Path) -> str:
+    """Allocate a new run ID and set it as active."""
+    meta = _load_meta(root)
+    run_id = f"run_{meta.get('next_run', 0):04d}"
+    meta["next_run"] = meta.get("next_run", 0) + 1
+    meta["active"] = run_id
+    _save_meta(root, meta)
+    return run_id
+
+
+def list_runs(root: Path) -> list[dict[str, Any]]:
+    """List all runs in the workspace."""
+    meta = _load_meta(root)
+    active = meta.get("active")
+    runs = []
+    evo = evo_dir(root)
+    if not evo.exists():
+        return runs
+    for d in sorted(evo.iterdir()):
+        if d.is_dir() and d.name.startswith("run_"):
+            cfg_path = d / CONFIG_FILE
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+            runs.append({
+                "id": d.name,
+                "active": d.name == active,
+                "target": cfg.get("target", ""),
+                "created": cfg.get("created_at", ""),
+            })
+    return runs
+
+
+def init_workspace(root: Path, target: str, benchmark: str, metric: str, gate: str | None) -> str:
+    run_id = _allocate_run(root)
     ensure_workspace_dirs(root)
     config = default_config(root, target, benchmark, metric, gate)
     atomic_write_json(config_path(root), config)
@@ -182,6 +244,7 @@ def init_workspace(root: Path, target: str, benchmark: str, metric: str, gate: s
         atomic_write_text(notes_path(root), "# Notes\n\n")
     if not scratchpad_path(root).exists():
         atomic_write_text(scratchpad_path(root), "# Scratchpad\n\n")
+    return run_id
 
 
 def current_branch(root: Path) -> str:
@@ -294,7 +357,9 @@ def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str
         exp_id = f"exp_{next_id:04d}"
         graph["next_id"] = next_id + 1
 
-        branch = f"evo/{exp_id}"
+        meta = _load_meta(root)
+        run_id = meta.get("active", "run")
+        branch = f"evo/{run_id}/{exp_id}"
         worktree = worktrees_path(root) / exp_id
         parent = nodes[parent_id]
         start_point = current_branch(root) if parent_id == "root" else parent["branch"]
@@ -366,6 +431,9 @@ def delete_discarded_experiment(root: Path, node: dict[str, Any]) -> None:
 
 
 def reset_runtime_state(root: Path) -> None:
+    """Remove the active run's worktrees, branches, and directory."""
+    meta = _load_meta(root)
+    run_id = meta.get("active")
     workspace = workspace_path(root)
     wt_dir = worktrees_path(root)
     subprocess.run(["git", "worktree", "prune"], cwd=root, check=False)
@@ -375,8 +443,10 @@ def reset_runtime_state(root: Path) -> None:
                 subprocess.run(["git", "worktree", "remove", "--force", str(path)], cwd=root, check=False)
                 shutil.rmtree(path, ignore_errors=True)
     subprocess.run(["git", "worktree", "prune"], cwd=root, check=False)
+    # Only delete branches for this run (evo/<run_id>/*)
+    branch_prefix = f"refs/heads/evo/{run_id}/" if run_id else "refs/heads/evo/"
     result = subprocess.run(
-        ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/evo/"],
+        ["git", "for-each-ref", "--format=%(refname:short)", branch_prefix],
         cwd=root,
         check=True,
         capture_output=True,
