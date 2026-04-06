@@ -26,7 +26,7 @@ def load_agent_class(agent_path: str):
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return module.HarnessAgent
+    return module.EvoAgent
 
 
 def main() -> None:

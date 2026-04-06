@@ -1,17 +1,19 @@
-"""HarnessAgent -- baseline agent for tau3 demo.
+"""EvoAgent -- baseline agent for tau3 demo.
 
 This is the file that evo optimizes. It wraps an LLM to handle
 customer-service tasks evaluated by the tau-bench benchmark.
+
+The optimization surface includes the system prompt, message
+construction, and any pre/post-processing of conversation turns.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from typing import cast
+from typing import Optional, cast
 
-from tau2.agent.base_agent import ValidAgentInputMessage, is_valid_agent_history_message
-from tau2.agent.llm_agent import LLMAgent
+from tau2.agent.base_agent import HalfDuplexAgent, ValidAgentInputMessage, is_valid_agent_history_message
+from tau2.agent.base.llm_config import LLMConfigMixin
 from tau2.data_model.message import (
     AssistantMessage,
     Message,
@@ -23,63 +25,54 @@ from tau2.utils.llm_utils import generate
 AGENT_MODEL: str = os.environ.get("AGENT_MODEL", "gpt-5.4")
 AGENT_REASONING_EFFORT: str = os.environ.get("AGENT_REASONING_EFFORT", "")
 
-AGENT_INSTRUCTION = """
+SYSTEM_PROMPT = """\
 You are a helpful assistant that completes tasks according to the <policy> provided below.
-""".strip()
+
+<policy>
+{policy}
+</policy>"""
 
 
-@dataclass
-class HarnessState:
-    messages: list[Message] = field(default_factory=list)
+class EvoAgent(LLMConfigMixin, HalfDuplexAgent):
+    """Baseline agent under optimization by evo."""
 
+    def __init__(self, tools, domain_policy: str, llm: Optional[str] = None, llm_args: Optional[dict] = None):
+        HalfDuplexAgent.__init__(self, tools=tools, domain_policy=domain_policy)
+        LLMConfigMixin.__init__(self, tools=tools, domain_policy=domain_policy, llm=llm, llm_args=llm_args)
 
-class HarnessAgent(LLMAgent):
-    """Agent under optimization."""
-
-    @property
-    def system_prompt(self) -> str:
-        if self.domain_policy:
-            return (
-                "<instructions>\n"
-                f"{AGENT_INSTRUCTION}\n"
-                "</instructions>\n"
-                "<policy>\n"
-                f"{self.domain_policy}\n"
-                "</policy>"
-            )
-        return AGENT_INSTRUCTION
-
-    def get_init_state(
-        self, message_history: list[Message] | None = None
-    ) -> HarnessState:
+    def get_init_state(self, message_history: Optional[list[Message]] = None) -> list[Message]:
         if message_history is None:
-            message_history = []
+            return []
         assert all(is_valid_agent_history_message(m) for m in message_history)
-        return HarnessState(messages=list(message_history))
+        return list(message_history)
 
     def generate_next_message(
         self,
         message: ValidAgentInputMessage,
-        state: HarnessState,
-    ) -> tuple[AssistantMessage, HarnessState]:
+        state: list[Message],
+    ) -> tuple[AssistantMessage, list[Message]]:
         if isinstance(message, MultiToolMessage):
-            state.messages.extend(message.tool_messages)
+            state.extend(message.tool_messages)
         else:
-            state.messages.append(message)
+            state.append(message)
 
-        system = SystemMessage(role="system", content=self.system_prompt)
-        generate_kwargs = (
-            {"reasoning_effort": AGENT_REASONING_EFFORT} if AGENT_REASONING_EFFORT else {}
+        system = SystemMessage(
+            role="system",
+            content=SYSTEM_PROMPT.format(policy=self.domain_policy) if self.domain_policy else SYSTEM_PROMPT.format(policy=""),
         )
-        generate_kwargs.update(self.llm_args)
+
+        kwargs = dict(self.llm_args) if self.llm_args else {}
+        if AGENT_REASONING_EFFORT:
+            kwargs["reasoning_effort"] = AGENT_REASONING_EFFORT
+
         response = cast(
             AssistantMessage,
             generate(
                 model=self.llm or AGENT_MODEL,
                 tools=self.tools,
-                messages=[system, *state.messages],
-                **generate_kwargs,
+                messages=[system, *state],
+                **kwargs,
             ),
         )
-        state.messages.append(response)
+        state.append(response)
         return response, state

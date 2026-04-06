@@ -23,14 +23,14 @@ from pathlib import Path
 
 
 def load_agent_class(agent_path: str):
-    """Dynamically load HarnessAgent from the given file path."""
+    """Dynamically load EvoAgent from the given file path."""
     spec = importlib.util.spec_from_file_location("tau3_agent", agent_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Could not load agent module from {agent_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return module.HarnessAgent
+    return module.EvoAgent
 
 
 def main() -> None:
