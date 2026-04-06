@@ -27,12 +27,55 @@ Worktrees only contain git-tracked files. Before proceeding:
 
 ## 3. Instrument the evaluation
 
-Prefer wrapping an existing benchmark rather than mutating it in place. The wrapper (or benchmark itself) must satisfy these contracts:
+Prefer wrapping an existing benchmark rather than mutating it in place.
+
+### Option A: Use evo-sdk (recommended for Python benchmarks)
+
+Ask the user if they're OK installing `evo-sdk` (`pip install evo-sdk` or add to project dependencies). If yes, instrument using the SDK:
+
+**Benchmark wrapper:**
+
+```python
+from evo_sdk import Run
+
+with Run() as run:
+    for task in tasks:
+        result = evaluate(task, agent)
+        run.log_task(
+            task["id"],
+            score=result.score,
+            summary=f"...",
+            failure_reason=None if result.passed else "task_failed",
+            events=[...],  # conversation history for failure analysis
+        )
+# finish() called automatically: prints score JSON to stdout, writes traces to $EVO_TRACES_DIR
+```
+
+**Gate wrapper:**
+
+```python
+from evo_sdk import Gate
+
+with Gate() as gate:
+    for task in critical_tasks:
+        result = evaluate(task, agent)
+        gate.check(task["id"], score=result.score, detail=f"reward={result.score:.2f}")
+# finish() called automatically: prints summary to stderr, exits 0 or 1
+```
+
+The SDK automatically reads `$EVO_TRACES_DIR`, `$EVO_EXPERIMENT_ID`, and `$EVO_WORKTREE` from the environment (set by `evo run`). Traces are written immediately as each `log_task()` is called, enabling live monitoring.
+
+### Option B: Raw protocol (for non-Python or minimal-dependency setups)
+
+If the user prefers no SDK dependency, implement the protocol directly:
 
 - **stdout**: only structured JSON with a `"score"` field. Example: `{"score": 0.78, "tasks": {"0": 1.0, "1": 0.0}}`
 - **stderr**: all logging, progress, debug output goes here -- never to stdout.
-- **traces**: write per-task detail files to `$EVO_TRACES_DIR` (set automatically by `evo run`).
+- **traces**: write per-task JSON files to `$EVO_TRACES_DIR/task_{id}.json` (set automatically by `evo run`). Each trace must contain at minimum: `{"experiment_id": "...", "task_id": "...", "status": "passed|failed", "score": N}`.
 - **exit code**: 0 on success, non-zero on infrastructure failure.
+- **gates**: exit 0 if all checks pass, non-zero if any fail.
+
+### For both options
 
 If the underlying tool prints noisy output to stdout (progress bars, logging frameworks, rich formatting), the wrapper must redirect or suppress it.
 

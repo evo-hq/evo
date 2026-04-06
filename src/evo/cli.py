@@ -201,6 +201,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     env = os.environ.copy()
     env["EVO_TRACES_DIR"] = str(traces_dir)
     env["EVO_WORKTREE"] = str(worktree)
+    env["EVO_EXPERIMENT_ID"] = args.exp_id
 
     try:
         try:

@@ -1,0 +1,16 @@
+[project]
+name = "evo-sdk"
+version = "0.1.0"
+description = "Lightweight reporting SDK for evo experiments. Zero dependencies."
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

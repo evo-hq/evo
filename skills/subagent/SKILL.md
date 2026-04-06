@@ -133,6 +133,12 @@ Stop if:
 
 When continuing after a committed experiment, update your parent to the newly committed experiment ID.
 
+## Enriching traces (optional)
+
+If the benchmark uses `evo-sdk` (check the benchmark script for `from evo_sdk import Run`), you can enrich trace data by modifying the `log_task()` calls in the benchmark. For example, adding more fields to `events`, `summary`, or `cost` can help with failure analysis. Do NOT change the score computation or gate logic -- only add observability.
+
+If the benchmark uses the raw file protocol (manual `json.dumps` to `$EVO_TRACES_DIR`), you can similarly add fields to the trace dicts. The trace format is forward-compatible -- extra fields are preserved.
+
 ## Rules
 
 - Do NOT run `evo init` or `evo reset`

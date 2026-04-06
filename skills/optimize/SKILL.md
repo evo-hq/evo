@@ -45,6 +45,8 @@ Orchestrator (this agent):
 
 Both layers analyze traces. The orchestrator does cross-cutting analysis (which patterns are most common, which branches plateau). Subagents do focused analysis within their assigned direction.
 
+**Note on trace instrumentation:** Benchmarks may use `evo-sdk` (`from evo_sdk import Run/Gate`) or the raw file protocol. If you need richer trace data for failure analysis, subagents can add fields to `log_task()` calls (SDK) or trace dicts (raw protocol) in the benchmark script. The trace format is forward-compatible.
+
 ## The Loop
 
 Repeat until interrupted or stall limit reached:

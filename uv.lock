@@ -249,19 +249,30 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+sdk = [
+    { name = "evo-sdk" },
+]
 tau3 = [
+    { name = "evo-sdk" },
     { name = "openai" },
     { name = "tau2" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "evo-sdk", marker = "extra == 'sdk'", editable = "sdk/python" },
+    { name = "evo-sdk", marker = "extra == 'tau3'", editable = "sdk/python" },
     { name = "flask", specifier = ">=3.0.0" },
     { name = "openai", marker = "extra == 'tau3'" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "tau2", marker = "extra == 'tau3'", git = "https://github.com/sierra-research/tau2-bench.git?rev=73dc24445d28762075e69465d966aee4a9dcbfcb" },
 ]
-provides-extras = ["tau3"]
+provides-extras = ["sdk", "tau3"]
+
+[[package]]
+name = "evo-sdk"
+version = "0.1.0"
+source = { editable = "sdk/python" }
 
 [[package]]
 name = "fastapi"
