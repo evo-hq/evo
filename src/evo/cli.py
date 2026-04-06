@@ -200,10 +200,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     benchmark_cmd = fill_command_template(config["benchmark"], target=target, worktree=worktree)
     env = os.environ.copy()
     env["EVO_TRACES_DIR"] = str(traces_dir)
+    env["EVO_WORKTREE"] = str(worktree)
 
     try:
         try:
-            bench = _run_command(benchmark_cmd, cwd=worktree, env=env, stdout_path=benchmark_log, stderr_path=benchmark_err, timeout=args.timeout)
+            bench = _run_command(benchmark_cmd, cwd=root, env=env, stdout_path=benchmark_log, stderr_path=benchmark_err, timeout=args.timeout)
         except subprocess.TimeoutExpired:
             raise RuntimeError("benchmark_timeout")
 
@@ -229,7 +230,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             gate_cmd = fill_command_template(g["command"], target=target, worktree=worktree)
             gate_log_file = experiment_log_path(root, args.exp_id, f"gate_{g['name']}.log")
             try:
-                gate_result = _run_command(gate_cmd, cwd=worktree, env=env, stdout_path=gate_log_file, stderr_path=gate_log_file, timeout=args.timeout)
+                gate_result = _run_command(gate_cmd, cwd=root, env=env, stdout_path=gate_log_file, stderr_path=gate_log_file, timeout=args.timeout)
             except subprocess.TimeoutExpired:
                 raise RuntimeError(f"gate_timeout:{g['name']}")
             if gate_result.returncode != 0:
