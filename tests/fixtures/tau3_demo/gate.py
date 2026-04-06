@@ -6,7 +6,7 @@ regressed on critical behavior. Exits 0 if all gate tasks pass, 1 otherwise.
 Environment variables:
     TAU3_DOMAIN       tau-bench domain (default: retail)
     AGENT_MODEL       LLM model for the agent (default: gpt-5.4)
-    TAU3_GATE_TASKS   comma-separated task IDs to gate on (default: 0,1)
+    TAU3_GATE_TASKS   comma-separated task IDs to gate on (default: 5,9) -- must be from test split
     TAU3_CONCURRENCY  max concurrent tasks (default: 3)
 """
 
@@ -42,8 +42,8 @@ def main() -> None:
 
     domain = os.environ.get("TAU3_DOMAIN", "retail")
     model = os.environ.get("AGENT_MODEL", "gpt-5.4")
-    gate_tasks = os.environ.get("TAU3_GATE_TASKS", "0,1").split(",")
-    concurrency = int(os.environ.get("TAU3_CONCURRENCY", "3"))
+    gate_tasks = os.environ.get("TAU3_GATE_TASKS", "5,9").split(",")
+    concurrency = int(os.environ.get("TAU3_CONCURRENCY", "10"))
 
     def create_agent(tools, domain_policy, **kwargs):
         return AgentClass(
@@ -66,7 +66,13 @@ def main() -> None:
         seed=300,
     )
 
-    results = run_domain(config)
+    # tau-bench prints rich tables to stdout; redirect to stderr
+    real_stdout = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        results = run_domain(config)
+    finally:
+        sys.stdout = real_stdout
 
     passed = 0
     total = len(results.simulations)
