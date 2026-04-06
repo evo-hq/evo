@@ -143,6 +143,7 @@ def default_graph() -> dict[str, Any]:
                 "worktree": None,
                 "commit": None,
                 "pruned_reason": None,
+                "gates": [],
             }
         },
     }
@@ -340,6 +341,7 @@ def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str
             "pruned_reason": None,
             "benchmark_result": None,
             "gate_result": None,
+            "gates": [],
         }
         nodes[exp_id] = node
         nodes[parent_id].setdefault("children", []).append(exp_id)
@@ -533,6 +535,8 @@ def ascii_tree(graph: dict[str, Any], metric: str) -> str:
             parts.append(f"epoch={node['eval_epoch']}")
         if node.get("pruned_reason"):
             parts.append("pruned")
+        if node.get("gates"):
+            parts.append(f"gates={len(node['gates'])}")
         if node.get("hypothesis") and node["id"] != "root":
             parts.append(node["hypothesis"])
         return " ".join(parts)
@@ -564,6 +568,47 @@ def update_node(root: Path, exp_id: str, mutator) -> dict[str, Any]:
         node["updated_at"] = utc_now()
         atomic_write_json(gpath, graph)
         return node
+
+
+def collect_gates_from_path(graph: dict[str, Any], node_id: str) -> list[dict[str, str]]:
+    """Walk from root to node_id, collecting all gates. Returns deduplicated list."""
+    chain = path_to_node(graph, node_id)
+    seen_names: set[str] = set()
+    gates: list[dict[str, str]] = []
+    for node in chain:
+        for gate in node.get("gates", []):
+            if gate["name"] not in seen_names:
+                seen_names.add(gate["name"])
+                gates.append(gate)
+    return gates
+
+
+def add_gate(root: Path, exp_id: str, name: str, command: str) -> dict[str, str]:
+    """Add a named gate to a node. Returns the gate entry."""
+    gate_entry = {"name": name, "command": command, "added_at": utc_now()}
+
+    def _add(current_node: dict, _graph: dict) -> None:
+        existing = current_node.setdefault("gates", [])
+        for g in existing:
+            if g["name"] == name:
+                raise ValueError(f"gate '{name}' already exists on {exp_id}")
+        existing.append(gate_entry)
+
+    update_node(root, exp_id, _add)
+    return gate_entry
+
+
+def remove_gate(root: Path, exp_id: str, name: str) -> None:
+    """Remove a gate from a node by name."""
+
+    def _remove(current_node: dict, _graph: dict) -> None:
+        existing = current_node.get("gates", [])
+        updated = [g for g in existing if g["name"] != name]
+        if len(updated) == len(existing):
+            raise ValueError(f"gate '{name}' not found on {exp_id}")
+        current_node["gates"] = updated
+
+    update_node(root, exp_id, _remove)
 
 
 def mark_comparison_blocked(root: Path, blocked: bool) -> dict[str, Any]:

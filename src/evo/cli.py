@@ -10,11 +10,13 @@ import sys
 from pathlib import Path
 
 from .core import (
+    add_gate,
     append_annotation,
     append_infra_event,
     append_note,
     ascii_tree,
     atomic_write_json,
+    collect_gates_from_path,
     compare_scores,
     config_path,
     current_branch,
@@ -38,6 +40,7 @@ from .core import (
     path_to_node,
     project_path,
     relative_target,
+    remove_gate,
     repo_root,
     reset_runtime_state,
     save_config,
@@ -214,13 +217,27 @@ def cmd_run(args: argparse.Namespace) -> int:
         experiment_log_path(root, args.exp_id, "diff.patch").write_text(diff_text, encoding="utf-8")
 
         gate_passed = True
+        gate_failures: list[str] = []
+
+        # Collect inherited gates from the tree path (root -> parent)
+        inherited_gates = collect_gates_from_path(graph, node["parent"])
+        # Also include the legacy --gate from config as an implicit gate
         if config.get("gate"):
-            gate_cmd = fill_command_template(config["gate"], target=target, worktree=worktree)
+            inherited_gates.insert(0, {"name": "_init_gate", "command": config["gate"]})
+
+        for g in inherited_gates:
+            gate_cmd = fill_command_template(g["command"], target=target, worktree=worktree)
+            gate_log_file = experiment_log_path(root, args.exp_id, f"gate_{g['name']}.log")
             try:
-                gate = _run_command(gate_cmd, cwd=worktree, env=env, stdout_path=gate_log, stderr_path=gate_log, timeout=args.timeout)
+                gate_result = _run_command(gate_cmd, cwd=worktree, env=env, stdout_path=gate_log_file, stderr_path=gate_log_file, timeout=args.timeout)
             except subprocess.TimeoutExpired:
-                raise RuntimeError("gate_timeout")
-            gate_passed = gate.returncode == 0
+                raise RuntimeError(f"gate_timeout:{g['name']}")
+            if gate_result.returncode != 0:
+                gate_failures.append(g["name"])
+                gate_passed = False
+
+        if gate_failures:
+            print(f"GATE_FAILED {' '.join(gate_failures)}")
 
         keep = compare_scores(metric, score, parent_score) and gate_passed
         if keep:
@@ -232,6 +249,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 current_node["commit"] = commit
                 current_node["benchmark_result"] = parsed
                 current_node["gate_result"] = gate_passed
+                current_node["gate_failures"] = gate_failures
 
             update_node(root, args.exp_id, _mark_committed)
             if config.get("comparison_blocked") and node["parent"] == "root":
@@ -247,6 +265,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             current_node["score"] = score
             current_node["benchmark_result"] = parsed
             current_node["gate_result"] = gate_passed
+            current_node["gate_failures"] = gate_failures
 
         update_node(root, args.exp_id, _mark_discarded)
         _finalize_result(root, args.exp_id, node, score, "discarded")
@@ -558,6 +577,42 @@ def cmd_infra(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gate(args: argparse.Namespace) -> int:
+    root = repo_root()
+    _config, graph = _require_workspace(root)
+
+    if args.gate_action == "add":
+        entry = add_gate(root, args.exp_id, args.name, args.command)
+        write_scratchpad(root)
+        print(json.dumps(entry, indent=2))
+        return 0
+
+    if args.gate_action == "remove":
+        remove_gate(root, args.exp_id, args.name)
+        write_scratchpad(root)
+        print(f"Removed gate '{args.name}' from {args.exp_id}")
+        return 0
+
+    if args.gate_action == "list":
+        gates = collect_gates_from_path(graph, args.exp_id)
+        # Annotate each gate with the node it came from
+        node_gates_map: dict[str, str] = {}
+        for node in path_to_node(graph, args.exp_id):
+            for g in node.get("gates", []):
+                node_gates_map[g["name"]] = node["id"]
+        output = []
+        for g in gates:
+            output.append({
+                "name": g["name"],
+                "command": g["command"],
+                "from": node_gates_map.get(g["name"], "unknown"),
+            })
+        print(json.dumps(output, indent=2))
+        return 0
+
+    return 1
+
+
 def cmd_dashboard(args: argparse.Namespace) -> int:
     from .dashboard import create_app
 
@@ -669,6 +724,24 @@ def build_parser() -> argparse.ArgumentParser:
     infra_p.add_argument("-m", "--message", required=True)
     infra_p.add_argument("--breaking", action="store_true")
     infra_p.set_defaults(func=cmd_infra)
+
+    gate_p = sub.add_parser("gate")
+    gate_sub = gate_p.add_subparsers(dest="gate_action", required=True)
+
+    gate_add_p = gate_sub.add_parser("add")
+    gate_add_p.add_argument("exp_id")
+    gate_add_p.add_argument("--name", required=True)
+    gate_add_p.add_argument("--command", required=True)
+    gate_add_p.set_defaults(func=cmd_gate)
+
+    gate_list_p = gate_sub.add_parser("list")
+    gate_list_p.add_argument("exp_id")
+    gate_list_p.set_defaults(func=cmd_gate)
+
+    gate_remove_p = gate_sub.add_parser("remove")
+    gate_remove_p.add_argument("exp_id")
+    gate_remove_p.add_argument("--name", required=True)
+    gate_remove_p.set_defaults(func=cmd_gate)
 
     dashboard_p = sub.add_parser("dashboard")
     dashboard_p.add_argument("--port", type=int, default=8080)

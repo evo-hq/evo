@@ -19,7 +19,7 @@ an isolated copy of the codebase where you make your changes.
 ## Useful Commands
 
 ```bash
-uv run evo scratchpad          # full state summary (tree, best path, frontier, annotations, diffs)
+uv run evo scratchpad          # full state summary (tree, best path, frontier, annotations, diffs, gates)
 uv run evo status              # one-line: metric, best score, experiment counts
 uv run evo traces <id> <task>  # per-task trace detail
 uv run evo path <id>           # root-to-node chain with scores
@@ -27,6 +27,8 @@ uv run evo diff <id>           # diff vs parent
 uv run evo diff <id> <other>   # diff between any two experiments
 uv run evo annotations         # all annotations (filterable with --task/--exp)
 uv run evo get <id>            # full experiment detail
+uv run evo gate list <id>      # effective gates for a node (inherited from ancestors)
+uv run evo gate add <id> --name <name> --command "<command>"  # add a gate
 ```
 
 ## First Steps
@@ -98,6 +100,23 @@ uv run evo annotate <exp_id> "<what you changed, what happened, and why>"
 ```
 
 Always annotate so other agents can learn from your experiments.
+
+### 6b. Add gates for fixed behaviors
+
+When you fix a critical behavior (e.g., the agent now correctly denies social engineering, or a previously-failing task now passes reliably), **lock it in as a gate** so future experiments on this branch can't regress it:
+
+```bash
+uv run evo gate add <exp_id> --name "social_eng_resistance" --command "python benchmark.py --agent {target} --task-ids 3"
+```
+
+Gates are commands that must exit 0. They inherit down the tree -- all children of this node will be required to pass this gate. Only add gates for behaviors that are **non-negotiable** -- things that must never break regardless of what future experiments try.
+
+Good candidates for gates:
+- A specific benchmark task that was hard to fix and is easy to regress
+- A test that validates a critical policy rule
+- A smoke test for a behavior you discovered is fragile
+
+Do NOT gate every passing task -- that over-constrains the search. Gate only the critical ones.
 
 ### 7. Decide: continue or stop
 

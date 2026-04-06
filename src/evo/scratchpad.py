@@ -8,6 +8,7 @@ from .core import (
     ascii_tree,
     best_committed_node,
     best_committed_score,
+    collect_gates_from_path,
     experiments_path,
     frontier_nodes,
     graph_path,
@@ -137,6 +138,22 @@ def build_scratchpad(root: Path) -> str:
             lines.append(f"- `{node['id']}` score=`{node.get('score')}` epoch=`{node.get('eval_epoch')}` {node.get('hypothesis','')}")
     else:
         lines.append("- No frontier nodes yet.")
+
+    # Gates
+    # Show gates from root (always active) + any unique gates on frontier nodes
+    root_gates = graph["nodes"].get("root", {}).get("gates", [])
+    if root_gates or any(n.get("gates") for n in frontier):
+        lines.extend(["", "## Gates"])
+        if root_gates:
+            for g in root_gates:
+                lines.append(f"- `{g['name']}` (root): `{_truncate(g['command'], 120)}`")
+        seen_names = {g["name"] for g in root_gates}
+        for node in frontier[:10]:
+            effective = collect_gates_from_path(graph, node["id"])
+            for g in effective:
+                if g["name"] not in seen_names:
+                    seen_names.add(g["name"])
+                    lines.append(f"- `{g['name']}` (from tree): `{_truncate(g['command'], 120)}`")
 
     # Recent experiments
     lines.extend(["", "## Recent Experiments"])

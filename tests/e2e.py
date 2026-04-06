@@ -207,6 +207,125 @@ def test_stale_branch_recovery(root: Path) -> None:
     assert (root / ".evo" / "worktrees" / "exp_0000").exists()
 
 
+def test_gate_flow(root: Path) -> None:
+    """Test gate add/list/remove and gate blocking during run."""
+    # Set up a multi-task benchmark that reports per-task scores
+    write(
+        root / "agent.py",
+        'STATE = "baseline"\n',
+    )
+    write(
+        root / "eval.py",
+        """from __future__ import annotations
+import argparse
+import json
+import os
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--agent", required=True)
+args = parser.parse_args()
+content = Path(args.agent).read_text(encoding="utf-8")
+score = 1.0 if "GOOD" in content else 0.5
+traces_dir = os.environ.get("EVO_TRACES_DIR")
+if traces_dir:
+    Path(traces_dir).mkdir(parents=True, exist_ok=True)
+print(json.dumps({"score": score, "tasks": {"0": score, "1": score}}))
+""",
+    )
+    # Gate that checks a specific behavior is preserved
+    write(
+        root / "gate_refund.py",
+        """from __future__ import annotations
+import argparse
+from pathlib import Path
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--agent", required=True)
+args = parser.parse_args()
+content = Path(args.agent).read_text(encoding="utf-8")
+# Fails if agent contains BREAK_REFUND
+sys.exit(1 if "BREAK_REFUND" in content else 0)
+""",
+    )
+    write(
+        root / "gate_cancel.py",
+        """from __future__ import annotations
+import argparse
+from pathlib import Path
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--agent", required=True)
+args = parser.parse_args()
+content = Path(args.agent).read_text(encoding="utf-8")
+# Fails if agent contains BREAK_CANCEL
+sys.exit(1 if "BREAK_CANCEL" in content else 0)
+""",
+    )
+    run(["git", "add", "."], cwd=root)
+    run(["git", "commit", "-m", "fixture: gates"], cwd=root)
+
+    # Init workspace
+    evo(["init", "--target", "agent.py", "--benchmark", "python eval.py --agent {target}", "--metric", "max"], cwd=root)
+
+    # Add a gate on root
+    evo(["gate", "add", "root", "--name", "refund_flow", "--command", "python gate_refund.py --agent {target}"], cwd=root)
+
+    # List gates on root
+    gate_list = json.loads(evo(["gate", "list", "root"], cwd=root).stdout)
+    assert len(gate_list) == 1
+    assert gate_list[0]["name"] == "refund_flow"
+    assert gate_list[0]["from"] == "root"
+
+    # Baseline -- should pass (no BREAK_REFUND)
+    evo(["new", "--parent", "root", "-m", "baseline"], cwd=root)
+    baseline = evo(["run", "exp_0000"], cwd=root)
+    assert "COMMITTED exp_0000" in baseline.stdout
+
+    # Add another gate on exp_0000 (child inherits root gate + this one)
+    evo(["gate", "add", "exp_0000", "--name", "cancel_flow", "--command", "python gate_cancel.py --agent {target}"], cwd=root)
+
+    # List effective gates on exp_0000 -- should see both
+    gate_list = json.loads(evo(["gate", "list", "exp_0000"], cwd=root).stdout)
+    assert len(gate_list) == 2
+    names = {g["name"] for g in gate_list}
+    assert names == {"refund_flow", "cancel_flow"}
+
+    # Experiment that improves score but breaks the refund gate
+    evo(["new", "--parent", "exp_0000", "-m", "break refund"], cwd=root)
+    write(root / ".evo" / "worktrees" / "exp_0001" / "agent.py", 'STATE = "GOOD BREAK_REFUND"\n')
+    result = evo(["run", "exp_0001"], cwd=root)
+    assert "GATE_FAILED" in result.stdout
+    assert "DISCARDED exp_0001" in result.stdout
+
+    # Experiment that improves score but breaks the cancel gate (inherited from exp_0000)
+    evo(["new", "--parent", "exp_0000", "-m", "break cancel"], cwd=root)
+    write(root / ".evo" / "worktrees" / "exp_0002" / "agent.py", 'STATE = "GOOD BREAK_CANCEL"\n')
+    result = evo(["run", "exp_0002"], cwd=root)
+    assert "GATE_FAILED" in result.stdout
+    assert "DISCARDED exp_0002" in result.stdout
+
+    # Experiment that passes all gates
+    evo(["new", "--parent", "exp_0000", "-m", "clean improvement"], cwd=root)
+    write(root / ".evo" / "worktrees" / "exp_0003" / "agent.py", 'STATE = "GOOD"\n')
+    result = evo(["run", "exp_0003"], cwd=root)
+    assert "COMMITTED exp_0003" in result.stdout
+    assert "GATE_FAILED" not in result.stdout
+
+    # Remove a gate and verify
+    evo(["gate", "remove", "exp_0000", "--name", "cancel_flow"], cwd=root)
+    gate_list = json.loads(evo(["gate", "list", "exp_0000"], cwd=root).stdout)
+    assert len(gate_list) == 1
+    assert gate_list[0]["name"] == "refund_flow"
+
+    # Verify gate_failures stored on discarded node
+    graph = load_graph(root)
+    assert "refund_flow" in graph["nodes"]["exp_0001"].get("gate_failures", [])
+    assert "cancel_flow" in graph["nodes"]["exp_0002"].get("gate_failures", [])
+
+
 def main() -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="evo-e2e-"))
     try:
@@ -227,6 +346,11 @@ def main() -> None:
         init_repo(stale_repo)
         setup_max_repo(stale_repo)
         test_stale_branch_recovery(stale_repo)
+
+        gate_repo = temp_root / "gate-repo"
+        gate_repo.mkdir()
+        init_repo(gate_repo)
+        test_gate_flow(gate_repo)
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 

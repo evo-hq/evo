@@ -52,13 +52,14 @@ Repeat until interrupted or stall limit reached:
 ### 1. Read current state
 
 ```bash
-uv run evo scratchpad          # full state: tree, best path, frontier, annotations, diffs, what-not-to-try
+uv run evo scratchpad          # full state: tree, best path, frontier, annotations, diffs, gates, what-not-to-try
 uv run evo frontier            # explorable nodes (JSON)
 uv run evo status              # one-line summary
 uv run evo annotations         # all annotations (filterable with --task/--exp)
 uv run evo path <id>           # root-to-node chain with scores
 uv run evo diff <id>           # diff vs parent
 uv run evo diff <id> <other>   # diff between any two experiments
+uv run evo gate list <id>      # effective gates for a node (inherited from ancestors)
 ```
 
 On the first iteration, also read `.evo/project.md` to understand the optimization surface.
@@ -70,6 +71,7 @@ From the scratchpad, frontier, traces, and annotations, determine:
 - What failure patterns are most common and impactful
 - What strategies have been tried and their outcomes
 - Which branches are plateauing or exhausted
+- What gates exist on each frontier node (`evo gate list <id>`) -- remind subagents of constraints they must satisfy
 
 Formulate N directions (one per subagent). Each direction should include:
 - A **focus area** (e.g., "tool-use accuracy", "multi-step reasoning", "context management")
@@ -99,6 +101,8 @@ After all subagents complete:
 - Record the round's best score and compare to the previous best
 - If no subagent improved the score, increment the stall counter
 - If any improved, reset the stall counter
+- Check if subagents added new gates -- note these in your state tracking
+- If multiple experiments failed the same gate, consider whether the gate is too restrictive or the direction is wrong
 - Prune dead branches where 3+ children all regressed:
   ```bash
   uv run evo prune <exp_id> --reason "exhausted: N children all regressed"
