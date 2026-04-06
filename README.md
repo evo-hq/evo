@@ -4,32 +4,31 @@
 
 # evo
 
-A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that optimizes code through experiments. You give it a codebase. It finds what to optimize, sets up the evaluation, and starts running experiments in a loop -- trying things, keeping what improves the score, throwing away what doesn't.
+A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that optimizes code through experiments. You give it a codebase. It discovers metrics to optimize, sets up the evaluation, and starts running experiments in a loop -- trying things, keeping what improves the score, throwing away what doesn't.
 
 Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) -- where an LLM runs training experiments autonomously to beat its own best score. Autoresearch is a pure hill climb: try something, keep or revert, repeat on a single branch. Evo adds structure on top of that idea:
 
 - **Tree search over greedy hill climb.** Multiple directions can fork from any committed node, so exploration doesn't collapse to one path.
-- **Parallel semi-autonomous agents.** Up to 5 subagents (configurable) run simultaneously, each in its own git worktree. Each subagent reads traces, formulates hypotheses, and can run multiple iterations within its branch -- they're not just dumb workers executing orders.
-- **Two-layer intelligence.** The orchestrator analyzes cross-cutting failure patterns and assigns strategic directions with specific ideas. Subagents do focused analysis within their direction and decide their own tactical moves.
+- **Parallel semi-autonomous agents.** spawn multiple subagents and run them simultaneously, each in its own git worktree. Each subagent reads traces, formulates hypotheses, and can run multiple iterations within its branch.
 - **Shared state.** Failure traces, annotations, and discarded hypotheses are accessible to every agent before it decides what to try next.
 - **Gating.** Regression tests or safety checks can be wired up as a gate. Experiments that don't pass get discarded.
-- **Observability.** A local dashboard serves the experiment tree, score history, diffs, and per-task traces.
+- **Observability.** A dashboard to monitor your experiments.
 - **Benchmark discovery.** `/discover` explores the repo, figures out what to measure, and instruments the evaluation.
 
-## How it works
+## Usage
 
 ```
-you: /discover
+you: /evo:discover
 evo: explores repo, instruments benchmark, runs baseline
 
-you: /optimize
+you: /evo:optimize
 evo: spawns 5 subagents in parallel, each exploring a different direction
      each subagent can run up to 5 iterations within its branch
      orchestrator collects results, prunes dead branches, adjusts strategy
      repeats until interrupted or stalled
 ```
 
-Under the hood, each experiment gets its own git worktree branching from its parent. If the score improves and the gate passes, the experiment is committed. Otherwise it's discarded and the worktree is cleaned up. The full history lives in `.evo/` as plain JSON files.
+Under the hood, each experiment gets its own git worktree branching from its parent. If the score improves and the gate passes, the experiment is committed. Otherwise it's discarded and the worktree is cleaned up.
 
 ### Architecture
 
@@ -72,7 +71,11 @@ Two slash commands in Claude Code:
 | `budget` | 5 | Max iterations each subagent can run within its branch |
 | `stall` | 5 | Consecutive rounds with no improvement before auto-stopping |
 
-Example: `/optimize subagents=3 budget=10 stall=3`
+Example: `/evo:optimize subagents=3 budget=10 stall=3`
+
+## TODO
+
+- [ ] Distributed evaluation via [Harbor](https://github.com/harbor-framework/harbor) -- run benchmarks in containers instead of locally, use Harbor's cloud providers to parallelize.
 
 ## Requirements
 
