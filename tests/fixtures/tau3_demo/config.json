@@ -1,0 +1,10 @@
+{
+  "agent_model": "openrouter/deepseek/deepseek-v3.2",
+  "user_model": "openrouter/deepseek/deepseek-v3.2",
+  "domain": "retail",
+  "benchmark_split": "train",
+  "gate_split": "test",
+  "gate_tasks": "5,9",
+  "concurrency": 10,
+  "seed": 300
+}

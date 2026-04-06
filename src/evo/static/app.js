@@ -53,6 +53,25 @@ function pct(a, b) {
   return Math.round((a / b) * 100) + '%';
 }
 
+function formatDuration(startIso, endIso) {
+  if (!startIso || !endIso) return '';
+  const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+  if (ms < 0) return '';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  if (m < 60) return m + 'm ' + rs + 's';
+  const h = Math.floor(m / 60);
+  return h + 'h ' + (m % 60) + 'm';
+}
+
+function formatTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
 function scoreDelta(node) {
   if (node.score == null) return '';
   const parent = state.graph.nodes[node.parent];
@@ -582,17 +601,29 @@ async function openDrawer(expId) {
       const traceKey = `task_${tid}.json`;
       const trace = traces[traceKey];
       const summary = trace?.summary || '';
+      const duration = formatDuration(trace?.started_at, trace?.ended_at);
 
       tasksHtml += `<div class="task-row" onclick="toggleTask(this, '${expId}', '${tid}')">
         <span class="task-dot" style="background:${color}"></span>
         <span class="task-id">task ${tid}</span>
         <span class="task-summary">${summary}</span>
+        ${duration ? `<span class="task-duration">${duration}</span>` : ''}
         <span class="task-score" style="color:${color}">${score.toFixed(1)}</span>
       </div>`;
 
       // Trace detail (hidden by default, toggled by click)
       if (trace) {
         let traceHtml = '<div class="trace-detail hidden" data-task="' + tid + '">';
+        if (trace.started_at || trace.ended_at) {
+          const start = formatTime(trace.started_at);
+          const end = formatTime(trace.ended_at);
+          const dur = formatDuration(trace.started_at, trace.ended_at);
+          traceHtml += `<div class="trace-timestamps">`;
+          if (start) traceHtml += `<span>Started: ${start}</span>`;
+          if (end) traceHtml += `<span>Ended: ${end}</span>`;
+          if (dur) traceHtml += `<span>Duration: ${dur}</span>`;
+          traceHtml += `</div>`;
+        }
         if (trace.failure_reason) {
           traceHtml += `<div class="failure-box">
             <span class="failure-box-title">Failure: ${trace.failure_reason}</span>

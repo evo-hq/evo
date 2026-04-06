@@ -53,6 +53,7 @@ class Run:
             experiment_id=self._experiment_id,
         )
         self._tasks: dict[str, float] = {}
+        self._task_started: dict[str, str] = {}
         self._logs: dict[str, list[Any]] = {}
         self._lock = threading.Lock()
         self._started_at = _utc_now()
@@ -63,10 +64,14 @@ class Run:
 
         *data* can be anything -- a string, a dict, a number. The SDK
         doesn't interpret it; it's stored as-is in the trace's ``log``
-        array.
+        array.  The first ``log()`` call for a task records its start
+        time (used as ``started_at`` in the trace if not overridden).
         """
         task_id = str(task_id)
+        now = _utc_now()
         with self._lock:
+            if task_id not in self._task_started:
+                self._task_started[task_id] = now
             self._logs.setdefault(task_id, []).append(data)
 
     def report(
@@ -86,10 +91,17 @@ class Run:
     ) -> None:
         """Record the eval result for a task and write its trace.
 
+        Timestamps are filled automatically when not provided:
+
+        - ``ended_at`` defaults to *now*.
+        - ``started_at`` defaults to the time of the first ``log()``
+          call for this task, or the Run's creation time.
+
         This flushes any accumulated ``log()`` entries for this task into
         the trace file alongside the eval fields.
         """
         task_id = str(task_id)
+        now = _utc_now()
         if status is None:
             status = "passed" if score >= pass_threshold else "failed"
 
@@ -105,10 +117,11 @@ class Run:
             trace["failure_reason"] = failure_reason
         if cost is not None:
             trace["cost"] = cost
-        if started_at is not None:
-            trace["started_at"] = started_at
-        if ended_at is not None:
-            trace["ended_at"] = ended_at
+
+        # Auto-fill timestamps
+        trace["started_at"] = started_at or self._task_started.get(task_id, self._started_at)
+        trace["ended_at"] = ended_at or now
+
         if artifacts is not None:
             trace["artifacts"] = artifacts
         if extra:
@@ -140,6 +153,8 @@ class Run:
         result: dict[str, Any] = {
             "score": round(score, 4),
             "tasks": dict(self._tasks),
+            "started_at": self._started_at,
+            "ended_at": _utc_now(),
         }
         self._backend.emit_result(result)
         return result

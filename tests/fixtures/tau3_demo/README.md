@@ -12,7 +12,7 @@ optimizing an LLM agent on customer-service tasks (retail domain).
 
 2. Set environment variables:
    ```bash
-   export OPENAI_API_KEY=sk-...
+   export OPENROUTER_API_KEY=sk-or-...
    export TAU2_DATA_DIR=~/.cache/tau2   # where tau-bench task data lives
    ```
 
@@ -40,25 +40,29 @@ optimizing an LLM agent on customer-service tasks (retail domain).
    uv run evo run exp_0000
    ```
 
-## Defaults (matching auto-harness)
+## Configuration
 
-| Setting          | Value     |
-|------------------|-----------|
-| Domain           | retail    |
-| Agent model      | gpt-5.4   |
-| Benchmark split  | train     |
-| Gate split       | test      |
-| Concurrency      | 3         |
-| Gate tasks       | 0,1       |
-| Seed             | 300       |
+All defaults live in `config.json`. Environment variables override config values.
+
+| Setting          | Config key         | Default                           |
+|------------------|--------------------|-----------------------------------|
+| Domain           | `domain`           | retail                            |
+| Agent model      | `agent_model`      | openrouter/deepseek/deepseek-v3.2 |
+| User sim model   | `user_model`       | openrouter/deepseek/deepseek-v3.2 |
+| Benchmark split  | `benchmark_split`  | train                             |
+| Gate split       | `gate_split`       | test                              |
+| Concurrency      | `concurrency`      | 10                                |
+| Gate tasks       | `gate_tasks`       | 5,9                               |
+| Seed             | `seed`             | 300                               |
 
 ## Environment overrides
 
-| Variable             | Default  | Description                        |
-|----------------------|----------|------------------------------------|
-| `AGENT_MODEL`        | gpt-5.4  | LLM model for the agent            |
-| `TAU3_DOMAIN`        | retail   | tau-bench domain                   |
-| `TAU3_SPLIT`         | train    | split for benchmark.py             |
-| `TAU3_CONCURRENCY`   | 3        | parallel task evaluations           |
-| `TAU3_GATE_TASKS`    | 0,1      | comma-separated task IDs for gate  |
-| `AGENT_REASONING_EFFORT` | (none) | reasoning effort param for model |
+| Variable                  | Overrides config key | Description                       |
+|---------------------------|----------------------|-----------------------------------|
+| `AGENT_MODEL`             | `agent_model`        | LLM model for the agent           |
+| `TAU3_USER_MODEL`         | `user_model`         | LLM model for user simulator      |
+| `TAU3_DOMAIN`             | `domain`             | tau-bench domain                  |
+| `TAU3_SPLIT`              | `benchmark_split`    | split for benchmark.py            |
+| `TAU3_CONCURRENCY`        | `concurrency`        | parallel task evaluations         |
+| `TAU3_GATE_TASKS`         | `gate_tasks`         | comma-separated task IDs for gate |
+| `AGENT_REASONING_EFFORT`  | --                   | reasoning effort param for model  |

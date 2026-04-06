@@ -9,7 +9,9 @@ construction, and any pre/post-processing of conversation turns.
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Optional, cast
 
 from tau2.agent.base_agent import HalfDuplexAgent, ValidAgentInputMessage, is_valid_agent_history_message
@@ -22,7 +24,8 @@ from tau2.data_model.message import (
 )
 from tau2.utils.llm_utils import generate
 
-AGENT_MODEL: str = os.environ.get("AGENT_MODEL", "gpt-5.4")
+_CONFIG = json.loads((Path(__file__).resolve().parent.parent / "config.json").read_text(encoding="utf-8"))
+AGENT_MODEL: str = os.environ.get("AGENT_MODEL", _CONFIG["agent_model"])
 AGENT_REASONING_EFFORT: str = os.environ.get("AGENT_REASONING_EFFORT", "")
 
 SYSTEM_PROMPT = """\

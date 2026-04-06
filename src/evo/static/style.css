@@ -443,12 +443,27 @@ body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
 }
+.task-duration {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-4);
+  margin-right: 8px;
+}
 
 /* Trace detail (expanded task) */
 .trace-detail {
   padding: 10px 0 10px 16px;
   border-left: 2px solid var(--border);
   margin: 4px 0 8px 2px;
+}
+.trace-timestamps {
+  display: flex;
+  gap: 16px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-4);
+  margin-bottom: 10px;
+  padding: 4px 0;
 }
 .trace-msg {
   margin-bottom: 10px;

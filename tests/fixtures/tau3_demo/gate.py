@@ -3,20 +3,32 @@
 Runs a small set of tasks on the test split to ensure the agent hasn't
 regressed on critical behavior. Exits 0 if all gate tasks pass, 1 otherwise.
 
-Environment variables:
-    TAU3_DOMAIN       tau-bench domain (default: retail)
-    AGENT_MODEL       LLM model for the agent (default: gpt-5.4)
-    TAU3_GATE_TASKS   comma-separated task IDs to gate on (default: 5,9) -- must be from test split
-    TAU3_CONCURRENCY  max concurrent tasks (default: 3)
+Uses evo-sdk's Gate class for pass/fail reporting and exit code handling.
+
+Configuration is loaded from config.json (co-located with this script),
+with environment variables as overrides.
+
+Environment overrides:
+    TAU3_DOMAIN       tau-bench domain
+    AGENT_MODEL       LLM model for the agent
+    TAU3_USER_MODEL   LLM model for the user simulator (defaults to AGENT_MODEL)
+    TAU3_GATE_TASKS   comma-separated task IDs to gate on -- must be from test split
+    TAU3_CONCURRENCY  max concurrent tasks
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
+
+from evo_sdk import Gate
+
+_HERE = Path(__file__).resolve().parent
+_CONFIG = json.loads((_HERE / "config.json").read_text(encoding="utf-8"))
 
 
 def load_agent_class(agent_path: str):
@@ -40,10 +52,12 @@ def main() -> None:
 
     AgentClass = load_agent_class(args.agent)
 
-    domain = os.environ.get("TAU3_DOMAIN", "retail")
-    model = os.environ.get("AGENT_MODEL", "gpt-5.4")
-    gate_tasks = os.environ.get("TAU3_GATE_TASKS", "5,9").split(",")
-    concurrency = int(os.environ.get("TAU3_CONCURRENCY", "10"))
+    domain = os.environ.get("TAU3_DOMAIN", _CONFIG["domain"])
+    model = os.environ.get("AGENT_MODEL", _CONFIG["agent_model"])
+    user_model = os.environ.get("TAU3_USER_MODEL", _CONFIG.get("user_model", model))
+    gate_tasks = os.environ.get("TAU3_GATE_TASKS", _CONFIG["gate_tasks"]).split(",")
+    concurrency = int(os.environ.get("TAU3_CONCURRENCY", _CONFIG["concurrency"]))
+    seed = _CONFIG.get("seed", 300)
 
     def create_agent(tools, domain_policy, **kwargs):
         return AgentClass(
@@ -60,13 +74,14 @@ def main() -> None:
         domain=domain,
         agent="tau3_gate_agent",
         llm_agent=model,
-        task_split_name="test",
+        llm_user=user_model,
+        task_split_name=_CONFIG.get("gate_split", "test"),
         task_ids=gate_tasks,
         max_concurrency=concurrency,
-        seed=300,
+        seed=seed,
     )
 
-    # tau-bench prints rich tables to stdout; redirect to stderr
+    # tau-bench prints rich tables to stdout; redirect to stderr.
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
     try:
@@ -74,17 +89,10 @@ def main() -> None:
     finally:
         sys.stdout = real_stdout
 
-    passed = 0
-    total = len(results.simulations)
-    for sim in results.simulations:
-        reward = float(sim.reward_info.reward) if sim.reward_info else 0.0
-        status = "PASS" if reward >= 0.5 else "FAIL"
-        print(f"  {status}  task {sim.task_id}: {reward:.2f}")
-        if reward >= 0.5:
-            passed += 1
-
-    print(f"\n[gate] {passed}/{total} passed")
-    sys.exit(0 if passed == total else 1)
+    with Gate() as gate:
+        for sim in results.simulations:
+            reward = float(sim.reward_info.reward) if sim.reward_info else 0.0
+            gate.check(str(sim.task_id), score=reward)
 
 
 if __name__ == "__main__":
