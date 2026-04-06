@@ -8,6 +8,9 @@ const state = {
   expandedTasks: new Set(),
   chart: null,
   refreshTimer: null,
+  // Preserve zoom/pan across re-renders
+  chartZoom: null,   // { x: {min,max}, y: {min,max} }
+  treeTransform: null, // d3.zoomTransform
 };
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -160,17 +163,24 @@ function renderChart() {
   }));
 
   const ctx = document.getElementById('score-chart');
-  if (state.chart) state.chart.destroy();
+  // Save zoom state before destroying
+  if (state.chart) {
+    const {x, y} = state.chart.scales;
+    if (x && y) {
+      state.chartZoom = { x: { min: x.min, max: x.max }, y: { min: y.min, max: y.max } };
+    }
+    state.chart.destroy();
+  }
 
   state.chart = new Chart(ctx, {
     type: 'scatter',
     data: {
       datasets: [
         {
-          label: 'Running best',
+          label: staircaseData.length > 1 ? 'Running best' : '',
           data: staircaseData,
           type: 'line',
-          borderColor: '#22c55e',
+          borderColor: staircaseData.length > 1 ? '#22c55e' : 'transparent',
           borderWidth: 2,
           pointRadius: 0,
           stepped: 'before',
@@ -187,7 +197,7 @@ function renderChart() {
         {
           label: 'Discarded',
           data: allData.filter(d => d.status === 'discarded'),
-          backgroundColor: '#3f3f46',
+          backgroundColor: '#52525b',
           pointRadius: 3.5,
           order: 1,
         },
@@ -205,18 +215,35 @@ function renderChart() {
       maintainAspectRatio: false,
       animation: false,
       plugins: {
+        zoom: {
+          pan: {
+            enabled: true,
+            mode: 'xy',
+          },
+          zoom: {
+            wheel: { enabled: true },
+            drag: {
+              enabled: true,
+              backgroundColor: 'rgba(59,130,246,0.08)',
+              borderColor: 'rgba(59,130,246,0.3)',
+              borderWidth: 1,
+              modifierKey: 'shift',
+            },
+            mode: 'xy',
+          },
+        },
         legend: {
           display: true,
           position: 'top',
           align: 'end',
           labels: {
-            color: '#3f3f46',
-            font: { size: 10 },
+            color: '#71717a',
+            font: { size: 11 },
             boxWidth: 8,
             boxHeight: 8,
             usePointStyle: true,
             pointStyle: 'circle',
-            padding: 12,
+            padding: 14,
           },
         },
         tooltip: {
@@ -237,19 +264,23 @@ function renderChart() {
       },
       scales: {
         x: {
-          title: { display: true, text: 'experiment #', color: '#27272a', font: { size: 10 } },
-          grid: { color: '#18181b' },
+          min: -0.5,
+          offset: true,
+          title: { display: true, text: 'experiment #', color: '#52525b', font: { size: 11 } },
+          grid: { color: '#1e1e22' },
           ticks: {
-            color: '#3f3f46',
-            font: { family: "'JetBrains Mono', monospace", size: 9 },
+            color: '#71717a',
+            font: { family: "'JetBrains Mono', monospace", size: 11 },
+            stepSize: 1,
+            callback: (v) => v >= 0 ? v : '',
           },
         },
         y: {
           title: { display: false },
-          grid: { color: '#18181b' },
+          grid: { color: '#1e1e22' },
           ticks: {
-            color: '#3f3f46',
-            font: { family: "'JetBrains Mono', monospace", size: 9 },
+            color: '#71717a',
+            font: { family: "'JetBrains Mono', monospace", size: 11 },
           },
         },
       },
@@ -261,12 +292,28 @@ function renderChart() {
       },
     },
   });
+
+  // Double-click canvas to reset zoom
+  ctx.ondblclick = () => {
+    if (state.chart) { state.chart.resetZoom(); state.chartZoom = null; }
+  };
+
+  // Restore zoom state from before re-render
+  if (state.chartZoom) {
+    state.chart.zoomScale('x', state.chartZoom.x, 'none');
+    state.chart.zoomScale('y', state.chartZoom.y, 'none');
+    state.chart.update('none');
+  }
 }
 
 // ─── Render: D3 Tree ─────────────────────────────────────
 function renderTree() {
   const container = document.getElementById('tree-container');
   const svg = d3.select('#tree-svg');
+
+  // Save current zoom transform before clearing
+  try { state.treeTransform = d3.zoomTransform(svg.node()); } catch(e) {}
+
   svg.selectAll('*').remove();
 
   const nodes = state.graph.nodes;
@@ -289,24 +336,56 @@ function renderTree() {
   const height = container.clientHeight;
   const margin = { top: 30, right: 20, bottom: 20, left: 20 };
 
-  const treeLayout = d3.tree()
-    .size([width - margin.left - margin.right, height - margin.top - margin.bottom]);
+  const treeLayout = d3.tree().nodeSize([40, 50]);
   treeLayout(root);
 
-  const g = svg.append('g')
-    .attr('transform', `translate(${margin.left},${margin.top})`);
+  // Center the tree: find bounds and translate
+  let minX = Infinity, maxX = -Infinity;
+  root.each(d => { minX = Math.min(minX, d.x); maxX = Math.max(maxX, d.x); });
+  const treeWidth = maxX - minX;
+  const offsetX = (width - margin.left - margin.right) / 2 - (minX + treeWidth / 2);
 
-  // Links
+  const g = svg.append('g')
+    .attr('transform', `translate(${margin.left + offsetX},${margin.top})`);
+
+  // Pan + zoom
+  const zoom = d3.zoom()
+    .scaleExtent([0.3, 4])
+    .on('zoom', (e) => g.attr('transform', e.transform));
+
+  svg.call(zoom)
+    .on('dblclick.zoom', null); // disable default dblclick zoom
+
+  // Restore saved transform if user had panned/zoomed, else use initial
+  const initialTransform = d3.zoomIdentity.translate(margin.left + offsetX, margin.top);
+  svg.call(zoom.transform, state.treeTransform || initialTransform);
+
+  // Double-click to reset
+  svg.on('dblclick', () => {
+    state.treeTransform = null;
+    svg.transition().duration(300).call(zoom.transform, initialTransform);
+  });
+
+  // Links: draw from parent dot edge to child dot edge (not through the dot)
   g.selectAll('.tree-link')
     .data(root.links())
     .join('path')
     .attr('class', 'tree-link')
-    .attr('d', d3.linkVertical().x(d => d.x).y(d => d.y))
+    .attr('d', d => {
+      const sr = d.source.data.id === 'root' ? 4 : (d.source.data.status === 'committed' ? 7 : 5);
+      const tr = d.target.data.status === 'committed' ? 7 : 5;
+      const sx = d.source.x, sy = d.source.y + sr;
+      const tx = d.target.x, ty = d.target.y - tr;
+      const my = (sy + ty) / 2;
+      return `M${sx},${sy} L${sx},${my} L${tx},${my} L${tx},${ty}`;
+    })
     .attr('stroke', d => {
       const child = d.target.data;
-      return STATUS_COLORS[child.status] || '#27272a';
+      if (child.status === 'committed') return '#22c55e';
+      if (child.status === 'active') return '#3b82f6';
+      return '#3f3f46';
     })
-    .attr('opacity', d => d.target.data.status === 'committed' ? 0.7 : 0.3);
+    .attr('opacity', d => d.target.data.status === 'committed' ? 0.6 : 0.25);
 
   // Nodes
   const nodeG = g.selectAll('.tree-node')
@@ -318,33 +397,46 @@ function renderTree() {
       if (d.data.id !== 'root') openDrawer(d.data.id);
     });
 
+  // Solid filled circles -- size and fill by status
   nodeG.append('circle')
-    .attr('r', d => d.data.id === 'root' ? 12 : 14)
-    .attr('fill', d => {
-      const c = STATUS_COLORS[d.data.status] || '#27272a';
-      if (d.data.status === 'active') return c + '1a';
-      if (d.data.status === 'committed') return c + '1a';
-      return '#18181b';
+    .attr('r', d => {
+      if (d.data.id === 'root') return 4;
+      if (d.data.status === 'committed') return 7;
+      return 5;
     })
-    .attr('stroke', d => STATUS_COLORS[d.data.status] || '#27272a')
-    .attr('stroke-width', d => d.data.status === 'committed' ? 2.5 : 1.5);
+    .attr('fill', d => STATUS_COLORS[d.data.status] || '#3f3f46')
+    .attr('opacity', d => {
+      if (d.data.status === 'committed' || d.data.status === 'active') return 1;
+      if (d.data.id === 'root') return 0.5;
+      return 0.5;
+    });
 
-  // Labels inside nodes
-  nodeG.append('text')
-    .attr('text-anchor', 'middle')
-    .attr('dy', '0.35em')
-    .attr('fill', d => STATUS_COLORS[d.data.status] || '#52525b')
-    .attr('font-size', d => d.data.id === 'root' ? '7px' : '8px')
-    .text(d => d.data.id === 'root' ? 'root' : shortId(d.data.id));
+  // Labels offset to the right: ID on top, score below (only for committed)
+  // Skip root label
+  const labelG = nodeG.filter(d => d.data.id !== 'root');
 
-  // Score labels below committed nodes
-  nodeG.filter(d => d.data.status === 'committed' && d.data.score != null)
+  // ID label
+  labelG.append('text')
+    .attr('x', d => d.data.status === 'committed' ? 12 : 10)
+    .attr('dy', d => (d.data.status === 'committed' && d.data.score != null) ? '-0.15em' : '0.35em')
+    .attr('fill', d => {
+      if (d.data.status === 'committed') return '#a1a1aa';
+      if (d.data.status === 'active') return '#3b82f6';
+      if (d.data.status === 'failed') return '#ef4444';
+      return '#52525b';  // discarded/pruned greyed out
+    })
+    .attr('font-size', '9px')
+    .attr('font-weight', d => d.data.status === 'committed' ? '500' : '400')
+    .text(d => shortId(d.data.id));
+
+  // Score label below ID (only for committed nodes with a score)
+  labelG.filter(d => d.data.status === 'committed' && d.data.score != null)
     .append('text')
-    .attr('text-anchor', 'middle')
-    .attr('dy', '24px')
+    .attr('x', 12)
+    .attr('dy', '1em')
     .attr('fill', '#52525b')
-    .attr('font-size', '8px')
-    .text(d => '.' + (d.data.score % 1).toFixed(2).slice(2));
+    .attr('font-size', '9px')
+    .text(d => d.data.score.toFixed(2));
 }
 
 // ─── Render: Table ───────────────────────────────────────
@@ -365,7 +457,7 @@ function renderTable() {
     const deltaClass = delta.startsWith('+') && delta !== '+0.00' ? 'color:var(--green)' :
                        delta.startsWith('-') ? 'color:var(--red)' : 'color:var(--text-4)';
     const scoreHtml = n.score != null
-      ? `<span class="score-val">${n.score.toFixed(2)}</span><span class="score-delta" style="${deltaClass}">${delta}</span>`
+      ? `<span class="score-val">${n.score.toFixed(2)}</span>${delta ? `<span class="score-delta" style="${deltaClass}">${delta}</span>` : ''}`
       : n.status === 'failed' ? '<span style="color:var(--red)">err</span>' : '<span style="color:var(--text-5)">&mdash;</span>';
 
     const tasks = n.benchmark_result?.tasks;

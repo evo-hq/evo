@@ -24,9 +24,9 @@ body {
   --text-1: #fafafa;
   --text-2: #a1a1aa;
   --text-3: #71717a;
-  --text-4: #52525b;
-  --text-5: #3f3f46;
-  --text-6: #27272a;
+  --text-4: #71717a;
+  --text-5: #52525b;
+  --text-6: #3f3f46;
   --green: #22c55e;
   --blue: #3b82f6;
   --red: #ef4444;
@@ -174,6 +174,10 @@ body {
 .chart-container canvas {
   width: 100% !important;
   height: 100% !important;
+  cursor: grab;
+}
+.chart-container canvas:active {
+  cursor: grabbing;
 }
 .tree-container {
   flex: 1;
@@ -189,7 +193,7 @@ body {
 }
 
 /* ─── Experiment table ────────────────────────────────── */
-#table-section { padding: 12px 20px 20px; }
+#table-section { padding: 12px 20px 20px; overflow-x: hidden; }
 .table-header {
   display: flex;
   align-items: center;
@@ -200,7 +204,7 @@ body {
 .filter-pill {
   padding: 3px 8px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
   border: none;
   background: none;
@@ -216,7 +220,7 @@ body {
   border-bottom: 1px solid var(--border);
 }
 .table-head-row span {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-5);
   font-weight: 500;
 }
@@ -251,11 +255,13 @@ body {
 .table-row .col-score {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 .table-row .score-val { font-weight: 600; }
 .table-row .score-delta {
-  font-size: 9px;
-  margin-left: 3px;
+  font-size: 10px;
 }
 .table-row .col-status {
   display: flex;
@@ -271,7 +277,7 @@ body {
 }
 .table-row .col-parent {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-5);
 }
 .table-row .col-hyp {
@@ -284,7 +290,7 @@ body {
   font-size: 11px;
 }
 .table-row .col-time {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-5);
 }
 
@@ -348,7 +354,7 @@ body {
 }
 .drawer-section:last-child { border-bottom: none; }
 .drawer-section-title {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   color: var(--text-4);
   text-transform: uppercase;
@@ -448,7 +454,7 @@ body {
   margin-bottom: 10px;
 }
 .trace-role {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   margin-bottom: 3px;
 }
@@ -465,7 +471,7 @@ body {
   line-height: 1.5;
 }
 .trace-error {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--red);
   margin-top: 2px;
 }
@@ -477,7 +483,7 @@ body {
   margin-top: 8px;
 }
 .failure-box-title {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--red);
   text-transform: uppercase;
