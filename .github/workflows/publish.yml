@@ -63,7 +63,7 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: twine upload --verbose --non-interactive dist/*
+        run: twine upload --non-interactive dist/*
 
   publish-node:
     if: |
