@@ -1,0 +1,31 @@
+{
+  "name": "@evo-hq/evo-agent",
+  "version": "0.1.0",
+  "description": "Lightweight reporting SDK for evo experiments. Zero dependencies.",
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./src/index.js",
+  "exports": {
+    ".": {
+      "import": "./src/index.js"
+    }
+  },
+  "files": ["src", "README.md", "LICENSE"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": ["evo", "claude-code", "optimization", "experiments", "benchmarks"],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/evo-hq/evo.git",
+    "directory": "sdk/node"
+  },
+  "homepage": "https://github.com/evo-hq/evo#readme",
+  "bugs": "https://github.com/evo-hq/evo/issues"
+}

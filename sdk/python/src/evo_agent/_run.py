@@ -26,7 +26,7 @@ class Run:
 
     Usage::
 
-        from evo_sdk import Run
+        from evo_agent import Run
 
         with Run() as run:
             run.log("0", "starting task")

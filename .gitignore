@@ -9,4 +9,21 @@ _ref/
 .evo/infra_log.json
 .evo/*.lock
 .evo/dashboard.pid
+.evo/dashboard.port
 .evo_archive/
+
+# Build artifacts
+dist/
+build/
+
+# Per-subproject lockfiles (the root uv.lock is authoritative)
+sdk/python/uv.lock
+
+# macOS junk
+.DS_Store
+
+# Personal
+.python-version
+
+# Node
+node_modules/

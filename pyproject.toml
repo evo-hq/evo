@@ -3,17 +3,25 @@ name = "evo"
 version = "0.1.0"
 description = "Structured experiment-driven code optimization with git worktrees, traces, and a local dashboard."
 requires-python = ">=3.12,<3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+readme = "README.md"
 dependencies = [
   "flask>=3.0.0",
   "pyyaml>=6.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/evo-hq/evo"
+Repository = "https://github.com/evo-hq/evo"
+Issues = "https://github.com/evo-hq/evo/issues"
+
 [project.optional-dependencies]
-sdk = ["evo-sdk"]
+sdk = ["evo-agent"]
 tau3 = [
   "openai",
   "tau2",
-  "evo-sdk",
+  "evo-agent",
 ]
 
 [project.scripts]
@@ -26,7 +34,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.uv.sources]
 tau2 = { git = "https://github.com/sierra-research/tau2-bench.git", rev = "73dc24445d28762075e69465d966aee4a9dcbfcb" }
-evo-sdk = { path = "sdk/python", editable = true }
+evo-agent = { path = "sdk/python", editable = true }
 
 [tool.setuptools]
 package-dir = {"" = "src"}

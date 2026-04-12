@@ -3,7 +3,7 @@
 Runs a small set of tasks on the test split to ensure the agent hasn't
 regressed on critical behavior. Exits 0 if all gate tasks pass, 1 otherwise.
 
-Uses evo-sdk's Gate class for pass/fail reporting and exit code handling.
+Uses evo-agent's Gate class for pass/fail reporting and exit code handling.
 
 Configuration is loaded from config.json (co-located with this script),
 with environment variables as overrides.
@@ -25,7 +25,7 @@ import os
 import sys
 from pathlib import Path
 
-from evo_sdk import Gate
+from evo_agent import Gate
 
 _HERE = Path(__file__).resolve().parent
 _CONFIG = json.loads((_HERE / "config.json").read_text(encoding="utf-8"))

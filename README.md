@@ -73,6 +73,22 @@ Two slash commands in Claude Code:
 
 Example: `/evo:optimize subagents=3 budget=10 stall=3`
 
+## Dashboard
+
+The dashboard starts automatically when you run `/evo:discover` (or `evo init`). When it comes up, Claude surfaces the URL in the chat:
+
+```
+Dashboard live: http://127.0.0.1:8080 (pid 12345)
+```
+
+If `8080` is busy, evo auto-increments (`8081`, `8082`, ...) and prints the actual port. You can also start it manually:
+
+```bash
+uv run --project /path/to/evo evo dashboard --port 8080
+```
+
+The chosen port is persisted to `.evo/dashboard.port` so repeat runs re-use it.
+
 ## TODO
 
 - [ ] Distributed evaluation via [Harbor](https://github.com/harbor-framework/harbor) -- run benchmarks in containers instead of locally, use Harbor's cloud providers to parallelize.
@@ -83,3 +99,11 @@ Example: `/evo:optimize subagents=3 budget=10 stall=3`
 - Python 3.12+
 - git
 - [uv](https://docs.astral.sh/uv/)
+
+## Repo
+
+[github.com/evo-hq/evo](https://github.com/evo-hq/evo)
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

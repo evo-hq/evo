@@ -1,0 +1,73 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Run, Gate } from "../src/index.js";
+
+function withTmp(fn) {
+  const dir = mkdtempSync(join(tmpdir(), "evo-agent-test-"));
+  try {
+    return fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function captureStdout(fn) {
+  const chunks = [];
+  const orig = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (s) => {
+    chunks.push(String(s));
+    return true;
+  };
+  try {
+    fn();
+  } finally {
+    process.stdout.write = orig;
+  }
+  return chunks.join("");
+}
+
+test("Run writes trace files and emits score JSON", async () => {
+  await withTmp(async (dir) => {
+    process.env.EVO_TRACES_DIR = dir;
+    process.env.EVO_EXPERIMENT_ID = "exp-123";
+    const run = new Run();
+    run.log("0", "starting");
+    run.log("0", { role: "user", content: "hi" });
+    run.report("0", { score: 1.0, summary: "ok" });
+    run.report("1", { score: 0.0, failureReason: "bad" });
+
+    const out = captureStdout(() => run.finish());
+    const result = JSON.parse(out);
+    assert.equal(result.score, 0.5);
+    assert.deepEqual(result.tasks, { "0": 1.0, "1": 0.0 });
+
+    const files = readdirSync(dir).sort();
+    assert.deepEqual(files, ["task_0.json", "task_1.json"]);
+    const t0 = JSON.parse(readFileSync(join(dir, "task_0.json"), "utf-8"));
+    assert.equal(t0.experiment_id, "exp-123");
+    assert.equal(t0.status, "passed");
+    assert.equal(t0.score, 1.0);
+    assert.deepEqual(t0.log, ["starting", { role: "user", content: "hi" }]);
+    const t1 = JSON.parse(readFileSync(join(dir, "task_1.json"), "utf-8"));
+    assert.equal(t1.status, "failed");
+    assert.equal(t1.failure_reason, "bad");
+
+    delete process.env.EVO_TRACES_DIR;
+    delete process.env.EVO_EXPERIMENT_ID;
+  });
+});
+
+test("Gate.check accepts score or explicit passed", () => {
+  const g = new Gate();
+  g.check("a", { score: 0.8 });
+  g.check("b", { score: 0.3 });
+  g.check("c", { passed: true, detail: "manual" });
+  assert.equal(g._checks.length, 3);
+  assert.equal(g._checks[0].passed, true);
+  assert.equal(g._checks[1].passed, false);
+  assert.equal(g._checks[2].passed, true);
+  assert.equal(g._checks[2].detail, "manual");
+});

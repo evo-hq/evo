@@ -14,7 +14,7 @@ class Gate:
 
     Usage::
 
-        from evo_sdk import Gate
+        from evo_agent import Gate
 
         with Gate() as gate:
             gate.check("5", score=1.0)

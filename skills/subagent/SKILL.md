@@ -135,9 +135,12 @@ When continuing after a committed experiment, update your parent to the newly co
 
 ## Enriching traces (optional)
 
-If the benchmark uses `evo-sdk` (check the benchmark script for `from evo_sdk import Run`), you can enrich trace data by adding `run.log(task_id, ...)` calls for more observability, or adding fields to `run.report()`. The SDK separates logging (observability, many calls per task) from reporting (eval score, once per task). Do NOT change the score computation or gate logic -- only add observability.
+Check `.evo/meta.json` for `"instrumentation_mode"` (`"sdk"` or `"inline"`) to see which style the benchmark uses -- **stay consistent with that choice across iterations; do not flip styles mid-run.**
 
-If the benchmark uses the raw file protocol (manual `json.dumps` to `$EVO_TRACES_DIR`), you can similarly add fields to the trace dicts. The trace format is forward-compatible -- extra fields are preserved.
+- **SDK mode** (`from evo_agent import Run`): enrich traces by adding `run.log(task_id, ...)` calls for more observability, or extra fields to `run.report()`.
+- **Inline mode** (benchmark has local `log_task`/`logTask` helpers): add fields to the trace dict built inside `log_task()`.
+
+The trace format is forward-compatible -- extra fields are preserved. Do NOT change the score computation or gate logic -- only add observability.
 
 ## Rules
 

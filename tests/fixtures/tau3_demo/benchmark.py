@@ -4,7 +4,7 @@ Runs tau-bench tasks against the agent loaded from --agent, outputs
 evo-compatible JSON to stdout, and writes per-task traces to $EVO_TRACES_DIR
 as each task completes (for live monitoring).
 
-Uses evo-sdk's Run class for trace writing and score reporting.
+Uses evo-agent's Run class for trace writing and score reporting.
 
 Configuration is loaded from config.json (co-located with this script),
 with environment variables as overrides.
@@ -27,7 +27,7 @@ import os
 import sys
 from pathlib import Path
 
-from evo_sdk import Run
+from evo_agent import Run
 
 _HERE = Path(__file__).resolve().parent
 _CONFIG = json.loads((_HERE / "config.json").read_text(encoding="utf-8"))
@@ -105,7 +105,7 @@ def main() -> None:
         _original_list_append = list.append
 
         class TracingList(list):
-            """A list that reports to evo-sdk each time a simulation is appended."""
+            """A list that reports to evo-agent each time a simulation is appended."""
 
             def append(self, sim):
                 _original_list_append(self, sim)

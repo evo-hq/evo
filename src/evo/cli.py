@@ -84,17 +84,48 @@ def _update_graph_and_write(root: Path, graph: dict) -> None:
         atomic_write_json(graph_path(root), graph)
 
 
+def _pick_free_port(preferred: int, max_tries: int = 20) -> int:
+    """Find a free TCP port on 127.0.0.1, starting from *preferred* and
+    incrementing by 1 on collision. Raises if nothing free in *max_tries*."""
+    import socket
+    for offset in range(max_tries):
+        port = preferred + offset
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError(
+        f"no free port in range {preferred}..{preferred + max_tries - 1}"
+    )
+
+
 def _start_dashboard_background(root: Path, port: int = 8080) -> None:
-    """Start the dashboard as a background process."""
+    """Start the dashboard as a background process.
+
+    Probes for a free port starting at *port* (auto-increments on collision),
+    writes the actual port to .evo/dashboard.port, and prints a clickable URL.
+    """
     pid_file = evo_dir(root) / "dashboard.pid"
-    # Don't start if already running
+    port_file = evo_dir(root) / "dashboard.port"
+
+    # If already running, surface the existing URL instead of starting a second.
     if pid_file.exists():
         try:
             pid = int(pid_file.read_text().strip())
-            os.kill(pid, 0)  # check if process is alive
+            os.kill(pid, 0)
+            existing = port_file.read_text().strip() if port_file.exists() else str(port)
+            print(f"Dashboard live: http://127.0.0.1:{existing} (pid {pid})")
             return
         except (OSError, ValueError):
             pid_file.unlink(missing_ok=True)
+
+    actual_port = _pick_free_port(port)
+
+    env = os.environ.copy()
+    env["EVO_DASHBOARD_PORT"] = str(actual_port)
 
     proc = subprocess.Popen(
         [sys.executable, "-m", "evo.dashboard"],
@@ -102,9 +133,12 @@ def _start_dashboard_background(root: Path, port: int = 8080) -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
+        env=env,
     )
     pid_file.write_text(str(proc.pid))
-    print(f"Dashboard running at http://127.0.0.1:{port} (pid {proc.pid})")
+    port_file.write_text(str(actual_port))
+    note = "" if actual_port == port else f" (port {port} busy, bumped to {actual_port})"
+    print(f"Dashboard live: http://127.0.0.1:{actual_port} (pid {proc.pid}){note}")
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -412,14 +446,15 @@ def cmd_gc(args: argparse.Namespace) -> int:
 def _stop_dashboard(root: Path) -> None:
     """Stop the background dashboard if running."""
     pid_file = evo_dir(root) / "dashboard.pid"
-    if not pid_file.exists():
-        return
-    try:
-        pid = int(pid_file.read_text().strip())
-        os.kill(pid, 15)  # SIGTERM
-    except (OSError, ValueError):
-        pass
-    pid_file.unlink(missing_ok=True)
+    port_file = evo_dir(root) / "dashboard.port"
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 15)  # SIGTERM
+        except (OSError, ValueError):
+            pass
+        pid_file.unlink(missing_ok=True)
+    port_file.unlink(missing_ok=True)
 
 
 def cmd_reset(args: argparse.Namespace) -> int:
@@ -641,8 +676,13 @@ def cmd_gate(args: argparse.Namespace) -> int:
 def cmd_dashboard(args: argparse.Namespace) -> int:
     from .dashboard import create_app
 
-    app = create_app(repo_root())
-    app.run(host="127.0.0.1", port=args.port, debug=False)
+    root = repo_root()
+    actual_port = _pick_free_port(args.port)
+    (evo_dir(root) / "dashboard.port").write_text(str(actual_port))
+    note = "" if actual_port == args.port else f" (port {args.port} busy, bumped to {actual_port})"
+    print(f"Dashboard live: http://127.0.0.1:{actual_port}{note}", flush=True)
+    app = create_app(root)
+    app.run(host="127.0.0.1", port=actual_port, debug=False)
     return 0
 
 

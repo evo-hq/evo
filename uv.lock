@@ -250,18 +250,18 @@ dependencies = [
 
 [package.optional-dependencies]
 sdk = [
-    { name = "evo-sdk" },
+    { name = "evo-agent" },
 ]
 tau3 = [
-    { name = "evo-sdk" },
+    { name = "evo-agent" },
     { name = "openai" },
     { name = "tau2" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "evo-sdk", marker = "extra == 'sdk'", editable = "sdk/python" },
-    { name = "evo-sdk", marker = "extra == 'tau3'", editable = "sdk/python" },
+    { name = "evo-agent", marker = "extra == 'sdk'", editable = "sdk/python" },
+    { name = "evo-agent", marker = "extra == 'tau3'", editable = "sdk/python" },
     { name = "flask", specifier = ">=3.0.0" },
     { name = "openai", marker = "extra == 'tau3'" },
     { name = "pyyaml", specifier = ">=6.0.0" },
@@ -270,7 +270,7 @@ requires-dist = [
 provides-extras = ["sdk", "tau3"]
 
 [[package]]
-name = "evo-sdk"
+name = "evo-agent"
 version = "0.1.0"
 source = { editable = "sdk/python" }
 

@@ -29,63 +29,81 @@ Worktrees only contain git-tracked files. Before proceeding:
 
 Prefer wrapping an existing benchmark rather than mutating it in place.
 
-### Option A: Use evo-sdk (recommended for Python benchmarks)
+### 3a. Ask the user which instrumentation mode to use
 
-Ask the user if they're OK installing `evo-sdk` (`pip install evo-sdk` or add to project dependencies). If yes, instrument using the SDK:
+Before writing any instrumentation code, **ask the user once** (use `AskUserQuestion`):
 
-The SDK separates **logging** (observability) from **reporting** (evaluation):
+> "I can wire up the benchmark in one of two ways:
+>
+> 1. **SDK mode** -- install `evo-agent` (Python: `pip install evo-agent` / Node: `npm install @evo-hq/evo-agent`). Richer per-task logs, ~5 lines of user code.
+> 2. **Inline mode** -- paste a ~30-line helper directly into your benchmark. Zero new dependencies. Same data contract."
 
-- `run.log(task_id, data)` -- append anything (str, dict, whatever) as the task runs. Called many times.
-- `run.report(task_id, score)` -- record the final eval result. Called once per task.
+Record the answer in `.evo/meta.json` as `"instrumentation_mode": "sdk" | "inline"` so subagents and optimize rounds stay consistent (merge it in after `evo init` with a one-liner, e.g. `python -c "import json,pathlib; p=pathlib.Path('.evo/meta.json'); d=json.loads(p.read_text()); d['instrumentation_mode']='sdk'; p.write_text(json.dumps(d,indent=2))"`). **Never install packages without this confirmation.**
 
-**Benchmark wrapper:**
+Regardless of mode, the wire protocol is identical: write `task_<id>.json` into `$EVO_TRACES_DIR`, print a single `{"score": ...}` JSON object to stdout at the end, send all other output to stderr, exit non-zero only on infrastructure failure (for gates: exit 0 all-pass, 1 any-fail).
+
+### 3b. SDK mode (evo-agent)
+
+Python:
 
 ```python
-from evo_sdk import Run
+from evo_agent import Run, Gate
 
 with Run() as run:
     for task in tasks:
         run.log(task["id"], "starting task")
-        # ... run the task, log intermediate steps ...
-        run.log(task["id"], {"role": "user", "content": task["input"]})
         result = evaluate(task, agent)
-        run.log(task["id"], {"role": "assistant", "content": result.output})
+        run.log(task["id"], {"output": result.output})
         run.report(
             task["id"],
             score=result.score,
-            summary=f"...",
+            summary=f"reward={result.score:.2f}",
             failure_reason=None if result.passed else "task_failed",
         )
-# finish() called automatically: prints score JSON to stdout, writes traces to $EVO_TRACES_DIR
+# finish() called automatically: prints score JSON to stdout, writes traces
 ```
 
-**Gate wrapper:**
-
 ```python
-from evo_sdk import Gate
-
 with Gate() as gate:
     for task in critical_tasks:
         result = evaluate(task, agent)
-        gate.check(task["id"], score=result.score, detail=f"reward={result.score:.2f}")
-# finish() called automatically: prints summary to stderr, exits 0 or 1
+        gate.check(task["id"], score=result.score)
+# exits 0 all-pass / 1 any-fail
 ```
 
-The SDK automatically reads `$EVO_TRACES_DIR`, `$EVO_EXPERIMENT_ID`, and `$EVO_WORKTREE` from the environment (set by `evo run`). Log entries accumulate per task and are flushed into the trace file when `report()` is called. Traces are written immediately on each `report()`, enabling live monitoring.
+Node:
 
-### Option B: Raw protocol (for non-Python or minimal-dependency setups)
+```js
+import { Run, Gate } from '@evo-hq/evo-agent';
 
-If the user prefers no SDK dependency, implement the protocol directly:
+const run = new Run();
+for (const task of tasks) {
+  const result = await evaluate(task);
+  run.log(task.id, { output: result.output });
+  run.report(task.id, { score: result.score });
+}
+await run.finish();
+```
 
-- **stdout**: only structured JSON with a `"score"` field. Example: `{"score": 0.78, "tasks": {"0": 1.0, "1": 0.0}}`
-- **stderr**: all logging, progress, debug output goes here -- never to stdout.
-- **traces**: write per-task JSON files to `$EVO_TRACES_DIR/task_{id}.json` (set automatically by `evo run`). Each trace must contain at minimum: `{"experiment_id": "...", "task_id": "...", "status": "passed|failed", "score": N}`.
-- **exit code**: 0 on success, non-zero on infrastructure failure.
-- **gates**: exit 0 if all checks pass, non-zero if any fail.
+The SDK auto-reads `$EVO_TRACES_DIR` and `$EVO_EXPERIMENT_ID`. Traces are flushed on each `report()`, enabling live monitoring on the dashboard.
 
-### For both options
+### 3c. Inline mode (no SDK dependency)
 
-If the underlying tool prints noisy output to stdout (progress bars, logging frameworks, rich formatting), the wrapper must redirect or suppress it.
+Copy the helper from the bundled reference file directly into the user's benchmark script:
+
+- Python: `${CLAUDE_SKILL_DIR}/references/inline_instrumentation.py`
+- Node: `${CLAUDE_SKILL_DIR}/references/inline_instrumentation.js`
+
+Both expose two functions:
+
+- `log_task(task_id, score, **fields)` / `logTask(taskId, score, {...})` -- write one task's trace
+- `write_result()` / `writeResult()` -- emit the final score JSON to stdout (call once)
+
+Wrap the user's eval loop around those calls. Zero new dependencies; same data contract as the SDK.
+
+### 3d. Notes for both modes
+
+If the underlying tool prints noisy output to stdout (progress bars, logging frameworks, rich formatting), the wrapper must redirect that to stderr.
 
 Create a gate script if appropriate.
 
@@ -117,6 +135,8 @@ Fix any issues and re-validate before proceeding. This catches environment probl
 ```bash
 uv run evo init --target <file> --benchmark "<command with {target}>" --metric <max|min> [--gate "<gate command>"]
 ```
+
+`evo init` auto-starts the dashboard in the background and prints a line like `Dashboard live: http://127.0.0.1:8080 (pid 12345)`. **Relay that URL back to the user verbatim** -- it's the fastest way for them to watch experiments live. If port 8080 is busy, evo auto-increments; show whatever port is printed.
 
 ## 6. Set up gates
 
