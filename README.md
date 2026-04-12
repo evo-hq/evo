@@ -79,6 +79,8 @@ Invoke them as:
 - Claude Code: `/evo:discover`, `/evo:optimize`
 - Codex: `$evo:discover`, `$evo:optimize`
 
+The same `evo:discover` and `evo:optimize` skills are shared between Claude Code and Codex; only invocation syntax differs.
+
 `evo:optimize` accepts optional parameters:
 
 | Parameter | Default | Description |

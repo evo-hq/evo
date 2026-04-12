@@ -113,10 +113,12 @@ Create a gate script if appropriate.
 
 Before running the full baseline, validate the toolchain with the cheapest possible end-to-end execution (single task, smallest split, dry-run flag, mock mode -- whatever is fastest):
 
-Run the benchmark command directly (outside `evo`) with `EVO_TRACES_DIR` set to a temp directory. **Pipe stdout through the validation script** to enforce the JSON contract:
+Run the benchmark command directly (outside `evo`) with `EVO_TRACES_DIR` set to a temp directory. **Pipe stdout through the validation script** to enforce the JSON contract.
+Set `SKILL_DIR` to the absolute path of this skill directory (the folder containing this `SKILL.md`):
 
 ```bash
-EVO_TRACES_DIR=/tmp/evo_validate <benchmark_command> 2>/tmp/evo_validate_stderr.log | python <skill_dir>/scripts/validate_stdout.py
+SKILL_DIR=/absolute/path/to/evo/skills/discover
+EVO_TRACES_DIR=/tmp/evo_validate <benchmark_command> 2>/tmp/evo_validate_stderr.log | python "$SKILL_DIR/scripts/validate_stdout.py"
 ```
 
 The validator checks:
