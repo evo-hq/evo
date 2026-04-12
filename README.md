@@ -15,7 +15,37 @@ Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) 
 - **Observability.** A dashboard to monitor your experiments.
 - **Benchmark discovery.** `/discover` explores the repo, figures out what to measure, and instruments the evaluation.
 
+## Install
+
+Inside Claude Code:
+
+```
+/plugin marketplace add evo-hq/evo
+/plugin install evo@evo-hq-evo
+```
+
+Then reload Claude Code. The `/evo:discover` and `/evo:optimize` slash commands become available in any repo.
+
+Requirements: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Python 3.12+, git, [uv](https://docs.astral.sh/uv/).
+
 ## Usage
+
+Two slash commands:
+
+- **`/evo:discover`** -- explores the repo, instruments the benchmark, runs baseline
+- **`/evo:optimize`** -- runs the optimization loop with parallel subagents until interrupted
+
+`/evo:optimize` accepts optional parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `subagents` | 5 | Number of parallel subagents per round |
+| `budget` | 5 | Max iterations each subagent can run within its branch |
+| `stall` | 5 | Consecutive rounds with no improvement before auto-stopping |
+
+Example: `/evo:optimize subagents=3 budget=10 stall=3`
+
+Typical flow:
 
 ```
 you: /evo:discover
@@ -48,31 +78,6 @@ Orchestrator (main agent)
     ...up to N subagents in parallel
 ```
 
-## Install
-
-```bash
-uv run --project /path/to/evo evo status
-```
-
-No pip install needed. `uv run` resolves dependencies on first use.
-
-## Usage
-
-Two slash commands in Claude Code:
-
-- **`/discover`** -- explores the repo, instruments the benchmark, runs baseline
-- **`/optimize`** -- runs the optimization loop with parallel subagents until interrupted
-
-`/optimize` accepts optional parameters:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `subagents` | 5 | Number of parallel subagents per round |
-| `budget` | 5 | Max iterations each subagent can run within its branch |
-| `stall` | 5 | Consecutive rounds with no improvement before auto-stopping |
-
-Example: `/evo:optimize subagents=3 budget=10 stall=3`
-
 ## Dashboard
 
 The dashboard starts automatically when you run `/evo:discover` (or `evo init`). When it comes up, Claude surfaces the URL in the chat:
@@ -89,20 +94,20 @@ uv run --project /path/to/evo evo dashboard --port 8080
 
 The chosen port is persisted to `.evo/dashboard.port` so repeat runs re-use it.
 
+## Dev install
+
+For working on evo itself (not just using it):
+
+```bash
+git clone https://github.com/evo-hq/evo
+uv run --project /path/to/evo evo status
+```
+
+`uv run` resolves dependencies on first use -- no `pip install` step.
+
 ## TODO
 
 - [ ] Distributed evaluation via [Harbor](https://github.com/harbor-framework/harbor) -- run benchmarks in containers instead of locally, use Harbor's cloud providers to parallelize.
-
-## Requirements
-
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-- Python 3.12+
-- git
-- [uv](https://docs.astral.sh/uv/)
-
-## Repo
-
-[github.com/evo-hq/evo](https://github.com/evo-hq/evo)
 
 ## License
 
