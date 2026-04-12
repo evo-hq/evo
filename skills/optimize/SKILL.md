@@ -83,9 +83,9 @@ Formulate N directions (one per subagent). Each direction should include:
 
 ### 3. Spawn parallel subagents
 
-Spawn all subagents in a **single message** using the Agent tool. **All subagents must run in the background** (`run_in_background: true`) so they execute in parallel.
+Spawn all subagents in a **single batch** using your host's multi-agent tool (`spawn_agent` in Codex, Agent tool in Claude Code). **All subagents must run in the background** so they execute in parallel.
 
-Use `model: "sonnet"` for straightforward hypotheses, `model: "opus"` for harder ones requiring deeper reasoning.
+Prefer a faster model for straightforward hypotheses and a stronger model for harder ones requiring deeper reasoning.
 
 Each subagent prompt must include:
 - An instruction to read `skills/subagent/SKILL.md` and follow its protocol

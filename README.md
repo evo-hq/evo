@@ -4,7 +4,7 @@
 
 # evo
 
-A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that optimizes code through experiments. You give it a codebase. It discovers metrics to optimize, sets up the evaluation, and starts running experiments in a loop -- trying things, keeping what improves the score, throwing away what doesn't.
+A plugin for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://developers.openai.com/codex/plugins) that optimizes code through experiments. You give it a codebase. It discovers metrics to optimize, sets up the evaluation, and starts running experiments in a loop -- trying things, keeping what improves the score, throwing away what doesn't.
 
 Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) -- where an LLM runs training experiments autonomously to beat its own best score. Autoresearch is a pure hill climb: try something, keep or revert, repeat on a single branch. Evo adds structure on top of that idea:
 
@@ -13,9 +13,11 @@ Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) 
 - **Shared state.** Failure traces, annotations, and discarded hypotheses are accessible to every agent before it decides what to try next.
 - **Gating.** Regression tests or safety checks can be wired up as a gate. Experiments that don't pass get discarded.
 - **Observability.** A dashboard to monitor your experiments.
-- **Benchmark discovery.** `/discover` explores the repo, figures out what to measure, and instruments the evaluation.
+- **Benchmark discovery.** `evo:discover` explores the repo, figures out what to measure, and instruments the evaluation.
 
 ## Install
+
+### Claude Code
 
 Inside Claude Code:
 
@@ -26,16 +28,58 @@ Inside Claude Code:
 
 Then reload Claude Code. The `/evo:discover` and `/evo:optimize` slash commands become available in any repo.
 
-Requirements: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Python 3.12+, git, [uv](https://docs.astral.sh/uv/).
+### Codex (local marketplace)
+
+Codex plugins are installed from marketplaces. For a personal install:
+
+```bash
+mkdir -p ~/.codex/plugins
+cp -R /absolute/path/to/evo ~/.codex/plugins/evo
+
+mkdir -p ~/.agents/plugins
+cat > ~/.agents/plugins/marketplace.json <<'JSON'
+{
+  "name": "evo-local",
+  "interface": {
+    "displayName": "Evo Local"
+  },
+  "plugins": [
+    {
+      "name": "evo",
+      "source": {
+        "source": "local",
+        "path": "./.codex/plugins/evo"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
+JSON
+```
+
+If `~/.agents/plugins/marketplace.json` already exists, merge the `evo` plugin entry into your existing `plugins` array instead of replacing the file.
+
+Restart Codex, open the plugin directory, pick the `Evo Local` marketplace, and install `evo`.
+
+Requirements: Claude Code or Codex, Python 3.12+, git, [uv](https://docs.astral.sh/uv/).
 
 ## Usage
 
-Two slash commands:
+Two skill entry points:
 
-- **`/evo:discover`** -- explores the repo, instruments the benchmark, runs baseline
-- **`/evo:optimize`** -- runs the optimization loop with parallel subagents until interrupted
+- **`evo:discover`** -- explores the repo, instruments the benchmark, runs baseline
+- **`evo:optimize`** -- runs the optimization loop with parallel subagents until interrupted
 
-`/evo:optimize` accepts optional parameters:
+Invoke them as:
+
+- Claude Code: `/evo:discover`, `/evo:optimize`
+- Codex: `$evo:discover`, `$evo:optimize`
+
+`evo:optimize` accepts optional parameters:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -43,15 +87,15 @@ Two slash commands:
 | `budget` | 5 | Max iterations each subagent can run within its branch |
 | `stall` | 5 | Consecutive rounds with no improvement before auto-stopping |
 
-Example: `/evo:optimize subagents=3 budget=10 stall=3`
+Example: `evo:optimize subagents=3 budget=10 stall=3`
 
 Typical flow:
 
 ```
-you: /evo:discover
+you: evo:discover
 evo: explores repo, instruments benchmark, runs baseline
 
-you: /evo:optimize
+you: evo:optimize
 evo: spawns 5 subagents in parallel, each exploring a different direction
      each subagent can run up to 5 iterations within its branch
      orchestrator collects results, prunes dead branches, adjusts strategy
@@ -80,7 +124,7 @@ Orchestrator (main agent)
 
 ## Dashboard
 
-The dashboard starts automatically when you run `/evo:discover` (or `evo init`). When it comes up, Claude surfaces the URL in the chat:
+The dashboard starts automatically when you run `evo:discover` (or `evo init`). When it comes up, the agent surfaces the URL in the chat:
 
 ```
 Dashboard live: http://127.0.0.1:8080 (pid 12345)

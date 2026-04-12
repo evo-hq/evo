@@ -1,0 +1,39 @@
+{
+  "name": "evo",
+  "version": "0.1.0",
+  "description": "Structured experiment-driven code optimization using tree search and parallel subagents",
+  "author": {
+    "name": "evo-hq",
+    "url": "https://github.com/evo-hq"
+  },
+  "homepage": "https://github.com/evo-hq/evo",
+  "repository": "https://github.com/evo-hq/evo",
+  "license": "Apache-2.0",
+  "keywords": [
+    "optimization",
+    "experiments",
+    "benchmarks",
+    "agents"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "evo",
+    "shortDescription": "Experiment-driven code optimizer",
+    "longDescription": "Runs benchmark-guided optimization loops with tree search and parallel subagents.",
+    "developerName": "evo-hq",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/evo-hq/evo",
+    "privacyPolicyURL": "https://github.com/evo-hq/evo/blob/main/README.md",
+    "termsOfServiceURL": "https://github.com/evo-hq/evo/blob/main/LICENSE",
+    "defaultPrompt": [
+      "Use evo to discover a benchmark for this repository.",
+      "Run evo optimize with subagents=5 budget=5 stall=5.",
+      "Show the best evo experiment diff and score."
+    ],
+    "brandColor": "#111827"
+  }
+}

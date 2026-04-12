@@ -31,7 +31,7 @@ Prefer wrapping an existing benchmark rather than mutating it in place.
 
 ### 3a. Ask the user which instrumentation mode to use
 
-Before writing any instrumentation code, **ask the user once** (use `AskUserQuestion`):
+Before writing any instrumentation code, **ask the user once** using your host's user-input flow:
 
 > "I can wire up the benchmark in one of two ways:
 >
@@ -91,10 +91,10 @@ The SDK auto-reads `$EVO_TRACES_DIR` and `$EVO_EXPERIMENT_ID`. Traces are flushe
 
 ### 3c. Inline mode (no SDK dependency)
 
-Copy the helper from the bundled reference file directly into the user's benchmark script:
+Copy the helper from this skill's bundled reference file directly into the user's benchmark script (resolve paths relative to this `SKILL.md`):
 
-- Python: `${CLAUDE_SKILL_DIR}/references/inline_instrumentation.py`
-- Node: `${CLAUDE_SKILL_DIR}/references/inline_instrumentation.js`
+- Python: `references/inline_instrumentation.py`
+- Node: `references/inline_instrumentation.js`
 
 Both expose two functions:
 
@@ -116,7 +116,7 @@ Before running the full baseline, validate the toolchain with the cheapest possi
 Run the benchmark command directly (outside `evo`) with `EVO_TRACES_DIR` set to a temp directory. **Pipe stdout through the validation script** to enforce the JSON contract:
 
 ```bash
-EVO_TRACES_DIR=/tmp/evo_validate <benchmark_command> 2>/tmp/evo_validate_stderr.log | python ${CLAUDE_SKILL_DIR}/scripts/validate_stdout.py
+EVO_TRACES_DIR=/tmp/evo_validate <benchmark_command> 2>/tmp/evo_validate_stderr.log | python <skill_dir>/scripts/validate_stdout.py
 ```
 
 The validator checks:
