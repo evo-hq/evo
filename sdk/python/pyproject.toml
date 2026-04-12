@@ -1,5 +1,5 @@
 [project]
-name = "evo-agent"
+name = "evo-hq-agent"
 version = "0.1.0"
 description = "Lightweight reporting SDK for evo experiments. Zero dependencies."
 requires-python = ">=3.10"

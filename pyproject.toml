@@ -17,11 +17,11 @@ Repository = "https://github.com/evo-hq/evo"
 Issues = "https://github.com/evo-hq/evo/issues"
 
 [project.optional-dependencies]
-sdk = ["evo-agent"]
+sdk = ["evo-hq-agent"]
 tau3 = [
   "openai",
   "tau2",
-  "evo-agent",
+  "evo-hq-agent",
 ]
 
 [project.scripts]
@@ -34,7 +34,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.uv.sources]
 tau2 = { git = "https://github.com/sierra-research/tau2-bench.git", rev = "73dc24445d28762075e69465d966aee4a9dcbfcb" }
-evo-agent = { path = "sdk/python", editable = true }
+evo-hq-agent = { path = "sdk/python", editable = true }
 
 [tool.setuptools]
 package-dir = {"" = "src"}

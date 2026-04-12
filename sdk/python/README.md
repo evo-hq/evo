@@ -1,13 +1,19 @@
-# evo-agent (Python SDK)
+# evo-hq-agent (Python SDK)
 
 Lightweight reporting SDK for [evo](https://github.com/evo-hq/evo) experiments. Zero dependencies, Python 3.10+.
 
-Mirrors the `evo-agent` Node SDK surface: `Run` for per-task logging + scoring, `Gate` for safety checks with exit codes.
+Mirrors the [`@evo-hq/evo-agent`](https://www.npmjs.com/package/@evo-hq/evo-agent) Node SDK surface: `Run` for per-task logging + scoring, `Gate` for safety checks with exit codes.
 
 ## Install
 
 ```bash
-pip install evo-agent
+pip install evo-hq-agent
+```
+
+Install name and import name differ (same pattern as `python-dateutil` / `dateutil`):
+
+```python
+from evo_agent import Run, Gate
 ```
 
 ## Usage

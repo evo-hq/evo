@@ -35,14 +35,16 @@ Before writing any instrumentation code, **ask the user once** (use `AskUserQues
 
 > "I can wire up the benchmark in one of two ways:
 >
-> 1. **SDK mode** -- install `evo-agent` (Python: `pip install evo-agent` / Node: `npm install @evo-hq/evo-agent`). Richer per-task logs, ~5 lines of user code.
+> 1. **SDK mode** -- install the SDK (Python: `pip install evo-hq-agent` / Node: `npm install @evo-hq/evo-agent`). Richer per-task logs, ~5 lines of user code.
 > 2. **Inline mode** -- paste a ~30-line helper directly into your benchmark. Zero new dependencies. Same data contract."
 
 Record the answer in `.evo/meta.json` as `"instrumentation_mode": "sdk" | "inline"` so subagents and optimize rounds stay consistent (merge it in after `evo init` with a one-liner, e.g. `python -c "import json,pathlib; p=pathlib.Path('.evo/meta.json'); d=json.loads(p.read_text()); d['instrumentation_mode']='sdk'; p.write_text(json.dumps(d,indent=2))"`). **Never install packages without this confirmation.**
 
 Regardless of mode, the wire protocol is identical: write `task_<id>.json` into `$EVO_TRACES_DIR`, print a single `{"score": ...}` JSON object to stdout at the end, send all other output to stderr, exit non-zero only on infrastructure failure (for gates: exit 0 all-pass, 1 any-fail).
 
-### 3b. SDK mode (evo-agent)
+### 3b. SDK mode
+
+Python distribution: `evo-hq-agent` (imported as `evo_agent`). Node package: `@evo-hq/evo-agent`.
 
 Python:
 

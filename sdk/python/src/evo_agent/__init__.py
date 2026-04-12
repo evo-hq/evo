@@ -1,4 +1,4 @@
-"""evo-agent: Lightweight reporting SDK for evo experiments."""
+"""evo-hq-agent: Lightweight reporting SDK for evo experiments (import as evo_agent)."""
 
 from ._backend import Backend, LocalBackend
 from ._gate import Gate
