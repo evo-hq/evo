@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "evo",
-      "source": ".",
+      "source": "./",
       "description": "Structured experiment-driven code optimization using tree search and parallel subagents"
     }
   ]
