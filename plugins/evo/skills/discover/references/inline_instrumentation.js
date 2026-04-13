@@ -45,11 +45,13 @@ export function writeResult(score) {
   if (score === undefined) {
     score = ids.length === 0 ? 0.0 : ids.reduce((a, id) => a + SCORES[id], 0) / ids.length;
   }
+  score = Math.round(score * 10000) / 10000;
   const result = {
-    score: Math.round(score * 10000) / 10000,
+    score,
     tasks: { ...SCORES },
     started_at: STARTED_AT,
     ended_at: new Date().toISOString().replace(/\.\d{3}Z$/, "+00:00"),
   };
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+  return score;
 }

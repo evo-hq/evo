@@ -4,40 +4,63 @@
 
 # evo
 
-A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin that optimizes code through experiments. You give it a codebase. It discovers metrics to optimize, sets up the evaluation, and starts running experiments in a loop -- trying things, keeping what improves the score, throwing away what doesn't.
+A plugin for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://developers.openai.com/codex) that optimizes code through experiments. You give it a codebase. It discovers metrics to optimize, sets up the evaluation, and starts running experiments in a loop -- trying things, keeping what improves the score, throwing away what doesn't.
 
 Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) -- where an LLM runs training experiments autonomously to beat its own best score. Autoresearch is a pure hill climb: try something, keep or revert, repeat on a single branch. Evo adds structure on top of that idea:
 
 - **Tree search over greedy hill climb.** Multiple directions can fork from any committed node, so exploration doesn't collapse to one path.
-- **Parallel semi-autonomous agents.** spawn multiple subagents and run them simultaneously, each in its own git worktree. Each subagent reads traces, formulates hypotheses, and can run multiple iterations within its branch.
+- **Parallel semi-autonomous agents.** Spawn multiple subagents and run them simultaneously, each in its own git worktree. Each subagent reads traces, formulates hypotheses, and can run multiple iterations within its branch.
 - **Shared state.** Failure traces, annotations, and discarded hypotheses are accessible to every agent before it decides what to try next.
 - **Gating.** Regression tests or safety checks can be wired up as a gate. Experiments that don't pass get discarded.
 - **Observability.** A dashboard to monitor your experiments.
-- **Benchmark discovery.** `/discover` explores the repo, figures out what to measure, and instruments the evaluation.
+- **Benchmark discovery.** `evo:discover` explores the repo, figures out what to measure, and instruments the evaluation.
 
 ## Install
 
-Inside Claude Code:
+Common requirements: Python 3.12+, git, [uv](https://docs.astral.sh/uv/).
+
+### Claude Code
 
 ```
 /plugin marketplace add evo-hq/evo
 /plugin install evo@evo-hq-evo
 ```
 
-Then reload Claude Code. The `/evo:discover` and `/evo:optimize` slash commands become available in any repo, and the `evo` CLI is on the Bash tool's PATH for the duration of each session.
+Reload Claude Code. `/evo:discover` and `/evo:optimize` become available in any repo.
 
-If you already have a different `evo` on your system (e.g. the PyPI `evo` SLAM evaluation tool), the plugin's `bin/evo` takes precedence while the plugin is enabled, so there's no collision.
+### Codex
 
-Requirements: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Python 3.12+, git, [uv](https://docs.astral.sh/uv/).
+Codex needs the `evo` CLI installed globally. Install once, outside Codex:
+
+```bash
+uv tool install evo-hq-cli
+# or: pipx install evo-hq-cli
+evo --version   # should print: evo-hq-cli x.x.x
+```
+
+Then add the plugin (requires Codex **0.121.0-alpha.2 or newer** for the `marketplace add` command -- `npm install -g @openai/codex@alpha` if you're still on 0.120.0 stable):
+
+```bash
+codex marketplace add evo-hq/evo
+```
+
+Open Codex, run `/plugins`, find `evo`, install. Skills become available as `$evo discover` and `$evo optimize`.
+
+
 
 ## Usage
 
-Two slash commands:
+Two skills:
 
-- **`/evo:discover`** -- explores the repo, instruments the benchmark, runs baseline
-- **`/evo:optimize`** -- runs the optimization loop with parallel subagents until interrupted
+- **`evo:discover`** -- explores the repo, instruments the benchmark, runs baseline
+- **`evo:optimize`** -- runs the optimization loop with parallel subagents until interrupted
 
-`/evo:optimize` accepts optional parameters:
+Invocation syntax differs by host:
+
+- Claude Code: `/evo:discover`, `/evo:optimize`
+- Codex: `$evo discover`, `$evo optimize`
+
+`evo:optimize` accepts optional parameters:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -45,15 +68,15 @@ Two slash commands:
 | `budget` | 5 | Max iterations each subagent can run within its branch |
 | `stall` | 5 | Consecutive rounds with no improvement before auto-stopping |
 
-Example: `/evo:optimize subagents=3 budget=10 stall=3`
+Example: `/evo:optimize subagents=3 budget=10 stall=3` (or `$evo optimize subagents=3 budget=10 stall=3` on Codex).
 
 Typical flow:
 
 ```
-you: /evo:discover
+you: evo:discover
 evo: explores repo, instruments benchmark, runs baseline
 
-you: /evo:optimize
+you: evo:optimize
 evo: spawns 5 subagents in parallel, each exploring a different direction
      each subagent can run up to 5 iterations within its branch
      orchestrator collects results, prunes dead branches, adjusts strategy
@@ -66,8 +89,8 @@ Under the hood, each experiment gets its own git worktree branching from its par
 
 ```
 Orchestrator (main agent)
-  - reads state, identifies failure patterns, picks strategic directions
-  - gives each subagent a direction + specific ideas + iteration budget
+  - reads state, identifies failure patterns cross-cutting the tree
+  - writes a structured brief per subagent (objective, parent, boundaries, pointer traces)
   - collects results, prunes dead branches, adjusts strategy for next round
 
   Subagent 1 (background, budget: 5 iterations)
@@ -82,7 +105,7 @@ Orchestrator (main agent)
 
 ## Dashboard
 
-The dashboard starts automatically when you run `/evo:discover` (or `evo init`). When it comes up, Claude surfaces the URL in the chat:
+The dashboard starts automatically when you run `evo:discover` (or `evo init`). When it comes up, the agent surfaces the URL in the chat:
 
 ```
 Dashboard live: http://127.0.0.1:8080 (pid 12345)

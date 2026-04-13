@@ -98,7 +98,8 @@ def infra_path(root: Path) -> Path:
 
 
 def project_path(root: Path) -> Path:
-    return workspace_path(root) / PROJECT_FILE
+    # Top-level (not per-run) so it resolves without the active run ID.
+    return evo_dir(root) / PROJECT_FILE
 
 
 def scratchpad_path(root: Path) -> Path:
@@ -139,6 +140,9 @@ def load_json(path: Path, default: Any) -> Any:
         return json.load(handle)
 
 
+DEFAULT_MAX_ATTEMPTS = 3
+
+
 def default_config(root: Path, target: str, benchmark: str, metric: str, gate: str | None) -> dict[str, Any]:
     return {
         "repo_root": str(root),
@@ -150,6 +154,7 @@ def default_config(root: Path, target: str, benchmark: str, metric: str, gate: s
         "metric": metric,
         "current_eval_epoch": 1,
         "comparison_blocked": False,
+        "max_attempts": DEFAULT_MAX_ATTEMPTS,
         "initialized_at": utc_now(),
     }
 
@@ -294,7 +299,24 @@ def experiments_dir_for(root: Path, exp_id: str) -> Path:
 
 
 def experiment_result_path(root: Path, exp_id: str) -> Path:
+    # Overwritten on every evo run; reflects only the latest attempt.
     return experiments_dir_for(root, exp_id) / "result.json"
+
+
+def attempt_dir(root: Path, exp_id: str, attempt: int) -> Path:
+    return experiments_dir_for(root, exp_id) / "attempts" / f"{attempt:03d}"
+
+
+def attempt_log_path(root: Path, exp_id: str, attempt: int, filename: str) -> Path:
+    return attempt_dir(root, exp_id, attempt) / filename
+
+
+def attempt_traces_dir(root: Path, exp_id: str, attempt: int) -> Path:
+    return attempt_dir(root, exp_id, attempt) / "traces"
+
+
+def attempt_outcome_path(root: Path, exp_id: str, attempt: int) -> Path:
+    return attempt_dir(root, exp_id, attempt) / "outcome.json"
 
 
 def experiment_log_path(root: Path, exp_id: str, filename: str) -> Path:
@@ -407,6 +429,7 @@ def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str
             "benchmark_result": None,
             "gate_result": None,
             "gates": [],
+            "current_attempt": 0,
         }
         nodes[exp_id] = node
         nodes[parent_id].setdefault("children", []).append(exp_id)

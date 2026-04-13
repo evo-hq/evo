@@ -29,9 +29,10 @@ def _truncate(text: str, limit: int = 240) -> str:
     return compact[: limit - 3] + "..."
 
 
-def _diff_summary(root: Path, exp_id: str) -> str | None:
-    """Read diff.patch for an experiment and return a compact summary."""
-    patch = experiments_path(root) / exp_id / "diff.patch"
+def _diff_summary(root: Path, exp_id: str, attempt: int) -> str | None:
+    if attempt <= 0:
+        return None
+    patch = experiments_path(root) / exp_id / "attempts" / f"{attempt:03d}" / "diff.patch"
     if not patch.exists():
         return None
     content = patch.read_text(encoding="utf-8")
@@ -90,6 +91,7 @@ def build_scratchpad(root: Path) -> str:
     metric = config.get("metric", "max")
     committed = [node for node in graph["nodes"].values() if node.get("status") == "committed"]
     discarded = [node for node in graph["nodes"].values() if node.get("status") == "discarded"]
+    evaluated = [node for node in graph["nodes"].values() if node.get("status") == "evaluated"]
     active = [node for node in graph["nodes"].values() if node.get("status") == "active"]
     best = best_committed_score(graph, metric)
     frontier = frontier_nodes(graph)
@@ -108,6 +110,7 @@ def build_scratchpad(root: Path) -> str:
         f"- Best score: `{best}`",
         f"- Total experiments: `{len(graph['nodes']) - 1}`",
         f"- Committed: `{len(committed)}`",
+        f"- Evaluated (awaiting decision): `{len(evaluated)}`",
         f"- Discarded: `{len(discarded)}`",
         f"- Active workers: `{len(active)}`",
     ]
@@ -138,6 +141,16 @@ def build_scratchpad(root: Path) -> str:
             lines.append(f"- `{node['id']}` score=`{node.get('score')}` epoch=`{node.get('eval_epoch')}` {node.get('hypothesis','')}")
     else:
         lines.append("- No frontier nodes yet.")
+
+    if evaluated:
+        lines.extend(["", "## Awaiting Decision"])
+        lines.append("These nodes ran but neither committed nor discarded. Retry (edit + `evo run`) or abandon (`evo discard --reason`).")
+        for node in evaluated:
+            attempts = int(node.get("evaluated_attempts", 0))
+            lines.append(
+                f"- `{node['id']}` score=`{node.get('score')}` attempts=`{attempts}` "
+                f"gate_failed=`{node.get('gate_failures') or []}` {node.get('hypothesis','')}"
+            )
 
     # Gates
     # Show gates from root (always active) + any unique gates on frontier nodes
@@ -170,7 +183,7 @@ def build_scratchpad(root: Path) -> str:
     if recent_committed:
         lines.extend(["", "## Recent Diffs"])
         for node in recent_committed:
-            summary = _diff_summary(root, node["id"])
+            summary = _diff_summary(root, node["id"], int(node.get("current_attempt", 0)))
             if summary:
                 lines.append(f"- `{node['id']}`: {summary}")
 
