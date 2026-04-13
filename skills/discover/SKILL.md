@@ -135,7 +135,7 @@ Fix any issues and re-validate before proceeding. This catches environment probl
 ## 5. Initialize the workspace
 
 ```bash
-uv run evo init --target <file> --benchmark "<command with {target}>" --metric <max|min> [--gate "<gate command>"]
+evo init --target <file> --benchmark "<command with {target}>" --metric <max|min> [--gate "<gate command>"]
 ```
 
 `evo init` auto-starts the dashboard in the background and prints a line like `Dashboard live: http://127.0.0.1:8080 (pid 12345)`. **Relay that URL back to the user verbatim** -- it's the fastest way for them to watch experiments live. If port 8080 is busy, evo auto-increments; show whatever port is printed.
@@ -148,13 +148,13 @@ After init, add gates to the root node for behaviors identified in step 1:
 
 ```bash
 # Protect an existing test suite
-uv run evo gate add root --name "core_tests" --command "pytest tests/core/ -x"
+evo gate add root --name "core_tests" --command "pytest tests/core/ -x"
 
 # Protect specific benchmark tasks
-uv run evo gate add root --name "refund_flow" --command "python benchmark.py --agent {target} --task-ids 5"
+evo gate add root --name "refund_flow" --command "python benchmark.py --agent {target} --task-ids 5"
 
 # Custom validation
-uv run evo gate add root --name "no_crash" --command "python smoke_test.py --agent {target}"
+evo gate add root --name "no_crash" --command "python smoke_test.py --agent {target}"
 ```
 
 Gate commands support `{target}` and `{worktree}` placeholders, same as benchmark commands.
@@ -162,7 +162,7 @@ Gate commands support `{target}` and `{worktree}` placeholders, same as benchmar
 Verify each gate passes on the unmodified target before proceeding:
 
 ```bash
-uv run evo gate list root    # review what's registered
+evo gate list root    # review what's registered
 ```
 
 If no gates are identified during discovery, that's fine -- subagents can add gates later as they discover critical behaviors during optimization.
@@ -174,17 +174,17 @@ Document what the target does, what can be changed, how to interpret benchmark o
 ## 8. Run the baseline
 
 ```bash
-uv run evo new --parent root -m "baseline"
-uv run evo run exp_0000
+evo new --parent root -m "baseline"
+evo run exp_0000
 ```
 
 ## 9. Inspect results
 
 ```bash
-uv run evo get <id>            # full experiment detail with scores
-uv run evo traces <id> <task>  # per-task trace
-uv run evo annotate <id> <task> "analysis"  # record failure analysis
-uv run evo scratchpad          # full state: tree, best path, frontier, annotations, diffs, gates
+evo get <id>            # full experiment detail with scores
+evo traces <id> <task>  # per-task trace
+evo annotate <id> <task> "analysis"  # record failure analysis
+evo scratchpad          # full state: tree, best path, frontier, annotations, diffs, gates
 ```
 
 Read benchmark logs, traces, and score. Annotate failing tasks if applicable.

@@ -18,7 +18,7 @@ These defaults can be overridden via arguments: `/optimize [subagents=N] [budget
 
 ## Prerequisites
 
-- Workspace must be initialized (`uv run evo status` should succeed)
+- Workspace must be initialized (`evo status` should succeed)
 - A baseline experiment must be committed (run `/discover` first)
 - All benchmark dependencies must be available in the environment
 
@@ -54,14 +54,14 @@ Repeat until interrupted or stall limit reached:
 ### 1. Read current state
 
 ```bash
-uv run evo scratchpad          # full state: tree, best path, frontier, annotations, diffs, gates, what-not-to-try
-uv run evo frontier            # explorable nodes (JSON)
-uv run evo status              # one-line summary
-uv run evo annotations         # all annotations (filterable with --task/--exp)
-uv run evo path <id>           # root-to-node chain with scores
-uv run evo diff <id>           # diff vs parent
-uv run evo diff <id> <other>   # diff between any two experiments
-uv run evo gate list <id>      # effective gates for a node (inherited from ancestors)
+evo scratchpad          # full state: tree, best path, frontier, annotations, diffs, gates, what-not-to-try
+evo frontier            # explorable nodes (JSON)
+evo status              # one-line summary
+evo annotations         # all annotations (filterable with --task/--exp)
+evo path <id>           # root-to-node chain with scores
+evo diff <id>           # diff vs parent
+evo diff <id> <other>   # diff between any two experiments
+evo gate list <id>      # effective gates for a node (inherited from ancestors)
 ```
 
 On the first iteration, also read `.evo/project.md` to understand the optimization surface.
@@ -107,11 +107,11 @@ After all subagents complete:
 - If multiple experiments failed the same gate, consider whether the gate is too restrictive or the direction is wrong
 - Prune dead branches where 3+ children all regressed:
   ```bash
-  uv run evo prune <exp_id> --reason "exhausted: N children all regressed"
+  evo prune <exp_id> --reason "exhausted: N children all regressed"
   ```
 - Update notes with cross-cutting learnings:
   ```bash
-  uv run evo set <exp_id> --note "key insight from round N"
+  evo set <exp_id> --note "key insight from round N"
   ```
 
 ### 5. Continue or stop
@@ -129,7 +129,7 @@ After all subagents complete:
 On stop, print a final summary:
 - Best score achieved and experiment ID
 - Total experiments run across all rounds
-- The winning diff: `uv run evo diff <best_exp_id>`
+- The winning diff: `evo diff <best_exp_id>`
 - Suggested next steps if the score hasn't converged
 
 Go back to step 1.

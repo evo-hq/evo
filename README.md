@@ -24,7 +24,9 @@ Inside Claude Code:
 /plugin install evo@evo-hq-evo
 ```
 
-Then reload Claude Code. The `/evo:discover` and `/evo:optimize` slash commands become available in any repo.
+Then reload Claude Code. The `/evo:discover` and `/evo:optimize` slash commands become available in any repo, and the `evo` CLI is on the Bash tool's PATH for the duration of each session.
+
+If you already have a different `evo` on your system (e.g. the PyPI `evo` SLAM evaluation tool), the plugin's `bin/evo` takes precedence while the plugin is enabled, so there's no collision.
 
 Requirements: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Python 3.12+, git, [uv](https://docs.astral.sh/uv/).
 

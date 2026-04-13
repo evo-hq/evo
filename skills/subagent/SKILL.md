@@ -12,33 +12,33 @@ Your job: improve the target by running experiments within your assigned directi
 
 ## Important: Working Directory
 
-All `uv run evo ...` commands run from the **main repo root** (not inside the worktree).
+All `evo ...` commands run from the **main repo root** (not inside the worktree).
 Only file reads/edits use the **worktree path** returned by `evo new`. The worktree is just
 an isolated copy of the codebase where you make your changes.
 
 ## Useful Commands
 
 ```bash
-uv run evo scratchpad          # full state summary (tree, best path, frontier, annotations, diffs, gates)
-uv run evo status              # one-line: metric, best score, experiment counts
-uv run evo traces <id> <task>  # per-task trace detail
-uv run evo path <id>           # root-to-node chain with scores
-uv run evo diff <id>           # diff vs parent
-uv run evo diff <id> <other>   # diff between any two experiments
-uv run evo annotations         # all annotations (filterable with --task/--exp)
-uv run evo get <id>            # full experiment detail
-uv run evo gate list <id>      # effective gates for a node (inherited from ancestors)
-uv run evo gate add <id> --name <name> --command "<command>"  # add a gate
+evo scratchpad          # full state summary (tree, best path, frontier, annotations, diffs, gates)
+evo status              # one-line: metric, best score, experiment counts
+evo traces <id> <task>  # per-task trace detail
+evo path <id>           # root-to-node chain with scores
+evo diff <id>           # diff vs parent
+evo diff <id> <other>   # diff between any two experiments
+evo annotations         # all annotations (filterable with --task/--exp)
+evo get <id>            # full experiment detail
+evo gate list <id>      # effective gates for a node (inherited from ancestors)
+evo gate add <id> --name <name> --command "<command>"  # add a gate
 ```
 
 ## First Steps
 
 1. Read `.evo/project.md` to understand the target, what can be changed, and how to interpret results.
-2. Read the scratchpad for current state: `uv run evo scratchpad`
+2. Read the scratchpad for current state: `evo scratchpad`
    The scratchpad contains: status, ASCII tree, best path, frontier, recent experiments, recent diffs, annotations (grouped by task), what not to try, infra log, and notes.
 3. Study the traces the orchestrator pointed you to:
    ```bash
-   uv run evo traces <exp_id> <task_id>
+   evo traces <exp_id> <task_id>
    ```
    Understand the failure patterns relevant to your direction.
 
@@ -51,8 +51,8 @@ Repeat up to **budget** times:
 Before formulating your next hypothesis, refresh your view of what other agents have done:
 
 ```bash
-uv run evo status
-uv run evo scratchpad
+evo status
+evo scratchpad
 ```
 
 Check for:
@@ -68,7 +68,7 @@ Use the orchestrator's ideas as starting points but apply your own judgment base
 ### 2. Create experiment
 
 ```bash
-uv run evo new --parent <parent_id> -m "<your hypothesis>"
+evo new --parent <parent_id> -m "<your hypothesis>"
 ```
 
 Parse the JSON output to get the experiment ID and worktree path.
@@ -82,7 +82,7 @@ You may edit anything within the target scope. Do NOT modify benchmark, gate, or
 ### 4. Run the experiment
 
 ```bash
-uv run evo run <exp_id>
+evo run <exp_id>
 ```
 
 This runs benchmark + gate and prints the result. Use timeout of 600000ms (10 minutes).
@@ -96,7 +96,7 @@ This runs benchmark + gate and prints the result. Use timeout of 600000ms (10 mi
 ### 6. Annotate
 
 ```bash
-uv run evo annotate <exp_id> "<what you changed, what happened, and why>"
+evo annotate <exp_id> "<what you changed, what happened, and why>"
 ```
 
 Always annotate so other agents can learn from your experiments.
@@ -106,7 +106,7 @@ Always annotate so other agents can learn from your experiments.
 When you fix a critical behavior (e.g., the agent now correctly denies social engineering, or a previously-failing task now passes reliably), **lock it in as a gate** so future experiments on this branch can't regress it:
 
 ```bash
-uv run evo gate add <exp_id> --name "social_eng_resistance" --command "python benchmark.py --agent {target} --task-ids 3"
+evo gate add <exp_id> --name "social_eng_resistance" --command "python benchmark.py --agent {target} --task-ids 3"
 ```
 
 Gates are commands that must exit 0. They inherit down the tree -- all children of this node will be required to pass this gate. Only add gates for behaviors that are **non-negotiable** -- things that must never break regardless of what future experiments try.

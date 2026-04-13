@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# bin/evo — plugin entry point.
+#
+# Claude Code adds this `bin/` directory to the Bash tool's PATH when the
+# plugin is enabled, so `evo` resolves to this wrapper regardless of any
+# other `evo` binaries the user may have installed separately (e.g. the
+# PyPI `evo` package is an unrelated SLAM evaluation tool).
+#
+# We delegate to `uv run --project <plugin-root>` so dependencies resolve
+# against the plugin's own pyproject.toml, not whichever project the user
+# happens to be working on.
+set -euo pipefail
+
+if ! command -v uv >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+evo requires `uv` (https://docs.astral.sh/uv/) to manage its Python
+environment, and it was not found on PATH.
+
+Install it with one of:
+
+  macOS / Linux :  curl -LsSf https://astral.sh/uv/install.sh | sh
+  Homebrew      :  brew install uv
+  Windows       :  powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+Then re-run your evo command.
+EOF
+    exit 127
+fi
+
+PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec uv run --project "$PLUGIN_ROOT" evo "$@"
