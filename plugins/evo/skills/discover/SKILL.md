@@ -6,13 +6,39 @@ argument-hint: <optional context about what to optimize>
 
 # Discover
 
-Claude's internal procedure for `/evo:discover`. User only sees the AskUserQuestion prompts, the dashboard URL, and the baseline score -- everything else is Claude's choreography.
+Internal procedure for `evo:discover`. The user only sees the user-facing prompts, the dashboard URL, and the baseline score -- everything else is the agent's choreography.
+
+## Host conventions
+
+This skill runs on any host that implements the Agent Skills spec. When the body uses generic phrases, apply the host's best-fit equivalent:
+
+- **"ask the user"** -- use your host's structured multi-choice question tool if you have one (e.g. `AskUserQuestion`, `request_user_input`). If the host has none, phrase the question as plain text in your next reply and wait for the user's answer.
+- **File paths like `references/...`** -- relative to this `SKILL.md`; resolve from the skill directory.
+- **Slash commands shown in user-facing copy** (e.g. `/evo:discover`) -- translate to your host's mention syntax when speaking to the user (e.g. `$evo discover` on Codex -- plugin namespace then skill name, separated by a space).
+
+## 0. Verify the evo CLI is available
+
+Before anything else, run:
+
+```bash
+evo --version
+```
+
+Three outcomes to handle:
+
+1. **Output contains `evo-hq-cli`** (e.g. `evo-hq-cli 0.2.0`) -- the CLI is our binary. Continue to step 1.
+2. **Command not found** -- the host can't find `evo` on PATH. Stop and tell the user:
+   > `evo-hq-cli` isn't on your PATH. Install it once: `uv tool install evo-hq-cli` (or `pipx install evo-hq-cli`). Then re-invoke this skill.
+3. **Output is something else** (commonly `evo 1.x` or similar -- that's the unrelated SLAM package on PyPI) -- stop and tell the user:
+   > Found `evo` on PATH but it's a different package (not evo-hq-cli). Either `uv tool uninstall evo` (or the equivalent for your installer) and install `evo-hq-cli` in its place, or ensure `evo-hq-cli`'s install location is earlier on PATH. Then re-invoke.
+
+Do not try to auto-install. Host sandbox + network policy may block it; leaving the install as a user action keeps failure modes clear.
 
 ## Guiding principles
 
 - **Main stays clean.** Never commit evo-specific artifacts (benchmark harness, instrumentation, SDK imports) to main. Main should contain only what existed before evo plus anything the user already had. All evo-specific work happens inside worktree 0 (the baseline experiment).
 - **Baseline is a worktree, not a main commit.** `evo init` creates `.evo/` but nothing in main changes. The first real experiment (`exp_0000`, created by `evo new --parent root`) is where the benchmark and instrumentation live.
-- **Ask the user as little as possible.** Each AskUserQuestion is a beat of friction. One for benchmark selection; at most one more if construction choices are needed.
+- **Ask the user as little as possible.** Every question is a beat of friction. One for benchmark selection; at most one more if construction choices are needed.
 - **Relay the dashboard URL verbatim when it prints.** This is the user's window into the run.
 
 ## 1. Explore the repo
@@ -45,7 +71,7 @@ When the benchmark isn't obvious, propose candidate dimensions grounded in actua
 - Ground each in repo signals: already-instrumented code, stated goals in READMEs, TODO/FIXME patterns, domain defaults.
 - Rank by signal × slack × cost answered in prose (no numeric scores — they're vibes).
 
-## 4. AskUserQuestion: pick the benchmark
+## 4. Ask the user to pick the benchmark
 
 If step 2 produced one obvious benchmark, confirm it in one sentence and move on — no ranked list needed.
 
@@ -59,7 +85,7 @@ Otherwise, ask once:
 
 Record the selection. If step 3 ran, save non-picked dimensions to `.evo/project.md` under "Future experiment candidates" after init.
 
-## 5. AskUserQuestion: instrumentation mode
+## 5. Ask the user for instrumentation mode
 
 Three cases, in order of how to handle them:
 
@@ -216,8 +242,10 @@ Do not run separate determinism checks during setup. Note the benchmark's determ
 
 Based on the instrumentation mode passed to `evo init`:
 
-- **SDK mode**: add `from evo_agent import Run` (Python) or `import { Run } from '@evo-hq/evo-agent'` (Node) to the benchmark script. Wrap the eval loop per `${CLAUDE_SKILL_DIR}/references/sdk_python.py` or `${CLAUDE_SKILL_DIR}/references/sdk_node.js`.
-- **Inline mode**: copy the helper from `${CLAUDE_SKILL_DIR}/references/inline_instrumentation.py` (or `.js`) into the benchmark. Use `log_task` / `logTask` per task and `write_result` / `writeResult` once at the end.
+Paths below are relative to this `SKILL.md` file (resolve them against the skill directory).
+
+- **SDK mode**: add `from evo_agent import Run` (Python) or `import { Run } from '@evo-hq/evo-agent'` (Node) to the benchmark script. Wrap the eval loop per `references/sdk_python.py` or `references/sdk_node.js`.
+- **Inline mode**: copy the helper from `references/inline_instrumentation.py` (or `.js`) into the benchmark. Use `log_task` / `logTask` per task and `write_result` / `writeResult` once at the end.
 
 The wire protocol is the same either way: `task_<id>.json` written to `$EVO_TRACES_DIR`, single `{"score": ...}` JSON on stdout at the end, everything else on stderr.
 
@@ -229,25 +257,29 @@ Before the full baseline, validate the toolchain with the cheapest possible end-
 
 **Important: run this from the main repo root, not from inside the worktree.** The validation writes traces to `.evo/validate/`, which must resolve to the workspace's `.evo/` at the main repo root. If you run from the worktree, the relative path creates `<worktree>/.evo/validate/` and those artifacts get staged into the experiment commit when you run `git add` later.
 
-**Resolve `{worktree}` and `{target}` yourself before running.** Evo substitutes those placeholders only inside `evo run`, not in a plain shell. The validation here is a plain shell call, so build the command with concrete absolute paths captured from `evo new`'s output:
+**Resolve `{worktree}`, `{target}`, and the validator script path yourself before running.** Evo substitutes `{worktree}` / `{target}` only inside `evo run`, not in a plain shell. The validation here is a plain shell call, so build the command with concrete absolute paths:
+
+- `WORKTREE` = the worktree path returned by `evo new`
+- `TARGET` = `$WORKTREE/<relative target path, e.g. agent/solve.py>`
+- `VALIDATOR` = `<absolute path to this skill dir>/scripts/validate_stdout.py` -- resolve by taking the absolute path of this `SKILL.md`'s directory and appending `scripts/validate_stdout.py`
 
 ```bash
 # from main repo root
-WORKTREE="<worktree path returned by `evo new` above>"
-TARGET="$WORKTREE/<relative target path, e.g. agent/solve.py>"
+WORKTREE="<...>"
+TARGET="$WORKTREE/<...>"
+VALIDATOR="<...>/scripts/validate_stdout.py"
 
 mkdir -p .evo/validate
 EVO_TRACES_DIR=.evo/validate \
   python3 "$WORKTREE/benchmark.py" --target "$TARGET" \
   2>.evo/validate/stderr.log \
-  | python3 ${CLAUDE_SKILL_DIR}/scripts/validate_stdout.py
+  | python3 "$VALIDATOR"
 ```
 
-Adapt the benchmark invocation (interpreter, args) to whatever you stored with `evo init`. The non-negotiable part is that the resulting bash command contains no literal `{worktree}` or `{target}` -- those must be expanded to real paths before the shell runs the line.
+Adapt the benchmark invocation (interpreter, args) to whatever you stored with `evo init`. The non-negotiable part is that the resulting bash command contains no literal `{worktree}`, `{target}`, or relative-script paths -- expand all of them to absolute paths before the shell runs the line.
 
 Notes:
 - Traces go to `.evo/validate/` at the main repo root (already locally ignored via step 6a). Avoids /tmp collisions and cross-process conflicts, keeps artifacts scoped to the project.
-- `${CLAUDE_SKILL_DIR}` is a Claude Code skill substitution; it resolves to the absolute path of this skill's directory at invocation time.
 
 The validator checks:
 - stdout is **only** valid JSON (no progress bars, tables, or logging mixed in)
@@ -326,7 +358,7 @@ End the skill by reporting in chat:
 - The baseline experiment ID and score
 - The chosen optimization dimension and why
 - A one-liner on next steps: "Run `/evo:optimize` to start the optimization loop."
-- **Resume after crash:** if Claude Code, the shell, or the machine restarts mid-flow, re-invoke `/evo:optimize`. Evo reads `.evo/` and resumes from the last committed experiment -- no special restore procedure.
+- **Resume after crash:** if the host, the shell, or the machine restarts mid-flow, re-invoke `evo:optimize`. Evo reads `.evo/` and resumes from the last committed experiment -- no special restore procedure.
 - **State is local to this machine:** experiment commits on branches like `evo/run_0000/exp_*` survive `git push --all`, but orchestration state (graph, annotations, project notes) lives only in `.evo/`. If that history matters to you, back up `.evo/` separately (e.g., `tar -czf evo-state-$(date +%F).tar.gz .evo/`).
 
 ## Inspection commands (for debugging, reference only)
@@ -342,6 +374,6 @@ evo gate list <id>                  # effective gates at a node (inherited)
 ## Rules
 
 - Do NOT modify main after `evo init` unless the user explicitly asks. All new artifacts live in worktree 0.
-- Do NOT install packages without the AskUserQuestion confirmation from step 5.
+- Do NOT install packages without the user's confirmation from step 5.
 - Do NOT skip the held-out gate pairing when the benchmark was constructed from scratch. The gate is the safety net against Goodhart gaming, regardless of whether the benchmark is deterministic.
 - Do NOT skip the Goodhart check when the benchmark was constructed from scratch. Gate pairing is mandatory, not optional.

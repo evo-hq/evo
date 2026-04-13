@@ -27,5 +27,7 @@ EOF
     exit 127
 fi
 
+# The plugin root contains pyproject.toml; point uv at it so uv resolves
+# against this plugin's deps, not whichever project the user is working on.
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 exec uv run --project "$PLUGIN_ROOT" evo "$@"

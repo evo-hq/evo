@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_ROOT = REPO_ROOT / "plugins" / "evo"
 
 
 def run(args: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -16,7 +17,7 @@ def run(args: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedP
 
 
 def evo(args: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return run(["uv", "run", "--project", str(REPO_ROOT), "evo", *args], cwd=cwd, check=check)
+    return run(["uv", "run", "--project", str(PLUGIN_ROOT), "evo", *args], cwd=cwd, check=check)
 
 
 def write(path: Path, content: str) -> None:

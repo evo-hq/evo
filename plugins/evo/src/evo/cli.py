@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import DISTRIBUTION_NAME, __version__
 from .core import (
     add_gate,
     append_annotation,
@@ -817,6 +818,13 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="evo")
+    # Format includes the distribution name so skill checks can distinguish
+    # this binary from unrelated `evo` packages on PATH.
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"{DISTRIBUTION_NAME} {__version__}",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     init_p = sub.add_parser("init")

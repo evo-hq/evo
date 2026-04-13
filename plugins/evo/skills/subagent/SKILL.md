@@ -17,6 +17,10 @@ Plus an **iteration budget**.
 
 Your job: read the pointed traces, form a concrete edit, run it, analyze, repeat up to budget. The brief tells you *where* the gain is hiding; you decide *what* the edit is.
 
+## Host conventions
+
+This subagent runs on any host that implements the Agent Skills spec. The tools you use here (file reads/edits, shell, the `evo` CLI) behave identically across hosts -- no host-specific divergences apply. The orchestrator handles any spawning / lifecycle calls that do differ.
+
 ## Important: Working Directory
 
 All `evo ...` commands run from the **main repo root** (not inside the worktree).

@@ -6,6 +6,13 @@ argument-hint: "[subagents=N] [budget=N] [stall=N]"
 
 Run the `evo` optimization loop. Each round, the orchestrator writes structured briefs and spawns parallel subagents that execute within them. Each subagent is semi-autonomous: it reads the pointer traces, forms the concrete edit, runs experiments, and can iterate within its branch. Runs until interrupted or the stall limit is reached.
 
+## Host conventions
+
+This skill runs on any host that implements the Agent Skills spec. When the body uses generic phrases, apply the host's best-fit equivalent:
+
+- **"spawn N subagents in parallel"** -- use your host's parallel-subagent or background-task tool if you have one (e.g. `Agent` with `run_in_background`, `spawn_agent` + `wait_agent`, `spawn_agents_on_csv` for batch). Respect the host's concurrency cap -- if N exceeds it, run in batches. If the host has no parallel-subagent tool, run them serially and note the reduced round width in the final summary.
+- **Slash commands shown in user-facing copy** (e.g. `/evo:optimize`) -- translate to your host's mention syntax when speaking to the user (e.g. `$evo optimize` on Codex -- plugin namespace then skill name, separated by a space).
+
 ## Configuration
 
 These defaults can be overridden via arguments: `/optimize [subagents=N] [budget=N] [stall=N]`
@@ -93,9 +100,9 @@ merge or re-scope one of them. The frontier/pruning logic handles tree-level exp
 
 ### 3. Spawn parallel subagents
 
-Spawn all subagents in a **single message** using the Agent tool. **All subagents must run in the background** (`run_in_background: true`) so they execute in parallel.
+Spawn all subagents in a **single batch** using your host's parallel-subagent tool (see "Host conventions" for examples). They must execute in parallel, not sequentially -- serial execution defeats the per-round width.
 
-Use `model: "sonnet"` for straightforward briefs, `model: "opus"` for harder ones requiring deeper trace analysis.
+Pick a faster model for straightforward briefs and a stronger model for harder ones requiring deeper trace analysis, if your host exposes per-call model selection.
 
 Each subagent prompt must include:
 - An instruction to read `skills/subagent/SKILL.md` and follow its protocol

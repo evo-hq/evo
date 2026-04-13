@@ -1,0 +1,20 @@
+{
+  "name": "evo-hq",
+  "interface": {
+    "displayName": "evo-hq"
+  },
+  "plugins": [
+    {
+      "name": "evo",
+      "source": {
+        "source": "local",
+        "path": "./plugins/evo"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
