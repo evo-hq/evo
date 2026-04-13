@@ -5,4 +5,4 @@ from ._gate import Gate
 from ._run import Run
 
 __all__ = ["Backend", "Gate", "LocalBackend", "Run"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
