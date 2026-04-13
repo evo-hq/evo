@@ -4,9 +4,7 @@ description: Run the evo optimization loop with parallel subagents until interru
 argument-hint: "[subagents=N] [budget=N] [stall=N]"
 ---
 
-Run the `evo` optimization loop. Spawns parallel subagents that explore different directions simultaneously. Each subagent is semi-autonomous -- it reads traces, formulates hypotheses, and can run multiple iterations within its branch.
-
-Runs continuously until interrupted or the stall limit is reached.
+Run the `evo` optimization loop. Each round, the orchestrator writes structured briefs and spawns parallel subagents that execute within them. Each subagent is semi-autonomous: it reads the pointer traces, forms the concrete edit, runs experiments, and can iterate within its branch. Runs until interrupted or the stall limit is reached.
 
 ## Configuration
 
@@ -26,26 +24,26 @@ These defaults can be overridden via arguments: `/optimize [subagents=N] [budget
 
 ```
 Orchestrator (this agent):
-  - Reads state, identifies failure patterns, picks strategic directions
-  - Gives each subagent a direction + specific ideas to try
+  - Reads state, identifies failure patterns cross-cutting the tree
+  - Writes one brief per subagent: objective + parent + boundaries + pointer traces
+  - Verifies briefs are diverse (no two attacking the same surface)
   - Collects results, prunes dead branches, adjusts strategy
 
-  Subagent A (direction + ideas, budget: N iterations):
-    - Reads traces itself, analyzes failures in its focus area
-    - Formulates specific hypothesis informed by orchestrator's ideas
+  Subagent A (brief, budget: N iterations):
+    - Reads its pointer traces, forms the concrete edit
     - Creates experiment, edits target, runs benchmark, analyzes
-    - If budget remains and it sees a promising follow-up, continues
+    - If budget remains and sees a promising follow-up, continues
     - Can run up to N serial experiments on its own branch
     - Returns: what it tried, what worked, what it learned
 
-  Subagent B (different direction + ideas, budget: N iterations):
-    - Same autonomy, different focus area
+  Subagent B (different brief, budget: N iterations):
+    - Same protocol, non-overlapping objective
     ...
 ```
 
-Both layers analyze traces. The orchestrator does cross-cutting analysis (which patterns are most common, which branches plateau). Subagents do focused analysis within their assigned direction.
+Both layers read traces; the depth differs. The orchestrator scans for cross-cutting patterns (which failures are common, which branches plateau) -- enough to pick N non-overlapping briefs. Subagents read their pointer traces in depth, enough to commit to a concrete edit. Structured briefs are what prevent parallel subagents from duplicating each other's work.
 
-**Note on trace instrumentation:** Benchmarks use either `evo-agent` SDK or an inline helper -- check `.evo/meta.json` for `instrumentation_mode`. Subagents must stay consistent with the chosen style. If you need richer trace data for failure analysis, add fields to `run.report()` (SDK) or the trace dict inside `log_task()` (inline). The trace format is forward-compatible.
+**Trace instrumentation style**: `.evo/meta.json`'s `instrumentation_mode` records `sdk` vs `inline`. Subagents must stay consistent with it (see `skills/subagent/SKILL.md` for details).
 
 ## The Loop
 
@@ -66,34 +64,44 @@ evo gate list <id>      # effective gates for a node (inherited from ancestors)
 
 On the first iteration, also read `.evo/project.md` to understand the optimization surface.
 
-### 2. Analyze and plan directions
+### 2. Analyze state and write subagent briefs
 
 From the scratchpad, frontier, traces, and annotations, determine:
 - Which frontier nodes are most promising
 - What failure patterns are most common and impactful
 - What strategies have been tried and their outcomes
 - Which branches are plateauing or exhausted
-- What gates exist on each frontier node (`evo gate list <id>`) -- remind subagents of constraints they must satisfy
+- What gates exist on each frontier node (`evo gate list <id>`) -- subagents must satisfy these
 
-Formulate N directions (one per subagent). Each direction should include:
-- A **focus area** (e.g., "tool-use accuracy", "multi-step reasoning", "context management")
-- **Specific ideas** to try (e.g., "add a confirmation step before writes", "summarize conversation every 5 turns") -- give the subagent concrete starting points, not just vague themes
-- Which **frontier node** to branch from
-- Key **traces to study** (task IDs with interesting failures relevant to this direction)
+**Read the "Awaiting Decision" section of the scratchpad.** Evaluated nodes (ran, bad outcome, not yet discarded) are a cross-agent signal: if three subagents in the last round produced evaluated nodes that all failed the same gate, surface the pattern -- maybe the gate is too tight, maybe the approach has a shared flaw. Either tell the next round to avoid it, or propose a brief that attacks it directly. Without this cross-cutting read, each subagent rediscovers the same wall independently.
+
+Then write **one brief per subagent** with these four fields:
+
+1. **Objective** -- one sentence describing the bottleneck to attack and the evidence for it. Should name *where in the system's behavior* the gain is hiding (e.g., "tool-use error recovery fails after the first bad call across tasks 2, 5, 7") but **must not name specific files, functions, or concrete edits** -- that's the subagent's job after it reads the code.
+2. **Parent node** -- which experiment to branch from.
+3. **Boundaries / anti-patterns** -- what this subagent should NOT try, explicitly called out with reasons. Include approaches already tried and discarded (from "What Not To Try"), gates it must not regress, and anything adjacent subagents in this round are doing (so it doesn't duplicate).
+4. **Pointer traces** -- task IDs the subagent should study first, with a one-line reason each.
+
+Be specific and bounded. Vague briefs like "improve accuracy" cause subagents to duplicate each other's work; structured briefs prevent it.
+
+**Diversity check (before spawning).** Re-read the N briefs side by side. If two briefs:
+- point at the same objective phrased differently, OR
+- cite overlapping pointer traces without meaningfully different framings, OR
+- attack the same area of the system,
+
+merge or re-scope one of them. The frontier/pruning logic handles tree-level exploration vs exploitation algorithmically -- the orchestrator's job is just to make sure the round's N briefs don't collapse onto each other.
 
 ### 3. Spawn parallel subagents
 
 Spawn all subagents in a **single message** using the Agent tool. **All subagents must run in the background** (`run_in_background: true`) so they execute in parallel.
 
-Use `model: "sonnet"` for straightforward hypotheses, `model: "opus"` for harder ones requiring deeper reasoning.
+Use `model: "sonnet"` for straightforward briefs, `model: "opus"` for harder ones requiring deeper trace analysis.
 
 Each subagent prompt must include:
 - An instruction to read `skills/subagent/SKILL.md` and follow its protocol
-- The assigned direction and specific ideas to try
-- The parent experiment ID to branch from
-- Key task IDs / traces to study
+- The four-field brief verbatim (objective, parent, boundaries/anti-patterns, pointer traces)
 - The iteration budget
-- A brief scratchpad summary (current best score, frontier nodes, recent failures)
+- A one-paragraph scratchpad summary (current best score, frontier nodes, recent failures) for context
 
 ### 4. Collect results and update state
 
@@ -104,12 +112,15 @@ After all subagents complete:
 - If no subagent improved the score, increment the stall counter
 - If any improved, reset the stall counter
 - Check if subagents added new gates -- note these in your state tracking
-- If multiple experiments failed the same gate, consider whether the gate is too restrictive or the direction is wrong
-- Prune dead branches where 3+ children all regressed:
+- If multiple experiments failed the same gate, consider whether the gate is too restrictive or the briefs were aimed at the wrong surface
+
+**Cross-cut the round's evaluated nodes.** Before moving on, read `experiments/<id>/attempts/NNN/outcome.json` for each evaluated node from this round. The structured `gates[]` entries and `benchmark.result` let you spot shared failure modes the subagent summaries may have glossed over (e.g., three different subagents produced evaluated nodes whose gate_failures all included `refund_flow` -- that's a structural constraint the next round must confront, not three independent bad hypotheses).
+
+Prune dead branches where 3+ children all regressed:
   ```bash
   evo prune <exp_id> --reason "exhausted: N children all regressed"
   ```
-- Update notes with cross-cutting learnings:
+Update notes with cross-cutting learnings:
   ```bash
   evo set <exp_id> --note "key insight from round N"
   ```

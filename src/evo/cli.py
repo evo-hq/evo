@@ -16,6 +16,10 @@ from .core import (
     append_note,
     ascii_tree,
     atomic_write_json,
+    attempt_dir,
+    attempt_log_path,
+    attempt_outcome_path,
+    attempt_traces_dir,
     collect_gates_from_path,
     compare_scores,
     config_path,
@@ -146,6 +150,11 @@ def cmd_init(args: argparse.Namespace) -> int:
     if args.metric not in {"max", "min"}:
         raise RuntimeError("--metric must be `max` or `min`")
     run_id = init_workspace(root, target=args.target, benchmark=args.benchmark, metric=args.metric, gate=args.gate)
+    if args.instrumentation_mode:
+        meta_file = evo_dir(root) / "meta.json"
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        meta["instrumentation_mode"] = args.instrumentation_mode
+        atomic_write_json(meta_file, meta)
     write_scratchpad(root)
     _start_dashboard_background(root, port=args.port)
     print(f"Initialized evo workspace {run_id} at {workspace_path(root)}")
@@ -199,6 +208,42 @@ def _finalize_result(root: Path, exp_id: str, node: dict, score: float | None, s
     atomic_write_json(experiment_result_path(root, exp_id), payload)
 
 
+def _write_attempt_outcome(
+    root: Path,
+    exp_id: str,
+    attempt: int,
+    outcome: str,
+    *,
+    node: dict,
+    started_at: str,
+    score: float | None = None,
+    benchmark: dict | None = None,
+    gates: list[dict] | None = None,
+    error: str | None = None,
+    commit: str | None = None,
+    parent_score: float | None = None,
+    metric: str | None = None,
+) -> None:
+    finished = utc_now()
+    payload = {
+        "experiment_id": exp_id,
+        "attempt": attempt,
+        "outcome": outcome,
+        "hypothesis": node.get("hypothesis"),
+        "parent_id": node.get("parent"),
+        "parent_score": parent_score,
+        "metric": metric,
+        "score": score,
+        "started_at": started_at,
+        "finished_at": finished,
+        "benchmark": benchmark,
+        "gates": gates or [],
+        "error": error,
+        "commit": commit,
+    }
+    atomic_write_json(attempt_outcome_path(root, exp_id, attempt), payload)
+
+
 def _block_if_epoch_requires_baseline(root: Path, parent_id: str, no_compare: bool) -> None:
     if no_compare:
         return
@@ -211,24 +256,40 @@ def cmd_run(args: argparse.Namespace) -> int:
     root = repo_root()
     config, graph = _require_workspace(root)
     node = _read_node(root, args.exp_id)
-    if node.get("status") not in (None, "pending", "active"):
+    if node.get("status") not in (None, "pending", "active", "evaluated", "failed"):
         print(f"ERROR: {args.exp_id} has status '{node['status']}' -- cannot run again", file=sys.stderr)
         return 1
     _block_if_epoch_requires_baseline(root, node["parent"], no_compare=False)
 
+    max_attempts = int(config.get("max_attempts", 3))
+    evaluated_attempts = int(node.get("evaluated_attempts", 0))
+    if evaluated_attempts >= max_attempts:
+        print(
+            f"ERROR: {args.exp_id} exhausted {evaluated_attempts}/{max_attempts} attempts. "
+            f"Discard with `evo discard {args.exp_id} --reason \"...\"` or branch elsewhere.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Bumped even on failed runs so NNN subdirs never collide.
+    attempt_n = int(node.get("current_attempt", 0)) + 1
+    started_at = utc_now()
+
     def _mark_active(current_node: dict, _graph: dict) -> None:
         current_node["status"] = "active"
+        current_node["current_attempt"] = attempt_n
 
     update_node(root, args.exp_id, _mark_active)
 
     worktree = Path(node["worktree"])
     target = node_target_path(root, config, node)
     exp_dir = experiments_dir_for(root, args.exp_id)
-    traces_dir = exp_dir / "traces"
+    a_dir = attempt_dir(root, args.exp_id, attempt_n)
+    a_dir.mkdir(parents=True, exist_ok=True)
+    traces_dir = attempt_traces_dir(root, args.exp_id, attempt_n)
     traces_dir.mkdir(parents=True, exist_ok=True)
-    benchmark_log = experiment_log_path(root, args.exp_id, "benchmark.log")
-    benchmark_err = experiment_log_path(root, args.exp_id, "benchmark_err.log")
-    gate_log = experiment_log_path(root, args.exp_id, "gate.log")
+    benchmark_log = a_dir / "benchmark.log"
+    benchmark_err = a_dir / "benchmark_err.log"
     metric = config["metric"]
     parent_score = _resolve_parent_score(graph, node["parent"])
 
@@ -237,6 +298,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     env["EVO_TRACES_DIR"] = str(traces_dir)
     env["EVO_WORKTREE"] = str(worktree)
     env["EVO_EXPERIMENT_ID"] = args.exp_id
+    env["EVO_ATTEMPT"] = str(attempt_n)
+
+    # Captured before the benchmark runs so it survives crashes too.
+    parent_ref = current_branch(root) if node["parent"] == "root" else _read_node(root, node["parent"])["branch"]
+    diff_text = render_git_diff(root, parent_ref, worktree, relative_target(config))
+    (a_dir / "diff.patch").write_text(diff_text, encoding="utf-8")
+
+    gate_records: list[dict] = []
+    benchmark_record: dict | None = None
 
     try:
         try:
@@ -245,13 +315,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             raise RuntimeError("benchmark_timeout")
 
         if bench.returncode != 0:
+            benchmark_record = {"command": benchmark_cmd, "returncode": bench.returncode, "result": None}
             raise RuntimeError(f"benchmark_exit_{bench.returncode}")
 
         score, parsed = parse_score(bench.stdout)
-
-        parent_ref = current_branch(root) if node["parent"] == "root" else _read_node(root, node["parent"])["branch"]
-        diff_text = render_git_diff(root, parent_ref, worktree, relative_target(config))
-        experiment_log_path(root, args.exp_id, "diff.patch").write_text(diff_text, encoding="utf-8")
+        benchmark_record = {"command": benchmark_cmd, "returncode": 0, "result": parsed}
 
         gate_passed = True
         gate_failures: list[str] = []
@@ -262,14 +330,35 @@ def cmd_run(args: argparse.Namespace) -> int:
         if config.get("gate"):
             inherited_gates.insert(0, {"name": "_init_gate", "command": config["gate"]})
 
+        gate_origins: dict[str, str] = {}
+        for chain_node in path_to_node(graph, node["parent"]):
+            for g in chain_node.get("gates", []):
+                gate_origins.setdefault(g["name"], chain_node["id"])
+
         for g in inherited_gates:
             gate_cmd = fill_command_template(g["command"], target=target, worktree=worktree)
-            gate_log_file = experiment_log_path(root, args.exp_id, f"gate_{g['name']}.log")
+            gate_log_file = a_dir / f"gate_{g['name']}.log"
             try:
                 gate_result = _run_command(gate_cmd, cwd=root, env=env, stdout_path=gate_log_file, stderr_path=gate_log_file, timeout=args.timeout)
             except subprocess.TimeoutExpired:
+                gate_records.append({
+                    "name": g["name"],
+                    "from": gate_origins.get(g["name"], "config"),
+                    "command": gate_cmd,
+                    "passed": False,
+                    "returncode": None,
+                    "error": "gate_timeout",
+                })
                 raise RuntimeError(f"gate_timeout:{g['name']}")
-            if gate_result.returncode != 0:
+            passed = gate_result.returncode == 0
+            gate_records.append({
+                "name": g["name"],
+                "from": gate_origins.get(g["name"], "config"),
+                "command": gate_cmd,
+                "passed": passed,
+                "returncode": gate_result.returncode,
+            })
+            if not passed:
                 gate_failures.append(g["name"])
                 gate_passed = False
 
@@ -292,23 +381,42 @@ def cmd_run(args: argparse.Namespace) -> int:
             if config.get("comparison_blocked") and node["parent"] == "root":
                 mark_comparison_blocked(root, False)
             _finalize_result(root, args.exp_id, node, score, "committed", {"commit": commit})
+            _write_attempt_outcome(
+                root, args.exp_id, attempt_n, "committed",
+                node=node, started_at=started_at, score=score,
+                benchmark=benchmark_record, gates=gate_records,
+                commit=commit, parent_score=parent_score, metric=metric,
+            )
             write_scratchpad(root)
             delta = "" if parent_score is None else f" ({'+' if metric == 'max' else ''}{score - parent_score:.4f} vs parent)"
             print(f"COMMITTED {args.exp_id} {score}{delta}")
             return 0
 
-        def _mark_discarded(current_node: dict, _graph: dict) -> None:
-            current_node["status"] = "discarded"
+        def _mark_evaluated(current_node: dict, _graph: dict) -> None:
+            current_node["status"] = "evaluated"
             current_node["score"] = score
             current_node["benchmark_result"] = parsed
             current_node["gate_result"] = gate_passed
             current_node["gate_failures"] = gate_failures
+            current_node["evaluated_attempts"] = int(current_node.get("evaluated_attempts", 0)) + 1
 
-        update_node(root, args.exp_id, _mark_discarded)
-        _finalize_result(root, args.exp_id, node, score, "discarded")
-        delete_discarded_experiment(root, node)
+        update_node(root, args.exp_id, _mark_evaluated)
+        _finalize_result(root, args.exp_id, node, score, "evaluated")
+        _write_attempt_outcome(
+            root, args.exp_id, attempt_n, "evaluated",
+            node=node, started_at=started_at, score=score,
+            benchmark=benchmark_record, gates=gate_records,
+            parent_score=parent_score, metric=metric,
+        )
         write_scratchpad(root)
-        print(f"DISCARDED {args.exp_id} {score}")
+        remaining = max_attempts - (evaluated_attempts + 1)
+        suffix = f" ({remaining} attempts remaining)" if remaining > 0 else " (no attempts remaining -- retry blocked)"
+        reason = []
+        if not gate_passed:
+            reason.append(f"gate_failed={','.join(gate_failures)}")
+        if not compare_scores(metric, score, parent_score):
+            reason.append(f"score_regressed (parent={parent_score})")
+        print(f"EVALUATED {args.exp_id} score={score} {' '.join(reason)}{suffix}")
         return 0
     except Exception as exc:  # noqa: BLE001
         # Try to salvage score from traces written before failure
@@ -338,6 +446,12 @@ def cmd_run(args: argparse.Namespace) -> int:
 
         update_node(root, args.exp_id, _mark_failed)
         _finalize_result(root, args.exp_id, node, salvaged_score, "failed", {"error": str(exc)})
+        _write_attempt_outcome(
+            root, args.exp_id, attempt_n, "failed",
+            node=node, started_at=started_at, score=salvaged_score,
+            benchmark=benchmark_record, gates=gate_records,
+            error=error_msg, parent_score=parent_score, metric=metric,
+        )
         write_scratchpad(root)
         print(f"FAILED {args.exp_id} {exc}")
         return 1
@@ -346,7 +460,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 def _record_done_result(root: Path, args: argparse.Namespace) -> int:
     config, graph = _require_workspace(root)
     node = _read_node(root, args.exp_id)
-    if node.get("status") not in (None, "pending", "active"):
+    if node.get("status") not in (None, "pending", "active", "evaluated", "failed"):
         print(f"ERROR: {args.exp_id} has status '{node['status']}' -- cannot record again", file=sys.stderr)
         return 1
     if args.traces:
@@ -373,16 +487,16 @@ def _record_done_result(root: Path, args: argparse.Namespace) -> int:
     keep = compare_scores(metric, args.score, parent_score)
     if config.get("comparison_blocked") and node["parent"] == "root":
         mark_comparison_blocked(root, False)
-    status = "committed" if keep else "discarded"
+    status = "committed" if keep else "evaluated"
 
     def _mark(current_node: dict, _graph: dict) -> None:
         current_node["status"] = status
         current_node["score"] = args.score
+        if status == "evaluated":
+            current_node["evaluated_attempts"] = int(current_node.get("evaluated_attempts", 0)) + 1
 
     update_node(root, args.exp_id, _mark)
     _finalize_result(root, args.exp_id, node, args.score, status, {"recorded_only": True})
-    if status == "discarded":
-        delete_discarded_experiment(root, node)
     write_scratchpad(root)
     print(f"{status.upper()} {args.exp_id} {args.score}")
     return 0
@@ -480,6 +594,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(
         f"metric={metric} epoch={config.get('current_eval_epoch', 1)} "
         f"experiments={len(nodes)} committed={sum(1 for n in nodes if n.get('status') == 'committed')} "
+        f"evaluated={sum(1 for n in nodes if n.get('status') == 'evaluated')} "
         f"discarded={sum(1 for n in nodes if n.get('status') == 'discarded')} "
         f"failed={sum(1 for n in nodes if n.get('status') == 'failed')} "
         f"active={sum(1 for n in nodes if n.get('status') == 'active')} best={best}"
@@ -543,7 +658,12 @@ def cmd_path(args: argparse.Namespace) -> int:
 def cmd_diff(args: argparse.Namespace) -> int:
     root = repo_root()
     if args.other_id is None:
-        target = experiments_dir_for(root, args.exp_id) / "diff.patch"
+        node = _read_node(root, args.exp_id)
+        attempt = int(node.get("current_attempt", 0))
+        if attempt == 0:
+            print("")
+            return 0
+        target = attempt_log_path(root, args.exp_id, attempt, "diff.patch")
         print(target.read_text(encoding="utf-8") if target.exists() else "")
         return 0
     config, graph = _require_workspace(root)
@@ -566,14 +686,23 @@ def cmd_diff(args: argparse.Namespace) -> int:
 
 def cmd_traces(args: argparse.Namespace) -> int:
     root = repo_root()
-    traces_dir = experiments_dir_for(root, args.exp_id) / "traces"
+    node = _read_node(root, args.exp_id)
+    attempt = int(node.get("current_attempt", 0))
+    if attempt == 0:
+        if args.task:
+            print("")
+        else:
+            print("{}")
+        return 0
+    traces_dir = attempt_traces_dir(root, args.exp_id, attempt)
     if args.task:
         path = traces_dir / f"task_{args.task}.json"
         print(path.read_text(encoding="utf-8"))
         return 0
     payload = {}
-    for path in sorted(traces_dir.glob("*.json")):
-        payload[path.name] = json.loads(path.read_text(encoding="utf-8"))
+    if traces_dir.exists():
+        for path in sorted(traces_dir.glob("*.json")):
+            payload[path.name] = json.loads(path.read_text(encoding="utf-8"))
     print(json.dumps(payload, indent=2))
     return 0
 
@@ -695,6 +824,7 @@ def build_parser() -> argparse.ArgumentParser:
     init_p.add_argument("--benchmark", required=True)
     init_p.add_argument("--metric", required=True, choices=["max", "min"])
     init_p.add_argument("--gate")
+    init_p.add_argument("--instrumentation-mode", choices=["sdk", "inline"])
     init_p.add_argument("--port", type=int, default=8080)
     init_p.set_defaults(func=cmd_init)
 

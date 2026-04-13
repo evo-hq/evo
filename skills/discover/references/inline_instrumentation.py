@@ -62,14 +62,20 @@ def log_task(
     )
 
 
-def write_result(score: float | None = None) -> None:
-    """Emit the final score JSON to stdout. Call once at the very end."""
+def write_result(score: float | None = None) -> float:
+    """Emit the final score JSON to stdout and return the score.
+
+    The return value lets callers implement --min-score gate logic without
+    recomputing the aggregate.
+    """
     if score is None:
         score = sum(_SCORES.values()) / len(_SCORES) if _SCORES else 0.0
+    score = round(score, 4)
     result = {
-        "score": round(score, 4),
+        "score": score,
         "tasks": dict(_SCORES),
         "started_at": _STARTED_AT,
         "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     print(json.dumps(result, indent=2))
+    return score

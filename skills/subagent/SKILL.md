@@ -6,9 +6,16 @@ disable-model-invocation: true
 
 # Evo Subagent Protocol
 
-You are an evo optimization subagent. You have been given a **direction**, **specific ideas**, a **parent experiment ID**, and an **iteration budget** by the orchestrator.
+You are an evo optimization subagent. The orchestrator has given you a **brief** with four fields:
 
-Your job: improve the target by running experiments within your assigned direction.
+- **Objective** -- the bottleneck to attack and evidence for it (strategic, not edit-level)
+- **Parent node** -- the experiment to branch from
+- **Boundaries / anti-patterns** -- what NOT to try and why
+- **Pointer traces** -- which task traces to study first
+
+Plus an **iteration budget**.
+
+Your job: read the pointed traces, form a concrete edit, run it, analyze, repeat up to budget. The brief tells you *where* the gain is hiding; you decide *what* the edit is.
 
 ## Important: Working Directory
 
@@ -36,11 +43,11 @@ evo gate add <id> --name <name> --command "<command>"  # add a gate
 1. Read `.evo/project.md` to understand the target, what can be changed, and how to interpret results.
 2. Read the scratchpad for current state: `evo scratchpad`
    The scratchpad contains: status, ASCII tree, best path, frontier, recent experiments, recent diffs, annotations (grouped by task), what not to try, infra log, and notes.
-3. Study the traces the orchestrator pointed you to:
+3. Study the pointer traces from your brief:
    ```bash
    evo traces <exp_id> <task_id>
    ```
-   Understand the failure patterns relevant to your direction.
+   Understand the failure patterns your objective points at.
 
 ## Iteration Loop
 
@@ -48,7 +55,7 @@ Repeat up to **budget** times:
 
 ### 0. Re-read shared state (skip on first iteration)
 
-Before formulating your next hypothesis, refresh your view of what other agents have done:
+Before formulating your next edit, refresh your view of what other agents have done:
 
 ```bash
 evo status
@@ -58,12 +65,18 @@ evo scratchpad
 Check for:
 - **Best score reached ceiling** (1.0 for max, 0.0 for min) -- if so, stop and report.
 - **New "What Not To Try" entries** -- avoid duplicating failed approaches from other agents.
+- **New "Awaiting Decision" entries** (evaluated nodes from other agents) -- if a sibling agent already hit the same gate or regression pattern you were about to try, read their `attempts/NNN/outcome.json` and diff before duplicating the attempt.
 - **New annotations** -- learn from others' findings on failing tasks.
 - **Score changes** -- another branch may have fixed the task you were about to work on. Adjust or stop.
 
-### 1. Formulate hypothesis
+### 1. Formulate the edit
 
-Use the orchestrator's ideas as starting points but apply your own judgment based on what you see in the traces. Be specific -- "add a confirmation step before database writes" not "improve accuracy."
+Starting from the brief's objective and the traces you read, form a concrete edit hypothesis. It must name:
+- **Where** in the code: file, function, or behavior to change.
+- **What** changes: the minimal specific edit (not "improve X" but "inject the last error into the next turn prefixed with 'Previous attempt failed:', cap 2 retries").
+- **Predicted effect**: which task or behavior this should change and why.
+
+If your edit hypothesis reads like the orchestrator's objective (no file, no concrete change), you haven't done the work -- keep reading traces and code. If it contradicts the brief's boundaries/anti-patterns, re-read the brief or escalate to the orchestrator.
 
 ### 2. Create experiment
 
@@ -75,7 +88,7 @@ Parse the JSON output to get the experiment ID and worktree path.
 
 ### 3. Edit the target
 
-Read and edit the target file(s) using the **full worktree path** from `evo new` output (the `"target"` and `"worktree"` fields). For example, if `evo new` returns `"target": "/path/to/.evo/worktrees/exp_0005/src/agent.py"`, read and edit that exact path.
+Read and edit the target file(s) using the **full worktree path** from `evo new` output (the `"target"` and `"worktree"` fields). Example: `"target": "/path/to/.evo/run_0000/worktrees/exp_0005/src/agent.py"` -- read and edit that exact path.
 
 You may edit anything within the target scope. Do NOT modify benchmark, gate, or framework code.
 
@@ -85,13 +98,26 @@ You may edit anything within the target scope. Do NOT modify benchmark, gate, or
 evo run <exp_id>
 ```
 
-This runs benchmark + gate and prints the result. Use timeout of 600000ms (10 minutes).
+This runs benchmark + gate and prints the result.
 
 ### 5. Analyze the result
 
-- **Committed** (score improved + gate passed): Read failing task traces to find the next weakness. Use this experiment as the parent for your next iteration.
-- **Discarded** (score regressed or gate failed): Understand why. Try a different approach in the next iteration, branching from the original parent (not the discarded one).
-- **Failed** (infrastructure error, non-zero exit): Report the error and **stop**. Do not retry.
+`evo run` prints one of three outcomes:
+
+- **`COMMITTED`** (score improved + gates passed): node locked in. Read failing task traces to find the next weakness. Use this experiment as the parent for your next iteration.
+
+- **`EVALUATED`** (score regressed or gate failed): ran cleanly but bad outcome. **You decide next step.** Read:
+  - `experiments/<id>/attempts/NNN/outcome.json` -- structured record: `score` vs `parent_score`, per-gate `passed`/`returncode`, benchmark result, error. Tells you *what* broke.
+  - `experiments/<id>/attempts/NNN/diff.patch` and `benchmark.log` -- tell you *why*.
+
+  Then either:
+  - Fixable edit-bug (off-by-one, wrong signature): edit the worktree and `evo run <id>` again. Bounded by `max_attempts` (default 3). Before retrying, compare your planned edit against the previous attempts' `outcome.json` on this same node -- if two earlier attempts hit the same gate, a small tweak won't fix it. When the cap is hit, run is refused -- you must discard.
+  - Hypothesis is wrong, no fix: `evo discard <id> --reason "..."` and branch a new experiment from the **original parent**.
+
+- **`FAILED`** (infra error, non-zero exit, timeout): couldn't evaluate. Doesn't consume the retry budget.
+  - Transient / fixable locally: retry.
+  - Structural (benchmark broken, evo misconfigured): report to orchestrator and stop.
+  - Not worth fixing: `evo discard <id> --reason "..."`.
 
 ### 6. Annotate
 
@@ -103,35 +129,19 @@ Always annotate so other agents can learn from your experiments.
 
 ### 6b. Add gates for fixed behaviors
 
-When you fix a critical behavior (e.g., the agent now correctly denies social engineering, or a previously-failing task now passes reliably), **lock it in as a gate** so future experiments on this branch can't regress it:
+When you fix a critical, easy-to-regress behavior, lock it in as a gate so future experiments on this branch can't break it:
 
 ```bash
 evo gate add <exp_id> --name "social_eng_resistance" --command "python benchmark.py --agent {target} --task-ids 3"
 ```
 
-Gates are commands that must exit 0. They inherit down the tree -- all children of this node will be required to pass this gate. Only add gates for behaviors that are **non-negotiable** -- things that must never break regardless of what future experiments try.
-
-Good candidates for gates:
-- A specific benchmark task that was hard to fix and is easy to regress
-- A test that validates a critical policy rule
-- A smoke test for a behavior you discovered is fragile
-
-Do NOT gate every passing task -- that over-constrains the search. Gate only the critical ones.
+Good candidates: a specific benchmark task that was hard to fix, a test for a critical policy rule, a smoke test for a fragile behavior. Do NOT gate every passing task -- that over-constrains the search.
 
 ### 7. Decide: continue or stop
 
-Continue if:
-- You have budget remaining
-- You see a promising follow-up hypothesis
-- Your last experiment was committed (keep pushing this branch)
-- OR your last experiment was discarded but you have a meaningfully different idea
+Continue if budget remains AND (last outcome was committed, OR you have a meaningfully different idea after an evaluated/discarded outcome). When continuing after a committed experiment, update your parent to the newly committed ID.
 
-Stop if:
-- Budget exhausted
-- Infrastructure failure
-- You've tried multiple variations with no improvement and have no new ideas
-
-When continuing after a committed experiment, update your parent to the newly committed experiment ID.
+Stop if budget exhausted, infra failure, or you've exhausted variations with no improvement.
 
 ## Enriching traces (optional)
 
@@ -145,10 +155,9 @@ The trace format is forward-compatible -- extra fields are preserved. Do NOT cha
 ## Rules
 
 - Do NOT run `evo init` or `evo reset`
-- You MAY run `evo discard <your_exp_id> --reason "..."` if you realize mid-edit that an approach is wrong before running
-- Always annotate your experiments
-- If `evo run` fails with non-zero exit (infrastructure error), stop and report
-- Stay within your assigned direction -- don't drift into unrelated changes
+- `evo discard <your_exp_id> --reason "..."` is your explicit "abandon" action — use it for any node you've decided not to pursue further (pre-run realization, evaluated with a bad hypothesis, or unfixable infra failure). Discard deletes the worktree and branch; the node and its per-attempt artifacts stay in `.evo/` as a record of what was tried.
+- Always annotate your experiments, especially before discarding — the annotation is what persists after the worktree is gone.
+- Stay within your brief's objective and boundaries -- don't drift into unrelated changes
 
 ## When Done
 
