@@ -1,5 +1,5 @@
 {
   "name": "evo",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Structured experiment-driven code optimization using tree search and parallel subagents"
 }
