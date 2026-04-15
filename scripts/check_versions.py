@@ -21,9 +21,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 SOURCES = [
     ("plugins/evo/pyproject.toml", "pyproject.toml (evo-hq-cli)"),
-    ("plugins/evo/src/evo/__init__.py", "__version__ (read by `evo --version`)"),
+    ("plugins/evo/src/evo/__init__.py", "evo/__init__.__version__ (read by `evo --version`)"),
     ("plugins/evo/.claude-plugin/plugin.json", "Claude Code plugin manifest"),
     ("plugins/evo/.codex-plugin/plugin.json", "Codex plugin manifest"),
+    ("sdk/python/pyproject.toml", "pyproject.toml (evo-hq-agent)"),
+    ("sdk/python/src/evo_agent/__init__.py", "evo_agent/__init__.__version__"),
+    ("sdk/node/package.json", "package.json (@evo-hq/evo-agent)"),
 ]
 
 
