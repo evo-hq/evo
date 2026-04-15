@@ -16,21 +16,23 @@ This skill runs on any host that implements the Agent Skills spec. When the body
 - **File paths like `references/...`** -- relative to this `SKILL.md`; resolve from the skill directory.
 - **Slash commands shown in user-facing copy** (e.g. `/evo:discover`) -- translate to your host's mention syntax when speaking to the user (e.g. `$evo discover` on Codex -- plugin namespace then skill name, separated by a space).
 
-## 0. Verify the evo CLI is available
+## 0. Verify the evo CLI is available and in sync with the plugin
 
 Before anything else, run:
 
 ```bash
-evo --version
+evo-version-check
 ```
 
-Three outcomes to handle:
+This wraps `evo --version` and additionally asserts the installed CLI matches the plugin manifest version (hosts refetch the plugin on version bumps, but do not reinstall the globally-installed CLI -- drift between the two breaks skills silently).
 
-1. **Output contains `evo-hq-cli`** (e.g. `evo-hq-cli 0.2.0`) -- the CLI is our binary. Continue to step 1.
-2. **Command not found** -- the host can't find `evo` on PATH. Stop and tell the user:
+Four outcomes to handle:
+
+1. **Exit 0, `evo-version-check: OK (plugin=X, cli=X)`** -- continue to step 1.
+2. **Exit 1, "plugin manifest and installed CLI disagree"** -- stop and show the user the script's stderr verbatim; it tells them the `uv tool install --force evo-hq-cli==<version>` command to run. Then re-invoke this skill.
+3. **Exit 2, "evo CLI not on PATH"** -- stop and tell the user:
    > `evo-hq-cli` isn't on your PATH. Install it once: `uv tool install evo-hq-cli` (or `pipx install evo-hq-cli`). Then re-invoke this skill.
-3. **Output is something else** (commonly `evo 1.x` or similar -- that's the unrelated SLAM package on PyPI) -- stop and tell the user:
-   > Found `evo` on PATH but it's a different package (not evo-hq-cli). Either `uv tool uninstall evo` (or the equivalent for your installer) and install `evo-hq-cli` in its place, or ensure `evo-hq-cli`'s install location is earlier on PATH. Then re-invoke.
+4. **`evo-version-check: command not found`** -- the host's plugin install is incomplete (missing the `bin/` wrapper). Fall back to running `evo --version` directly and check for `evo-hq-cli` in the output; if it's a different package (commonly `evo 1.x` -- the unrelated SLAM tool), tell the user to uninstall it and install `evo-hq-cli` in its place.
 
 Do not try to auto-install. Host sandbox + network policy may block it; leaving the install as a user action keeps failure modes clear.
 
