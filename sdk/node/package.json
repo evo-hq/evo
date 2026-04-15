@@ -1,6 +1,6 @@
 {
   "name": "@evo-hq/evo-agent",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Lightweight reporting SDK for evo experiments. Zero dependencies.",
   "type": "module",
   "publishConfig": {
