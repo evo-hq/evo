@@ -84,7 +84,7 @@ def main() -> int:
     for relpath, label, version in versions:
         print(f"  {relpath:<{width}}  {version}  ({label})", file=sys.stderr)
     print(
-        "\nBump all three together. Claude Code / Codex key off the plugin "
+        f"\nBump all {len(versions)} together. Claude Code / Codex key off the plugin "
         "manifest version to decide whether to refetch the plugin -- bumping "
         "pyproject alone leaves installed hosts stuck on the old CLI.",
         file=sys.stderr,
