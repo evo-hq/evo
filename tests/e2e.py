@@ -314,6 +314,18 @@ sys.exit(1 if "BREAK_CANCEL" in content else 0)
     names = {g["name"] for g in gate_list}
     assert names == {"refund_flow", "cancel_flow"}
 
+    # `evo get` returns effective gates (own + inherited) and exposes
+    # own-only gates under `own_gates`. exp_0000 inherits refund_flow
+    # from root and owns cancel_flow.
+    got = json.loads(evo(["get", "exp_0000"], cwd=root).stdout)
+    assert {g["name"] for g in got["gates"]} == {"refund_flow", "cancel_flow"}
+    assert {g["name"] for g in got["own_gates"]} == {"cancel_flow"}
+
+    # For root, effective and own are identical.
+    got_root = json.loads(evo(["get", "root"], cwd=root).stdout)
+    assert {g["name"] for g in got_root["gates"]} == {"refund_flow"}
+    assert {g["name"] for g in got_root["own_gates"]} == {"refund_flow"}
+
     # Experiment that improves score but breaks the refund gate
     evo(["new", "--parent", "exp_0000", "-m", "break refund"], cwd=root)
     write(root / ".evo" / "run_0000" / "worktrees" / "exp_0001" / "agent.py", 'STATE = "GOOD BREAK_REFUND"\n')
