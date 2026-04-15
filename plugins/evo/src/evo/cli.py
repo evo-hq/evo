@@ -638,7 +638,13 @@ def cmd_get(args: argparse.Namespace) -> int:
         path = experiments_dir_for(root, args.exp_id) / args.filename
         print(path.read_text(encoding="utf-8"))
         return 0
-    print(json.dumps(_read_node(root, args.exp_id), indent=2))
+    graph = load_graph(root)
+    if args.exp_id not in graph["nodes"]:
+        raise RuntimeError(f"unknown experiment: {args.exp_id}")
+    node = dict(graph["nodes"][args.exp_id])
+    node["own_gates"] = node.get("gates", [])
+    node["gates"] = collect_gates_from_path(graph, args.exp_id)
+    print(json.dumps(node, indent=2))
     return 0
 
 
