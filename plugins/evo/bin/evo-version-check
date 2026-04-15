@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# bin/evo-version-check -- assert the installed evo-hq-cli version matches
+# the plugin manifest this wrapper lives in. Hosts (Claude Code, Codex)
+# refetch the plugin based on the manifest version, but they do not
+# reinstall the globally-installed CLI. If the two drift, the skills
+# will be instructing the CLI to do things it cannot do.
+#
+# Exit 0 on match, 1 on mismatch (with diagnostic on stderr), 2 on
+# environment error (manifest missing, CLI missing, parse failure).
+set -euo pipefail
+
+PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+MANIFEST=""
+for candidate in "$PLUGIN_ROOT/.claude-plugin/plugin.json" "$PLUGIN_ROOT/.codex-plugin/plugin.json"; do
+    if [ -f "$candidate" ]; then
+        MANIFEST="$candidate"
+        break
+    fi
+done
+
+if [ -z "$MANIFEST" ]; then
+    echo "evo-version-check: no plugin manifest found under $PLUGIN_ROOT" >&2
+    exit 2
+fi
+
+# Parse "version": "X.Y.Z" without requiring jq (may be absent on the host).
+PLUGIN_VERSION=$(
+    grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$MANIFEST" \
+    | head -1 \
+    | sed 's/.*"\([^"]*\)"[[:space:]]*$/\1/'
+)
+if [ -z "$PLUGIN_VERSION" ]; then
+    echo "evo-version-check: could not parse version from $MANIFEST" >&2
+    exit 2
+fi
+
+if ! command -v evo >/dev/null 2>&1; then
+    echo "evo-version-check: evo CLI not on PATH" >&2
+    exit 2
+fi
+
+CLI_OUTPUT=$(evo --version 2>/dev/null || true)
+CLI_VERSION=$(
+    printf '%s\n' "$CLI_OUTPUT" \
+    | grep -oE 'evo-hq-cli[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' \
+    | awk '{print $2}' \
+    | head -1
+)
+if [ -z "$CLI_VERSION" ]; then
+    echo "evo-version-check: could not parse evo-hq-cli version from 'evo --version' output: ${CLI_OUTPUT}" >&2
+    exit 2
+fi
+
+if [ "$CLI_VERSION" != "$PLUGIN_VERSION" ]; then
+    cat >&2 <<EOF
+evo-version-check: plugin manifest and installed CLI disagree.
+
+  plugin manifest : $PLUGIN_VERSION   ($MANIFEST)
+  installed CLI   : $CLI_VERSION   (evo --version)
+
+The host has refetched a newer/older plugin than the CLI on PATH. Update the CLI to match:
+
+  uv tool install --force evo-hq-cli==$PLUGIN_VERSION
+    or
+  pipx install --force evo-hq-cli==$PLUGIN_VERSION
+
+Then re-invoke the skill.
+EOF
+    exit 1
+fi
+
+echo "evo-version-check: OK (plugin=$PLUGIN_VERSION, cli=$CLI_VERSION)"
