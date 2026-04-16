@@ -143,6 +143,15 @@ jobs:
       - name: Check distribution metadata
         working-directory: plugins/evo
         run: twine check dist/*
+      - name: Verify dashboard assets are in the wheel
+        working-directory: plugins/evo
+        run: |
+          whl=$(ls dist/*.whl)
+          for f in evo/static/index.html evo/static/app.js evo/static/style.css; do
+            unzip -l "$whl" | awk '{print $NF}' | grep -qx "$f" || {
+              echo "missing $f in $whl"; exit 1;
+            }
+          done
       - name: Publish to PyPI
         working-directory: plugins/evo
         env:
