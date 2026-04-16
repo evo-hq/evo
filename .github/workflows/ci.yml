@@ -18,11 +18,15 @@ jobs:
 
   cli-wheel-assets:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install build tooling
         run: python -m pip install --upgrade pip build
       - name: Build sdist + wheel
@@ -37,3 +41,32 @@ jobs:
               echo "missing $f in $whl"; exit 1;
             }
           done
+      - name: Smoke-test installed CLI
+        working-directory: plugins/evo
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/evo --version
+          /tmp/smoke/bin/python -c "from evo import dashboard; from pathlib import Path; p = Path(dashboard.__file__).parent / 'static' / 'index.html'; assert p.exists(), p"
+
+  sdk-python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build
+      - name: Build sdist + wheel
+        working-directory: sdk/python
+        run: python -m build
+      - name: Install built wheel
+        working-directory: sdk/python
+        run: python -m pip install dist/*.whl
+      - name: Run SDK tests
+        run: python sdk/python/test/test_run.py
