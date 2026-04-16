@@ -1,6 +1,6 @@
 {
   "name": "evo",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Structured experiment-driven code optimization using tree search and parallel subagents",
   "author": {
     "name": "evo-hq",
