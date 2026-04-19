@@ -17,11 +17,15 @@ jobs:
         run: python3 scripts/check_versions.py
 
   cli-wheel-assets:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -35,19 +39,31 @@ jobs:
       - name: Verify dashboard assets are in the wheel
         working-directory: plugins/evo
         run: |
-          whl=$(ls dist/*.whl)
-          for f in evo/static/index.html evo/static/app.js evo/static/style.css; do
-            unzip -l "$whl" | awk '{print $NF}' | grep -qx "$f" || {
-              echo "missing $f in $whl"; exit 1;
-            }
-          done
+          python - <<'PY'
+          import glob, sys, zipfile
+          required = {"evo/static/index.html", "evo/static/app.js", "evo/static/style.css"}
+          whls = glob.glob("dist/*.whl")
+          assert whls, "no wheel built"
+          whl = whls[0]
+          with zipfile.ZipFile(whl) as z:
+              names = set(z.namelist())
+          missing = required - names
+          if missing:
+              sys.exit(f"missing in {whl}: {sorted(missing)}")
+          print(f"ok: all static assets present in {whl}")
+          PY
       - name: Smoke-test installed CLI
         working-directory: plugins/evo
         run: |
-          python -m venv /tmp/smoke
-          /tmp/smoke/bin/pip install dist/*.whl
-          /tmp/smoke/bin/evo --version
-          /tmp/smoke/bin/python -c "from evo import dashboard; from pathlib import Path; p = Path(dashboard.__file__).parent / 'static' / 'index.html'; assert p.exists(), p"
+          python -m venv "$RUNNER_TEMP/smoke"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            VENV_BIN="$RUNNER_TEMP/smoke/Scripts"
+          else
+            VENV_BIN="$RUNNER_TEMP/smoke/bin"
+          fi
+          "$VENV_BIN/python" -m pip install dist/*.whl
+          "$VENV_BIN/evo" --version
+          "$VENV_BIN/python" -c "from evo import dashboard; from pathlib import Path; p = Path(dashboard.__file__).parent / 'static' / 'index.html'; assert p.exists(), p"
 
   sdk-python:
     runs-on: ubuntu-latest
