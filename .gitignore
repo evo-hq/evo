@@ -27,3 +27,6 @@ sdk/python/uv.lock
 
 # Node
 node_modules/
+
+# Claude Code local project settings
+.claude/
