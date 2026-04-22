@@ -99,7 +99,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         out = THIS_DIR / "fixtures" / size
         if out.exists():
             shutil.rmtree(out)
-        generate(size, out, args.seed)
+        generate(size, out, args.seed, with_traces=args.with_traces)
     print(f"fixtures under {THIS_DIR / 'fixtures'}")
     return 0
 
