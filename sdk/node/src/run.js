@@ -30,6 +30,7 @@ export class Run {
       experimentId: this._experimentId,
     });
     this._tasks = {};
+    this._taskMeta = {};
     this._taskStarted = {};
     this._logs = {};
     this._startedAt = utcNow();
@@ -57,8 +58,13 @@ export class Run {
       startedAt,
       endedAt,
       artifacts,
+      direction,
       ...extra
     } = opts;
+
+    if (direction !== undefined && direction !== "max" && direction !== "min") {
+      throw new Error(`direction must be 'max' or 'min', got ${JSON.stringify(direction)}`);
+    }
 
     const trace = {
       experiment_id: this._experimentId,
@@ -66,6 +72,7 @@ export class Run {
       status: status ?? (score >= passThreshold ? "passed" : "failed"),
       score,
     };
+    if (direction !== undefined) trace.direction = direction;
     if (summary !== undefined) trace.summary = summary;
     if (failureReason !== undefined) trace.failure_reason = failureReason;
     if (cost !== undefined) trace.cost = cost;
@@ -75,6 +82,7 @@ export class Run {
     Object.assign(trace, extra);
 
     this._tasks[taskId] = score;
+    if (direction !== undefined) this._taskMeta[taskId] = { direction };
     if (this._logs[taskId]?.length) trace.log = [...this._logs[taskId]];
 
     this._backend.writeTrace(trace);
@@ -97,6 +105,11 @@ export class Run {
       started_at: this._startedAt,
       ended_at: utcNow(),
     };
+    if (Object.keys(this._taskMeta).length > 0) {
+      result.tasks_meta = Object.fromEntries(
+        Object.entries(this._taskMeta).map(([k, v]) => [k, { ...v }])
+      );
+    }
     this._backend.emitResult(result);
     return result;
   }

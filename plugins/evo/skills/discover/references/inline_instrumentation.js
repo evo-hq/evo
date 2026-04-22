@@ -18,13 +18,24 @@ import { join } from "node:path";
 const TRACES_DIR = process.env.EVO_TRACES_DIR || null;
 const EXPERIMENT_ID = process.env.EVO_EXPERIMENT_ID || "unknown";
 const SCORES = {};
+const TASK_META = {};
 const STARTED_AT = new Date().toISOString().replace(/\.\d{3}Z$/, "+00:00");
 
 if (TRACES_DIR) mkdirSync(TRACES_DIR, { recursive: true });
 
-export function logTask(taskId, score, { summary, failureReason, log, ...extra } = {}) {
+/**
+ * Record the result for one task. `direction` is "max" (higher is better,
+ * default) or "min" (lower is better, e.g. latency). Set it only when this
+ * task's direction differs from the benchmark's top-level --metric.
+ * Propagates to tasks_meta in the final stdout JSON.
+ */
+export function logTask(taskId, score, { summary, failureReason, log, direction, ...extra } = {}) {
   taskId = String(taskId);
+  if (direction !== undefined && direction !== "max" && direction !== "min") {
+    throw new Error(`direction must be 'max' or 'min', got ${JSON.stringify(direction)}`);
+  }
   SCORES[taskId] = score;
+  if (direction !== undefined) TASK_META[taskId] = { direction };
   if (!TRACES_DIR) return;
   const trace = {
     experiment_id: EXPERIMENT_ID,
@@ -33,6 +44,7 @@ export function logTask(taskId, score, { summary, failureReason, log, ...extra }
     score,
     ended_at: new Date().toISOString().replace(/\.\d{3}Z$/, "+00:00"),
   };
+  if (direction !== undefined) trace.direction = direction;
   if (summary !== undefined) trace.summary = summary;
   if (failureReason !== undefined) trace.failure_reason = failureReason;
   if (log !== undefined) trace.log = log;
@@ -52,6 +64,11 @@ export function writeResult(score) {
     started_at: STARTED_AT,
     ended_at: new Date().toISOString().replace(/\.\d{3}Z$/, "+00:00"),
   };
+  if (Object.keys(TASK_META).length > 0) {
+    result.tasks_meta = Object.fromEntries(
+      Object.entries(TASK_META).map(([k, v]) => [k, { ...v }])
+    );
+  }
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
   return score;
 }

@@ -107,6 +107,44 @@ def test_run_finish_idempotent() -> None:
         assert second == {}, second
 
 
+def test_run_direction_propagates_to_tasks_meta_and_traces() -> None:
+    with tmp_traces_dir() as traces_dir, capture_stdout():
+        run = Run()
+        run.report("accuracy", score=0.9, direction="max")
+        run.report("latency_ms", score=140.0, direction="min")
+        run.report("throughput", score=12.5)  # no direction -> no meta entry
+        result = run.finish(score=0.5)  # explicit avoids mean over mixed-scale values
+
+        assert result["tasks_meta"] == {
+            "accuracy": {"direction": "max"},
+            "latency_ms": {"direction": "min"},
+        }, result.get("tasks_meta")
+
+        # Per-task trace carries direction where it was given.
+        lat = json.loads((traces_dir / "task_latency_ms.json").read_text())
+        assert lat["direction"] == "min", lat
+        t = json.loads((traces_dir / "task_throughput.json").read_text())
+        assert "direction" not in t, t
+
+
+def test_run_direction_rejects_invalid_value() -> None:
+    with tmp_traces_dir(), capture_stdout():
+        run = Run()
+        try:
+            run.report("t", score=1.0, direction="bogus")
+        except ValueError:
+            return
+        raise AssertionError("expected ValueError for invalid direction")
+
+
+def test_run_omits_tasks_meta_when_no_directions_given() -> None:
+    with tmp_traces_dir(), capture_stdout():
+        run = Run()
+        run.report("a", score=0.5)
+        result = run.finish()
+        assert "tasks_meta" not in result, result
+
+
 def test_gate_check_accepts_score_or_explicit_passed() -> None:
     g = Gate()
     g.check("a", score=0.8)

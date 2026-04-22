@@ -23,6 +23,7 @@ from typing import Any
 _TRACES_DIR = Path(os.environ["EVO_TRACES_DIR"]) if os.environ.get("EVO_TRACES_DIR") else None
 _EXPERIMENT_ID = os.environ.get("EVO_EXPERIMENT_ID", "unknown")
 _SCORES: dict[str, float] = {}
+_TASK_META: dict[str, dict[str, Any]] = {}
 _STARTED_AT = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 if _TRACES_DIR:
@@ -36,11 +37,22 @@ def log_task(
     summary: str | None = None,
     failure_reason: str | None = None,
     log: list[Any] | None = None,
+    direction: str | None = None,
     **extra: Any,
 ) -> None:
-    """Record the result for one task. Writes task_<id>.json immediately."""
+    """Record the result for one task. Writes task_<id>.json immediately.
+
+    *direction* is "max" (higher is better, default) or "min" (lower is
+    better, e.g. latency). Only set it when this task's direction differs
+    from the benchmark's top-level `--metric`. Propagates to `tasks_meta`
+    in the final stdout JSON for downstream selection strategies.
+    """
     task_id = str(task_id)
+    if direction is not None and direction not in ("max", "min"):
+        raise ValueError(f"direction must be 'max' or 'min', got {direction!r}")
     _SCORES[task_id] = score
+    if direction is not None:
+        _TASK_META[task_id] = {"direction": direction}
     if _TRACES_DIR is None:
         return
     trace: dict[str, Any] = {
@@ -50,6 +62,8 @@ def log_task(
         "score": score,
         "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    if direction is not None:
+        trace["direction"] = direction
     if summary is not None:
         trace["summary"] = summary
     if failure_reason is not None:
@@ -77,5 +91,7 @@ def write_result(score: float | None = None) -> float:
         "started_at": _STARTED_AT,
         "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    if _TASK_META:
+        result["tasks_meta"] = {k: dict(v) for k, v in _TASK_META.items()}
     print(json.dumps(result, indent=2))
     return score

@@ -60,6 +60,51 @@ test("Run writes trace files and emits score JSON", async () => {
   });
 });
 
+test("Run direction propagates to tasks_meta and traces", async () => {
+  await withTmp(async (dir) => {
+    process.env.EVO_TRACES_DIR = dir;
+    process.env.EVO_EXPERIMENT_ID = "exp-dir";
+    const run = new Run();
+    run.report("accuracy", { score: 0.9, direction: "max" });
+    run.report("latency_ms", { score: 140, direction: "min" });
+    run.report("throughput", { score: 12.5 });
+
+    const out = captureStdout(() => run.finish({ score: 0.5 }));
+    const result = JSON.parse(out);
+    assert.deepEqual(result.tasks_meta, {
+      accuracy: { direction: "max" },
+      latency_ms: { direction: "min" },
+    });
+
+    const lat = JSON.parse(readFileSync(join(dir, "task_latency_ms.json"), "utf-8"));
+    assert.equal(lat.direction, "min");
+    const thr = JSON.parse(readFileSync(join(dir, "task_throughput.json"), "utf-8"));
+    assert.equal(thr.direction, undefined);
+
+    delete process.env.EVO_TRACES_DIR;
+    delete process.env.EVO_EXPERIMENT_ID;
+  });
+});
+
+test("Run direction rejects invalid value", () => {
+  const run = new Run();
+  assert.throws(() => run.report("t", { score: 1.0, direction: "bogus" }), /direction must be/);
+});
+
+test("Run omits tasks_meta when no directions given", async () => {
+  await withTmp(async (dir) => {
+    process.env.EVO_TRACES_DIR = dir;
+    process.env.EVO_EXPERIMENT_ID = "exp-none";
+    const run = new Run();
+    run.report("a", { score: 0.5 });
+    const out = captureStdout(() => run.finish());
+    const result = JSON.parse(out);
+    assert.equal(result.tasks_meta, undefined);
+    delete process.env.EVO_TRACES_DIR;
+    delete process.env.EVO_EXPERIMENT_ID;
+  });
+});
+
 test("Gate.check accepts score or explicit passed", () => {
   const g = new Gate();
   g.check("a", { score: 0.8 });
