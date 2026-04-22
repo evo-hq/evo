@@ -39,6 +39,8 @@ from pathlib import Path
 #   becomes_parent   : if True, other experiments may branch from these (sets up tree)
 #   narrative_varied : if True, LLM is asked to use DIFFERENT wording per experiment
 
+SIZES = ["small", "medium", "large"]
+
 CASES = {
     # 3 experiments that actually improve the benchmark. They commit and become
     # branching points for other experiments in the tree.
@@ -522,7 +524,7 @@ def size_count(case: dict, size: str) -> int:
     return case["count_per_size"].get(size, 0)
 
 
-def generate(size: str, out: Path, seed: int) -> None:
+def generate(size: str, out: Path, seed: int, with_traces: bool = True) -> None:
     rng = random.Random(seed)
     out.mkdir(parents=True, exist_ok=True)
     evo_dir = out / ".evo"
@@ -553,21 +555,26 @@ def generate(size: str, out: Path, seed: int) -> None:
     e_ids = set(assignments["E_wall_hypothesis"])
     s_ids = set(assignments["S_improver"])
 
-    # 2. Generate narratives per case via LLM.
+    # 2. Generate narratives per case via LLM (skipped when with_traces=False;
+    #    the downstream build_experiment falls back to a generic hypothesis).
     narratives: dict[str, list[dict]] = {}
-    for case_id, case in CASES.items():
-        n = len(assignments[case_id])
-        if n == 0:
+    if with_traces:
+        for case_id, case in CASES.items():
+            n = len(assignments[case_id])
+            if n == 0:
+                narratives[case_id] = []
+                continue
+            print(f"  [llm] {case_id}: generating {n} narratives...", file=sys.stderr)
+            narratives[case_id] = generate_narratives(case_id, case, n, seed)
+    else:
+        for case_id in CASES:
             narratives[case_id] = []
-            continue
-        print(f"  [llm] {case_id}: generating {n} narratives...", file=sys.stderr)
-        narratives[case_id] = generate_narratives(case_id, case, n, seed)
 
     # 3. Build S (improvers) FIRST so their sha is available as parent for others.
     improver_meta: list[dict] = []
     for i, exp_id in enumerate(assignments["S_improver"]):
         case = CASES["S_improver"]
-        narr = narratives["S_improver"][i]
+        narr = narratives["S_improver"][i] if narratives["S_improver"] else {"hypothesis": "fallback", "failing_task_traces": {}}
         sha = f"{rng.randrange(16**10):010x}"
         outcome, traces = build_experiment(
             rng, exp_id, "S_improver", case, narr,
