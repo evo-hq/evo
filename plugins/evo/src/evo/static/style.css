@@ -32,6 +32,8 @@ body {
   --red: #ef4444;
   --amber: #f59e0b;
   --indigo: #818cf8;
+  --orange: #FF6A2A;    /* evo brand orange, from logo/evo-logo.svg */
+  --evo-taupe: #6F6257; /* logo letter color, from logo/evo-logo.svg */
 }
 
 /* ─── Top bar ─────────────────────────────────────────── */
@@ -43,11 +45,12 @@ body {
   border-bottom: 1px solid var(--border);
 }
 .logo {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 14px;
-  font-weight: 700;
+  /* Inlined SVG from logo/evo-logo.svg, tinted via currentColor. */
+  display: block;
+  height: 22px;
+  width: auto;
+  flex: 0 0 auto;
   color: var(--text-1);
-  letter-spacing: -0.3px;
 }
 .divider {
   width: 1px;
@@ -655,4 +658,234 @@ body {
 .tree-link {
   fill: none;
   stroke-width: 1.5px;
+}
+
+/* Strategy picker */
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--orange);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-right: 12px;
+  transition: color 0.1s, background 0.1s;
+}
+.btn-ghost:hover {
+  color: #fff;
+  background: var(--orange);
+}
+.btn-primary {
+  background: var(--orange);
+  color: #fff;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: opacity 0.1s, filter 0.1s;
+}
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.btn-primary:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.btn-link {
+  background: transparent;
+  border: none;
+  color: var(--text-4);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 0;
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn-link:hover {
+  color: var(--text-2);
+  text-decoration: underline;
+}
+.strategy-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.strategy-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-4);
+}
+.strategy-row small {
+  color: var(--text-5);
+  font-weight: normal;
+}
+.strategy-row select,
+.strategy-row input {
+  background: var(--inset);
+  border: 1px solid var(--border);
+  color: var(--text-1);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+}
+.strategy-desc {
+  font-size: 12px;
+  color: var(--text-5);
+  padding: 10px 12px;
+  background: var(--inset);
+  border-radius: 6px;
+  line-height: 1.5;
+}
+.strategy-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;  /* pin to bottom; don't shrink when panes overflow */
+}
+.strategy-status {
+  font-size: 12px;
+  color: var(--text-5);
+}
+.strategy-empty {
+  font-size: 12px;
+  color: var(--text-5);
+  font-style: italic;
+}
+
+/* Info-icon popover */
+.info-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: help;
+  user-select: none;
+  line-height: 1;
+  vertical-align: middle;
+  transition: background 0.1s, color 0.1s;
+}
+.info-icon:hover {
+  background: var(--text-6);
+  color: var(--text-1);
+}
+.tip-popover {
+  position: fixed;
+  z-index: 300;
+  max-width: 340px;
+  background: var(--surface);
+  border: 1px solid var(--text-6);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-2);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+.tip-popover p {
+  margin: 0;
+}
+.tip-popover p + p {
+  margin-top: 8px;
+}
+
+/* Strategy picker: two-column master/detail with pinned footer */
+.strategy-form {
+  display: flex;
+  flex-direction: column;
+  /* Fixed internal height keeps the modal from resizing as content varies. */
+  height: 460px;
+}
+.strategy-split {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;  /* required so children can overflow+scroll */
+}
+.strategy-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 12px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  min-height: 0;
+}
+.strategy-item {
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 500;
+  transition: color 0.1s, background 0.1s;
+  position: relative;
+}
+.strategy-item:hover {
+  color: var(--text-2);
+  background: var(--inset);
+}
+.strategy-item.selected {
+  color: var(--text-1);
+  background: #27272a;
+  font-weight: 600;
+}
+.strategy-item.selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: var(--orange);
+  border-radius: 2px;
+}
+.strategy-item-label {
+  display: block;
+}
+.strategy-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 2px 8px 2px 2px;   /* room for scrollbar */
+  overflow-y: auto;
+  min-height: 0;
+}
+.strategy-detail-head {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.strategy-detail-desc {
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.55;
+}
+.strategy-detail-params {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
 }

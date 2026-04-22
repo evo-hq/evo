@@ -132,18 +132,15 @@ function renderTopbar() {
   document.getElementById('meta-info').textContent =
     `epoch ${s.eval_epoch || 1} \u00b7 ${s.metric || 'max'} \u00b7 auto-refresh`;
 
-  // Run switcher
+  // Run switcher: always render as a <select> so the affordance is consistent,
+  // even when there's only one run.
   const runs = state.runs || [];
   const switcher = document.getElementById('run-switcher');
-  if (runs.length > 1) {
-    const active = runs.find(r => r.active);
+  if (runs.length > 0) {
     const options = runs.map(r =>
       `<option value="${r.id}" ${r.active ? 'selected' : ''}>${r.id}</option>`
     ).join('');
     switcher.innerHTML = `<select class="run-select" onchange="switchRun(this.value)">${options}</select>`;
-    switcher.classList.remove('hidden');
-  } else if (runs.length === 1) {
-    switcher.innerHTML = `<span class="run-label">${runs[0].id}</span>`;
     switcher.classList.remove('hidden');
   } else {
     switcher.classList.add('hidden');
@@ -795,6 +792,270 @@ function closeScratchpad() {
   document.getElementById('scratchpad-overlay').classList.add('hidden');
 }
 
+// ─── Frontier strategy modal ─────────────────────────────
+async function openStrategy() {
+  const body = document.getElementById('strategy-body');
+  body.innerHTML = '<pre>Loading...</pre>';
+  document.getElementById('strategy-overlay').classList.remove('hidden');
+  try {
+    const data = await fetch('/api/frontier-strategy').then(r => r.json());
+    renderStrategyForm(body, data.registry, data.current, data.default);
+  } catch (e) {
+    body.innerHTML = '<pre>Failed to load</pre>';
+  }
+}
+
+function closeStrategy() {
+  document.getElementById('strategy-overlay').classList.add('hidden');
+  hideTip();
+}
+
+// ─── Shared info-icon popover ────────────────────────────
+function showTip(anchor, text) {
+  const tip = document.getElementById('tip-popover');
+  if (!tip) return;
+  if (tip.dataset.anchor === anchor.dataset.tipFor && !tip.classList.contains('hidden')) {
+    hideTip();
+    return;
+  }
+  tip.dataset.anchor = anchor.dataset.tipFor || '';
+  // Render paragraph breaks on blank lines, escape everything else.
+  const paragraphs = String(text || '').split(/\n\n+/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`);
+  tip.innerHTML = paragraphs.join('');
+  tip.classList.remove('hidden');
+  // Position: below-right of the anchor, clamped inside viewport.
+  const r = anchor.getBoundingClientRect();
+  const margin = 8;
+  tip.style.visibility = 'hidden';
+  tip.style.left = '0px';
+  tip.style.top = '0px';
+  const tw = tip.offsetWidth;
+  const th = tip.offsetHeight;
+  let left = r.right + margin;
+  let top = r.top;
+  if (left + tw > window.innerWidth - margin) left = Math.max(margin, r.left - tw - margin);
+  if (top + th > window.innerHeight - margin) top = Math.max(margin, window.innerHeight - th - margin);
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+  tip.style.visibility = '';
+}
+
+function hideTip() {
+  const tip = document.getElementById('tip-popover');
+  if (tip) {
+    tip.classList.add('hidden');
+    tip.dataset.anchor = '';
+  }
+}
+
+document.addEventListener('click', (e) => {
+  // Clicks on ? icons are handled by their own listeners (toggle behavior).
+  // Anything else, including inside the popover itself, dismisses it.
+  if (e.target.closest('.info-icon')) return;
+  hideTip();
+});
+
+// Belt-and-suspenders: also dismiss on direct popover click, in case some
+// intermediate handler stops propagation before it reaches `document`.
+document.addEventListener('DOMContentLoaded', () => {
+  const tip = document.getElementById('tip-popover');
+  if (tip) tip.addEventListener('click', () => hideTip());
+});
+// If DOMContentLoaded already fired (script loaded late), wire immediately.
+(() => {
+  const tip = document.getElementById('tip-popover');
+  if (tip) tip.addEventListener('click', () => hideTip());
+})();
+
+function renderStrategyForm(body, registry, current, defaultStrategy) {
+  const kinds = Object.keys(registry);
+  let selectedKind = current.kind;
+
+  const html = [];
+  html.push('<div class="strategy-form">');
+  html.push('<div class="strategy-split">');
+  html.push('<div class="strategy-list">');
+  for (const k of kinds) {
+    const spec = registry[k];
+    html.push(`
+      <div class="strategy-item" data-kind="${esc(k)}">
+        <span class="strategy-item-label">${esc(spec.label)}</span>
+      </div>
+    `);
+  }
+  html.push('</div>');
+  html.push('<div id="strategy-detail" class="strategy-detail"></div>');
+  html.push('</div>');  // end split
+  // Action row is a sibling of the split -- pinned at the bottom of the
+  // fixed-height form while split panes scroll independently.
+  html.push('<div class="strategy-actions">');
+  html.push('<button id="strategy-reset" class="btn-link" type="button">Reset to default</button>');
+  html.push('<span id="strategy-status" class="strategy-status"></span>');
+  html.push('<span class="spacer"></span>');
+  html.push('<button id="strategy-apply" class="btn-primary" disabled>Apply</button>');
+  html.push('</div>');
+  html.push('</div>');  // end form
+  body.innerHTML = html.join('');
+
+  const listDiv = body.querySelector('.strategy-list');
+  const detailDiv = document.getElementById('strategy-detail');
+
+  function selectKind(kind) {
+    selectedKind = kind;
+    listDiv.querySelectorAll('.strategy-item').forEach(el => {
+      el.classList.toggle('selected', el.dataset.kind === kind);
+    });
+    renderDetail();
+    hideTip();
+  }
+
+  function renderDetail() {
+    const spec = registry[selectedKind];
+    const curParams = selectedKind === current.kind ? (current.params || {}) : {};
+    const lines = [];
+    const tipKind = spec.detail ? ` <span class="info-icon" data-tip-for="kind:${esc(selectedKind)}">?</span>` : '';
+    lines.push(`<div class="strategy-detail-head">${esc(spec.label)}${tipKind}</div>`);
+    lines.push(`<div class="strategy-detail-desc">${esc(spec.description)}</div>`);
+
+    if (spec.params && spec.params.length) {
+      lines.push('<div class="strategy-detail-params">');
+      for (const p of spec.params) {
+        const v = curParams[p.name] !== undefined ? curParams[p.name] : p.default;
+        const step = p.type === 'int' ? 1 : 'any';
+        const tip = p.detail ? ` <span class="info-icon" data-tip-for="param:${esc(p.name)}">?</span>` : '';
+        lines.push(`
+          <label class="strategy-row" data-param="${esc(p.name)}">
+            <span>${esc(p.label)}${tip} <small>(${esc(p.type)}, ${p.min}…${p.max})</small></span>
+            <input type="number" step="${step}" min="${p.min}" max="${p.max}"
+                   value="${v}" data-name="${esc(p.name)}" data-type="${esc(p.type)}">
+          </label>
+        `);
+      }
+      lines.push('</div>');
+    } else {
+      lines.push('<div class="strategy-empty">No params for this strategy</div>');
+    }
+    detailDiv.innerHTML = lines.join('');
+    wireDetailInputs();
+    updateDirtyState();
+  }
+
+  function readFormState() {
+    const params = {};
+    detailDiv.querySelectorAll('input[data-name]').forEach(inp => {
+      const n = inp.dataset.name;
+      const t = inp.dataset.type;
+      const v = t === 'int' ? parseInt(inp.value, 10) : parseFloat(inp.value);
+      params[n] = v;
+    });
+    return {kind: selectedKind, params};
+  }
+
+  function isDirty() {
+    const form = readFormState();
+    if (form.kind !== current.kind) return true;
+    const cur = current.params || {};
+    const keys = new Set([...Object.keys(form.params), ...Object.keys(cur)]);
+    for (const k of keys) {
+      if (form.params[k] !== cur[k]) return true;
+    }
+    return false;
+  }
+
+  function updateDirtyState() {
+    const btn = document.getElementById('strategy-apply');
+    if (!btn) return;
+    const dirty = isDirty();
+    btn.disabled = !dirty;
+    btn.classList.toggle('dirty', dirty);
+  }
+
+  function wireDetailInputs() {
+    // Inputs re-render on each selectKind, so re-wire the dirty-state
+    // listener each time. The Apply/Reset buttons live outside and are
+    // wired once below.
+    detailDiv.querySelectorAll('input[data-name]').forEach(inp => {
+      inp.addEventListener('input', updateDirtyState);
+    });
+  }
+
+  // Apply/Reset buttons live outside the split, wired once.
+  const applyBtn = document.getElementById('strategy-apply');
+  applyBtn.addEventListener('click', async () => {
+    const statusEl = document.getElementById('strategy-status');
+    await postStrategy(readFormState(), statusEl, 'applied');
+    updateDirtyState();
+  });
+  const resetBtn = document.getElementById('strategy-reset');
+  resetBtn.addEventListener('click', async () => {
+    const statusEl = document.getElementById('strategy-status');
+    const fallback = defaultStrategy || {kind: 'argmax', params: {}};
+    const saved = await postStrategy(fallback, statusEl, 'reset to default');
+    if (saved) selectKind(saved.kind);
+  });
+
+  // Wire item clicks.
+  listDiv.addEventListener('click', (e) => {
+    const item = e.target.closest('.strategy-item');
+    if (!item) return;
+    selectKind(item.dataset.kind);
+  });
+
+  selectKind(current.kind);
+
+  // Info-icon popover: click "?" to open; any other click inside the modal
+  // (or outside, handled by the document listener) dismisses the tip. The
+  // modal itself has onclick="event.stopPropagation()" in the HTML, so the
+  // document handler doesn't see clicks inside the modal -- we dismiss here.
+  body.addEventListener('click', (e) => {
+    const icon = e.target.closest('.info-icon');
+    if (!icon) {
+      hideTip();
+      return;
+    }
+    e.preventDefault();   // param `?` sits inside a <label>; block focus-associated-input default
+    e.stopPropagation();
+    const key = icon.dataset.tipFor;
+    let text = '';
+    if (key && key.startsWith('kind:')) {
+      const k = key.slice(5);
+      const s = registry[k];
+      text = (s && s.detail) || (s && s.description) || '';
+    } else if (key && key.startsWith('param:')) {
+      const pname = key.slice(6);
+      const p = (registry[selectedKind].params || []).find(x => x.name === pname);
+      text = (p && p.detail) || (p && p.label) || '';
+    }
+    showTip(icon, text);
+  });
+
+  async function postStrategy(payload, statusEl, okMessage) {
+    statusEl.textContent = 'saving...';
+    try {
+      const res = await fetch('/api/frontier-strategy', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        statusEl.textContent = `error: ${data.error || res.status}`;
+        return null;
+      }
+      current = data;
+      statusEl.textContent = okMessage;
+      setTimeout(() => { statusEl.textContent = ''; }, 2000);
+      return data;
+    } catch (e) {
+      statusEl.textContent = 'request failed';
+      return null;
+    }
+  }
+
+  // Apply / Reset buttons are wired inside renderDetail -> wireDetailHandlers
+  // since they're re-created each render.
+}
+
 // ─── Main render ─────────────────────────────────────────
 function render() {
   renderTopbar();
@@ -811,8 +1072,10 @@ state.refreshTimer = setInterval(fetchAll, 5000);
 // Keyboard shortcuts
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    hideTip();
     closeDrawer();
     closeScratchpad();
+    closeStrategy();
   }
   if (e.key === 's' && !e.ctrlKey && !e.metaKey && !state.selectedNode) {
     openScratchpad();
