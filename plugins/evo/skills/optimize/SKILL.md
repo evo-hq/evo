@@ -60,7 +60,7 @@ Repeat until interrupted or stall limit reached:
 
 ```bash
 evo scratchpad          # full state: tree, best path, frontier, annotations, diffs, gates, what-not-to-try
-evo frontier            # explorable nodes (JSON)
+evo frontier            # explorable nodes ranked by the configured strategy (JSON envelope: {strategy, nodes[{id,score,rank,...}], generated_at})
 evo status              # one-line summary
 evo annotations         # all annotations (filterable with --task/--exp)
 evo path <id>           # root-to-node chain with scores
@@ -74,7 +74,7 @@ On the first iteration, also read `.evo/project.md` to understand the optimizati
 ### 2. Analyze state and write subagent briefs
 
 From the scratchpad, frontier, traces, and annotations, determine:
-- Which frontier nodes are most promising
+- Which frontier nodes are most promising (`evo frontier` returns them already ranked under the configured strategy -- use its ordering rather than re-ranking; override with `evo frontier --strategy ...` only if you have a specific reason)
 - What failure patterns are most common and impactful
 - What strategies have been tried and their outcomes
 - Which branches are plateauing or exhausted

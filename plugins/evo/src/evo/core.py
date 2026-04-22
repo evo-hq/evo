@@ -144,6 +144,8 @@ DEFAULT_MAX_ATTEMPTS = 3
 
 
 def default_config(root: Path, target: str, benchmark: str, metric: str, gate: str | None) -> dict[str, Any]:
+    # Import here to avoid a circular import at module load.
+    from .frontier_strategies import DEFAULT_FRONTIER_STRATEGY
     return {
         "repo_root": str(root),
         "workspace_dir": WORKSPACE_NAME,
@@ -155,6 +157,7 @@ def default_config(root: Path, target: str, benchmark: str, metric: str, gate: s
         "current_eval_epoch": 1,
         "comparison_blocked": False,
         "max_attempts": DEFAULT_MAX_ATTEMPTS,
+        "frontier_strategy": DEFAULT_FRONTIER_STRATEGY,
         "initialized_at": utc_now(),
     }
 

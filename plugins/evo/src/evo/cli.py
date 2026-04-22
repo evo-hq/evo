@@ -610,19 +610,114 @@ def cmd_tree(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_frontier(args: argparse.Namespace) -> int:
-    root = repo_root()
-    _config, graph = _require_workspace(root)
-    nodes = [
-        {
-            "id": node["id"],
-            "score": node.get("score"),
-            "epoch": node.get("eval_epoch"),
-            "hypothesis": node.get("hypothesis"),
-        }
-        for node in frontier_nodes(graph)
+def _format_frontier_help() -> str:
+    from . import frontier_strategies as fs
+    lines = [
+        "evo frontier -- return frontier nodes (committed leaves) ranked by a selection strategy.",
+        "",
+        "Usage:",
+        "  evo frontier                                    # use configured strategy",
+        "  evo frontier --strategy <kind>                   # override for this call only",
+        "  evo frontier --strategy <kind> --params '<json>' # override with custom params",
+        "  evo frontier --seed <int>                        # pin rng for reproducible stochastic picks",
+        "  evo frontier --help-strategies                   # this text",
+        "",
+        "Strategy is read from `.evo/config.json` under `frontier_strategy`.",
+        "Set it once via the dashboard's strategy panel (top bar) or by editing the config directly.",
+        "Every call appends an event to `.evo/infra_log.json` with kind=frontier.",
+        "",
+        "Available strategies:",
+        "",
     ]
-    print(json.dumps(nodes, indent=2))
+    for kind, spec in fs.FRONTIER_STRATEGIES.items():
+        lines.append(f"  {kind}  -- {spec['label']}")
+        lines.append(f"    {spec['description']}")
+        if spec["params"]:
+            lines.append("    params:")
+            for p in spec["params"]:
+                lines.append(
+                    f"      {p['name']} ({p['type']}, {p['min']}..{p['max']}, default {p['default']})"
+                    f"  -- {p['label']}"
+                )
+        else:
+            lines.append("    params: none")
+        lines.append("")
+    lines.append("Output envelope: {\"strategy\": {...}, \"generated_at\": \"...\", \"nodes\": [...], \"seed\": <int>}")
+    lines.append("Each node carries: id, score, eval_epoch (as \"epoch\"), hypothesis, rank.")
+    return "\n".join(lines)
+
+
+def cmd_frontier(args: argparse.Namespace) -> int:
+    from . import frontier_strategies as fs
+    if getattr(args, "help_strategies", False):
+        print(_format_frontier_help())
+        return 0
+    root = repo_root()
+    config, graph = _require_workspace(root)
+
+    raw_nodes = frontier_nodes(graph)
+    # Normalize each node to the minimal shape pickers/logs consume.
+    summaries = [
+        {
+            "id": n["id"],
+            "score": n.get("score"),
+            "eval_epoch": n.get("eval_epoch"),
+            "hypothesis": n.get("hypothesis"),
+        }
+        for n in raw_nodes
+    ]
+
+    # Resolve strategy: CLI overrides > config > default.
+    strategy = fs.resolve_from_config(config)
+    if getattr(args, "strategy", None):
+        params = strategy["params"]
+        if getattr(args, "params", None):
+            try:
+                params = json.loads(args.params)
+            except json.JSONDecodeError as exc:
+                print(f"ERROR: --params must be JSON: {exc}", file=sys.stderr)
+                return 1
+        strategy = fs.validate_frontier_strategy({"kind": args.strategy, "params": params})
+
+    # Load per-experiment outcomes for strategies that need per-task vectors.
+    outcomes: dict[str, dict] = {}
+    if strategy["kind"] == "pareto_per_task":
+        for n in raw_nodes:
+            attempt = n.get("current_attempt")
+            if not attempt:
+                continue
+            path = attempt_outcome_path(root, n["id"], int(attempt))
+            if path.exists():
+                try:
+                    outcomes[n["id"]] = json.loads(path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    pass
+
+    metric = config.get("metric", "max")
+    try:
+        ranked, seed_used = fs.pick(
+            summaries, strategy, metric,
+            outcomes=outcomes,
+            seed=args.seed if getattr(args, "seed", None) is not None else None,
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    envelope = {
+        "strategy": strategy,
+        "generated_at": utc_now(),
+        "nodes": ranked,
+    }
+    # Seed only included when the strategy is stochastic, to keep deterministic
+    # runs noise-free.
+    if strategy["kind"] in {"epsilon_greedy", "softmax", "pareto_per_task"}:
+        envelope["seed"] = seed_used
+
+    fs.append_frontier_log(root, strategy, [n["id"] for n in ranked],
+                           seed=envelope.get("seed"))
+
+    print(json.dumps(envelope, indent=2))
     return 0
 
 
@@ -882,7 +977,18 @@ def build_parser() -> argparse.ArgumentParser:
     tree_p = sub.add_parser("tree")
     tree_p.set_defaults(func=cmd_tree)
 
-    frontier_p = sub.add_parser("frontier")
+    frontier_p = sub.add_parser(
+        "frontier",
+        help="list frontier nodes ranked by the configured strategy",
+        description="Return frontier nodes ranked by the configured strategy. "
+                    "Run `evo frontier --help-strategies` for full descriptions of each strategy and its params.",
+    )
+    frontier_p.add_argument("--strategy",
+                            help="override configured strategy (run --help-strategies for options)")
+    frontier_p.add_argument("--params", help="JSON params for the overridden strategy, e.g. '{\"k\": 5}'")
+    frontier_p.add_argument("--seed", type=int, help="rng seed for stochastic strategies (default: fresh, logged)")
+    frontier_p.add_argument("--help-strategies", dest="help_strategies", action="store_true",
+                            help="print detailed description of each strategy and its params, then exit")
     frontier_p.set_defaults(func=cmd_frontier)
 
     scratchpad_p = sub.add_parser("scratchpad")
