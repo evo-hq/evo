@@ -16,9 +16,14 @@ export class LocalBackend {
     writeFileSync(path, JSON.stringify(trace, null, 2), "utf-8");
   }
 
-  emitResult(result) {
-    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-  }
+   emitResult(result) {
+     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+     // Also write to traces directory for reliable parsing
+     if (this._tracesDir) {
+       const path = join(this._tracesDir, "result.json");
+       writeFileSync(path, JSON.stringify(result, null, 2), "utf-8");
+     }
+   }
 
   emitGateSummary({ passed, lines }) {
     for (const line of lines) {

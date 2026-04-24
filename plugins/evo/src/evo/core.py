@@ -521,9 +521,8 @@ def fill_command_template(template: str, *, target: Path, worktree: Path) -> str
     return template.replace("{target}", str(target)).replace("{worktree}", str(worktree))
 
 
-def parse_score(stdout: str) -> tuple[float, dict[str, Any] | None]:
+def parse_score(stdout: str, traces_dir: str | None = None) -> tuple[float, dict[str, Any] | None]:
     # First try to read from the result file in traces directory (more reliable)
-    traces_dir = os.environ.get("EVO_TRACES_DIR")
     if traces_dir:
         result_file = Path(traces_dir) / "result.json"
         if result_file.exists():

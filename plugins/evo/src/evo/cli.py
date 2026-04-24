@@ -319,7 +319,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             benchmark_record = {"command": benchmark_cmd, "returncode": bench.returncode, "result": None}
             raise RuntimeError(f"benchmark_exit_{bench.returncode}")
 
-        score, parsed = parse_score(bench.stdout)
+        score, parsed = parse_score(bench.stdout, traces_dir=str(traces_dir))
         benchmark_record = {"command": benchmark_cmd, "returncode": 0, "result": parsed}
 
         gate_passed = True
