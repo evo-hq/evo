@@ -522,6 +522,21 @@ def fill_command_template(template: str, *, target: Path, worktree: Path) -> str
 
 
 def parse_score(stdout: str) -> tuple[float, dict[str, Any] | None]:
+    # First try to read from the result file in traces directory (more reliable)
+    traces_dir = os.environ.get("EVO_TRACES_DIR")
+    if traces_dir:
+        result_file = Path(traces_dir) / "result.json"
+        if result_file.exists():
+            try:
+                content = result_file.read_text(encoding="utf-8").strip()
+                if content:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict) and "score" in parsed:
+                        return float(parsed["score"]), parsed
+            except (json.JSONDecodeError, OSError):
+                pass  # Fall back to parsing stdout
+    
+    # Fall back to original stdout parsing for backward compatibility
     stripped = stdout.strip()
     if not stripped:
         raise ValueError("Benchmark output was empty")

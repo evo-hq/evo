@@ -67,7 +67,7 @@ def test_run_writes_trace_files_and_emits_score_json() -> None:
         assert emitted["score"] == 0.5, emitted
 
         files = sorted(p.name for p in traces_dir.iterdir())
-        assert files == ["task_0.json", "task_1.json"], files
+        assert set(files) == {"task_0.json", "task_1.json", "result.json"}, files
 
         t0 = json.loads((traces_dir / "task_0.json").read_text())
         assert t0["experiment_id"] == "exp-123"

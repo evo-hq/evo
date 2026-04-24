@@ -47,7 +47,12 @@ class LocalBackend:
         path.write_text(json.dumps(trace, indent=2), encoding="utf-8")
 
     def emit_result(self, result: dict[str, Any]) -> None:
+        # Emit to stdout for backward compatibility
         print(json.dumps(result, indent=2), file=self._stdout)
+        # Also emit to traces directory for reliable parsing
+        if self._traces_dir is not None:
+            result_path = self._traces_dir / "result.json"
+            result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
 
     def emit_gate_summary(self, *, passed: bool, lines: list[str]) -> None:
         for line in lines:
