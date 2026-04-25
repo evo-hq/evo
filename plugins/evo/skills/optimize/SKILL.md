@@ -229,3 +229,22 @@ On stop, print a final summary:
 - Suggested next steps if the score hasn't converged
 
 Go back to step 1.
+
+## Resetting the eval epoch
+
+`evo infra -m "<reason>" --breaking` bumps `current_eval_epoch` and blocks
+non-root `evo run` calls until a new root baseline commits. Old experiments
+stay in the tree but are excluded from frontier and best-score lookups via
+their epoch tag.
+
+Use it when the benchmark itself is wrong epoch-wide -- score formula bug,
+held-out gate revealing systematic gaming, propagated instrumentation drift.
+Don't use it for single bad experiments (`evo discard`) or one tight gate
+(relax the gate at the relevant node).
+
+Recovery:
+1. `evo infra -m "<reason>" --breaking`
+2. Fix the harness in the baseline worktree (or branch a fresh root).
+3. `evo new --parent root -m "v2 baseline: <what changed>"`
+4. `evo run <new_exp_id>` -- commits, flips the block off, establishes the
+   new-epoch baseline. Resume the loop.

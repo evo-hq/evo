@@ -35,7 +35,13 @@ _DRIVER_PREAMBLE = textwrap.dedent(f"""
 """)
 
 
-def _run_driver(body: str, traces_dir: Path, exp_id: str = "exp-inline") -> tuple[str, str]:
+def _run_driver(
+    body: str,
+    traces_dir: Path,
+    exp_id: str = "exp-inline",
+    *,
+    result_path: Path | None = None,
+) -> tuple[str, str]:
     """Exec a driver script that imports the inline helper then runs body."""
     # Both the preamble and body must sit at zero indentation so Python can
     # parse them as top-level statements.
@@ -43,6 +49,10 @@ def _run_driver(body: str, traces_dir: Path, exp_id: str = "exp-inline") -> tupl
     env = os.environ.copy()
     env["EVO_TRACES_DIR"] = str(traces_dir)
     env["EVO_EXPERIMENT_ID"] = exp_id
+    if result_path is not None:
+        env["EVO_RESULT_PATH"] = str(result_path)
+    else:
+        env.pop("EVO_RESULT_PATH", None)
     proc = subprocess.run(
         [sys.executable, "-c", script],
         env=env, capture_output=True, text=True, timeout=15,
@@ -55,7 +65,11 @@ def _run_driver(body: str, traces_dir: Path, exp_id: str = "exp-inline") -> tupl
 class TestInlineInstrumentation(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.traces = Path(self._tmp.name)
+        # Two siblings inside the per-test tmpdir so result-file tests don't
+        # collide with each other or pollute the system tmpdir across runs.
+        self._root = Path(self._tmp.name)
+        self.traces = self._root / "traces"
+        self.traces.mkdir()
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -114,6 +128,48 @@ class TestInlineInstrumentation(unittest.TestCase):
         )
         result = json.loads(stdout)
         self.assertNotIn("tasks_meta", result)
+
+    def test_writes_result_file_when_evo_result_path_set(self):
+        result_path = self._root / "result.json"
+        stdout, _ = _run_driver(
+            """
+            inline.log_task("t1", 0.8)
+            inline.log_task("t2", 0.4)
+            inline.write_result()
+            """,
+            self.traces,
+            result_path=result_path,
+        )
+        # Stdout is silent -- result lands in the file instead.
+        self.assertEqual(stdout, "", f"unexpected stdout: {stdout!r}")
+        self.assertTrue(result_path.exists())
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        self.assertAlmostEqual(result["score"], 0.6, places=4)
+        self.assertEqual(result["tasks"], {"t1": 0.8, "t2": 0.4})
+        # No leftover .tmp from the atomic rename.
+        leftovers = [p.name for p in result_path.parent.iterdir() if p.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
+
+    def test_raises_when_result_file_already_exists(self):
+        result_path = self._root / "result.json"
+        # Pre-create as if a prior writer published.
+        result_path.write_text('{"score": 0.0}', encoding="utf-8")
+        # The driver subprocess will try to write_result() and should raise.
+        script = _DRIVER_PREAMBLE + textwrap.dedent("""
+            inline.log_task("t1", 0.5555)
+            inline.write_result()
+        """)
+        env = os.environ.copy()
+        env["EVO_TRACES_DIR"] = str(self.traces)
+        env["EVO_EXPERIMENT_ID"] = "exp-dup"
+        env["EVO_RESULT_PATH"] = str(result_path)
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            env=env, capture_output=True, text=True, timeout=15,
+        )
+        self.assertNotEqual(proc.returncode, 0,
+            f"Expected non-zero exit on duplicate write; stderr: {proc.stderr}")
+        self.assertIn("already exists", proc.stderr)
 
     def test_invalid_direction_raises(self):
         proc = subprocess.run(

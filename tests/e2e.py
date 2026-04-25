@@ -79,6 +79,243 @@ sys.exit(1 if "FORBIDDEN" in content else 0)
     run(["git", "commit", "-m", "fixture: max"], cwd=root)
 
 
+def setup_sdk_repo(root: Path) -> None:
+    """Benchmark uses the SDK; exercises the EVO_RESULT_PATH file channel."""
+    sdk_src = REPO_ROOT / "sdk" / "python" / "src"
+    write(
+        root / "agent.py",
+        'STATE = "baseline"\n',
+    )
+    write(
+        root / "eval.py",
+        f"""from __future__ import annotations
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, r"{sdk_src}")
+from evo_agent import Run
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--agent", required=True)
+args = parser.parse_args()
+content = Path(args.agent).read_text(encoding="utf-8")
+score = 1.0 if "GOOD" in content else 0.0
+
+# Stdout noise that would have tripped the old line-scan parser.
+print("score: 0.99 (warmup)")
+print("0.42")
+with Run() as run:
+    run.report("0", score=score, summary="ok" if score > 0 else "fail")
+print({{"score": 0.5, "spurious": True}})
+""",
+    )
+    run(["git", "add", "."], cwd=root)
+    run(["git", "commit", "-m", "fixture: sdk"], cwd=root)
+
+
+def test_sdk_result_file_flow(root: Path) -> None:
+    """SDK benchmark publishes via result.json; stdout noise is ignored."""
+    evo(
+        [
+            "init",
+            "--target",
+            "agent.py",
+            "--benchmark",
+            "python eval.py --agent {target}",
+            "--metric",
+            "max",
+            "--host",
+            "generic",
+        ],
+        cwd=root,
+    )
+    evo(["new", "--parent", "root", "-m", "baseline"], cwd=root)
+    baseline = evo(["run", "exp_0000"], cwd=root)
+    assert "COMMITTED exp_0000 0.0" in baseline.stdout, baseline.stdout
+
+    a_dir = root / ".evo" / "run_0000" / "experiments" / "exp_0000" / "attempts" / "001"
+    result_path = a_dir / "result.json"
+    assert result_path.exists()
+    written = json.loads(result_path.read_text(encoding="utf-8"))
+    assert written["score"] == 0.0, written
+    assert written["tasks"] == {"0": 0.0}, written
+
+    log_text = (a_dir / "benchmark.log").read_text(encoding="utf-8")
+    assert "score: 0.99" in log_text
+    assert '"spurious": True' in log_text or "'spurious': True" in log_text
+    assert '"score": 0.5' not in log_text
+
+    outcome = load_outcome(root, "exp_0000", 1)
+    assert outcome["benchmark"]["result"]["score"] == 0.0
+    assert outcome["benchmark"]["result"]["tasks"] == {"0": 0.0}
+
+    leftovers = [p.name for p in a_dir.iterdir() if p.name.endswith(".tmp")]
+    assert leftovers == [], f"leftover tmp files: {leftovers}"
+
+    evo(["new", "--parent", "exp_0000", "-m", "make it good"], cwd=root)
+    write(root / ".evo" / "run_0000" / "worktrees" / "exp_0001" / "agent.py", 'STATE = "GOOD"\n')
+    improved = evo(["run", "exp_0001"], cwd=root)
+    assert "COMMITTED exp_0001 1.0" in improved.stdout
+
+    a_dir2 = root / ".evo" / "run_0000" / "experiments" / "exp_0001" / "attempts" / "001"
+    written2 = json.loads((a_dir2 / "result.json").read_text(encoding="utf-8"))
+    assert written2["score"] == 1.0
+
+
+def setup_sdk_repo_with_gate(root: Path) -> None:
+    """Benchmark + SDK-using gate. Without env scoping the gate would
+    overwrite result.json via inherited EVO_RESULT_PATH."""
+    sdk_src = REPO_ROOT / "sdk" / "python" / "src"
+    write(
+        root / "agent.py",
+        'STATE = "baseline"\n',
+    )
+    write(
+        root / "eval.py",
+        f"""from __future__ import annotations
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, r"{sdk_src}")
+from evo_agent import Run
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--agent", required=True)
+args = parser.parse_args()
+content = Path(args.agent).read_text(encoding="utf-8")
+score = 1.0 if "GOOD" in content else 0.0
+with Run() as run:
+    run.report("0", score=score)
+""",
+    )
+    write(
+        root / "gate.py",
+        f"""from __future__ import annotations
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, r"{sdk_src}")
+from evo_agent import Run
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--agent", required=True)
+args = parser.parse_args()
+# Sentinel score so an overwrite shows up in the assertion.
+with Run() as run:
+    run.report("gate_task", score=0.5555)
+sys.exit(0)
+""",
+    )
+    run(["git", "add", "."], cwd=root)
+    run(["git", "commit", "-m", "fixture: sdk + gate"], cwd=root)
+
+
+def test_sdk_gate_does_not_overwrite_result_file(root: Path) -> None:
+    """Gate using the SDK must not overwrite result.json via inherited env."""
+    evo(
+        [
+            "init",
+            "--target", "agent.py",
+            "--benchmark", "python eval.py --agent {target}",
+            "--gate", "python gate.py --agent {target}",
+            "--metric", "max",
+            "--host", "generic",
+        ],
+        cwd=root,
+    )
+    evo(["new", "--parent", "root", "-m", "baseline"], cwd=root)
+    result = evo(["run", "exp_0000"], cwd=root)
+    assert "COMMITTED exp_0000 0.0" in result.stdout, result.stdout
+
+    a_dir = root / ".evo" / "run_0000" / "experiments" / "exp_0000" / "attempts" / "001"
+    written = json.loads((a_dir / "result.json").read_text(encoding="utf-8"))
+    outcome = load_outcome(root, "exp_0000", 1)
+
+    assert written["score"] == 0.0, written
+    assert written["tasks"] == {"0": 0.0}, written
+    assert outcome["benchmark"]["result"]["score"] == written["score"]
+
+
+def setup_sdk_repo_with_gate_overlapping_trace(root: Path) -> None:
+    """Benchmark + gate both report on task "0" with different scores; used
+    to detect gate trace clobbering benchmark trace via inherited env."""
+    sdk_src = REPO_ROOT / "sdk" / "python" / "src"
+    write(
+        root / "agent.py",
+        'STATE = "baseline"\n',
+    )
+    write(
+        root / "eval.py",
+        f"""from __future__ import annotations
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, r"{sdk_src}")
+from evo_agent import Run
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--agent", required=True)
+args = parser.parse_args()
+content = Path(args.agent).read_text(encoding="utf-8")
+score = 1.0 if "GOOD" in content else 0.0
+with Run() as run:
+    run.report("0", score=score, summary="benchmark")
+""",
+    )
+    write(
+        root / "gate.py",
+        f"""from __future__ import annotations
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, r"{sdk_src}")
+from evo_agent import Run
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--agent", required=True)
+args = parser.parse_args()
+# Same task id as the benchmark with a sentinel score; an overwrite is detectable.
+with Run() as run:
+    run.report("0", score=0.7777, summary="GATE_SENTINEL")
+sys.exit(0)
+""",
+    )
+    run(["git", "add", "."], cwd=root)
+    run(["git", "commit", "-m", "fixture: sdk + gate overlapping trace"], cwd=root)
+
+
+def test_sdk_gate_does_not_overwrite_benchmark_traces(root: Path) -> None:
+    """Gate using the SDK must not overwrite benchmark task traces via
+    inherited EVO_TRACES_DIR."""
+    evo(
+        [
+            "init",
+            "--target", "agent.py",
+            "--benchmark", "python eval.py --agent {target}",
+            "--gate", "python gate.py --agent {target}",
+            "--metric", "max",
+            "--host", "generic",
+        ],
+        cwd=root,
+    )
+    evo(["new", "--parent", "root", "-m", "baseline"], cwd=root)
+    result = evo(["run", "exp_0000"], cwd=root)
+    assert "COMMITTED exp_0000 0.0" in result.stdout, result.stdout
+
+    a_dir = root / ".evo" / "run_0000" / "experiments" / "exp_0000" / "attempts" / "001"
+    trace_path = a_dir / "traces" / "task_0.json"
+    assert trace_path.exists(), f"missing benchmark trace at {trace_path}"
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+
+    assert trace["score"] == 0.0, trace
+    assert trace.get("summary") == "benchmark", trace
+
+
 def setup_min_repo(root: Path) -> None:
     write(
         root / "agent.py",
@@ -726,6 +963,33 @@ def main() -> None:
         init_repo(retry_repo)
         setup_max_repo(retry_repo)
         test_retry_cap_and_fix(retry_repo)
+
+        sdk_repo = temp_root / "sdk-repo"
+        sdk_repo.mkdir()
+        init_repo(sdk_repo)
+        setup_sdk_repo(sdk_repo)
+        try:
+            test_sdk_result_file_flow(sdk_repo)
+        finally:
+            _shutdown_dashboard(sdk_repo)
+
+        sdk_gate_repo = temp_root / "sdk-gate-repo"
+        sdk_gate_repo.mkdir()
+        init_repo(sdk_gate_repo)
+        setup_sdk_repo_with_gate(sdk_gate_repo)
+        try:
+            test_sdk_gate_does_not_overwrite_result_file(sdk_gate_repo)
+        finally:
+            _shutdown_dashboard(sdk_gate_repo)
+
+        sdk_gate_trace_repo = temp_root / "sdk-gate-trace-repo"
+        sdk_gate_trace_repo.mkdir()
+        init_repo(sdk_gate_trace_repo)
+        setup_sdk_repo_with_gate_overlapping_trace(sdk_gate_trace_repo)
+        try:
+            test_sdk_gate_does_not_overwrite_benchmark_traces(sdk_gate_trace_repo)
+        finally:
+            _shutdown_dashboard(sdk_gate_trace_repo)
 
         # Live dispatch tests — gated by EVO_LIVE_TEST_CLAUDE=1.
         # Real claude -p / codex exec subprocesses, real LLM cost.

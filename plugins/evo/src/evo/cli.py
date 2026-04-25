@@ -44,6 +44,7 @@ from .core import (
     maybe_commit_worktree,
     node_target_path,
     notes_path,
+    load_result,
     parse_score,
     path_to_node,
     project_path,
@@ -622,6 +623,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     traces_dir.mkdir(parents=True, exist_ok=True)
     benchmark_log = a_dir / "benchmark.log"
     benchmark_err = a_dir / "benchmark_err.log"
+    result_path = a_dir / "result.json"
     metric = config["metric"]
     parent_score = _resolve_parent_score(graph, node["parent"])
 
@@ -631,6 +633,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     env["EVO_WORKTREE"] = str(worktree)
     env["EVO_EXPERIMENT_ID"] = args.exp_id
     env["EVO_ATTEMPT"] = str(attempt_n)
+    env["EVO_RESULT_PATH"] = str(result_path)
 
     # Captured before the benchmark runs so it survives crashes too.
     parent_ref = current_branch(root) if node["parent"] == "root" else _read_node(root, node["parent"])["branch"]
@@ -650,7 +653,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             benchmark_record = {"command": benchmark_cmd, "returncode": bench.returncode, "result": None}
             raise RuntimeError(f"benchmark_exit_{bench.returncode}")
 
-        score, parsed = parse_score(bench.stdout)
+        score, parsed = load_result(result_path, bench.stdout)
         benchmark_record = {"command": benchmark_cmd, "returncode": 0, "result": parsed}
 
         gate_passed = True
@@ -667,11 +670,15 @@ def cmd_run(args: argparse.Namespace) -> int:
             for g in chain_node.get("gates", []):
                 gate_origins.setdefault(g["name"], chain_node["id"])
 
+        # Strip EVO_* so an SDK-using gate can't clobber result.json or
+        # the benchmark's task_*.json traces.
+        gate_env = {k: v for k, v in env.items() if not k.startswith("EVO_")}
+
         for g in inherited_gates:
             gate_cmd = fill_command_template(g["command"], target=target, worktree=worktree)
             gate_log_file = a_dir / f"gate_{g['name']}.log"
             try:
-                gate_result = _run_command(gate_cmd, cwd=root, env=env, stdout_path=gate_log_file, stderr_path=gate_log_file, timeout=args.timeout)
+                gate_result = _run_command(gate_cmd, cwd=root, env=gate_env, stdout_path=gate_log_file, stderr_path=gate_log_file, timeout=args.timeout)
             except subprocess.TimeoutExpired:
                 gate_records.append({
                     "name": g["name"],

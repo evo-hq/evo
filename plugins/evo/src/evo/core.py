@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -564,34 +563,41 @@ def fill_command_template(template: str, *, target: Path, worktree: Path) -> str
     return template.replace("{target}", str(target)).replace("{worktree}", str(worktree))
 
 
+def load_result(result_path: Path, stdout: str) -> tuple[float, dict[str, Any] | None]:
+    """Read score from the result file if present (strict), else parse stdout.
+
+    File present means a writer claimed this attempt. Empty / malformed /
+    missing-'score' all raise; the stdout fallback only applies when the
+    file is absent.
+    """
+    if result_path.exists():
+        if result_path.stat().st_size == 0:
+            raise ValueError(f"{result_path} is empty (benchmark crashed mid-publish)")
+        try:
+            parsed = json.loads(result_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{result_path} is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict) or "score" not in parsed:
+            raise ValueError(f"{result_path} missing 'score' field: {parsed!r}")
+        return float(parsed["score"]), parsed
+    return parse_score(stdout)
+
+
 def parse_score(stdout: str) -> tuple[float, dict[str, Any] | None]:
+    """Strict legacy fallback: stdout must be one JSON object with 'score'."""
     stripped = stdout.strip()
     if not stripped:
         raise ValueError("Benchmark output was empty")
     try:
         parsed = json.loads(stripped)
-        if isinstance(parsed, dict) and "score" in parsed:
-            return float(parsed["score"]), parsed
-        if isinstance(parsed, (int, float)):
-            return float(parsed), None
-    except json.JSONDecodeError:
-        pass
-
-    for line in reversed([line.strip() for line in stripped.splitlines() if line.strip()]):
-        try:
-            parsed = json.loads(line)
-            if isinstance(parsed, dict) and "score" in parsed:
-                return float(parsed["score"]), parsed
-            if isinstance(parsed, (int, float)):
-                return float(parsed), None
-        except json.JSONDecodeError:
-            match = re.search(r"\bscore\b\s*[:=]\s*(-?\d+(?:\.\d+)?)", line, re.IGNORECASE)
-            if match:
-                return float(match.group(1)), None
-            plain = re.fullmatch(r"-?\d+(?:\.\d+)?", line)
-            if plain:
-                return float(plain.group(0)), None
-    raise ValueError("Could not parse benchmark score from output")
+    except json.JSONDecodeError as exc:
+        preview = stripped[:200] + ("..." if len(stripped) > 200 else "")
+        raise ValueError(
+            f"Benchmark stdout is not a single JSON object ({exc}); got: {preview!r}"
+        ) from exc
+    if not isinstance(parsed, dict) or "score" not in parsed:
+        raise ValueError(f"Benchmark stdout JSON missing 'score' field: {parsed!r}")
+    return float(parsed["score"]), parsed
 
 
 def compare_scores(metric: str, candidate: float, parent: float | None) -> bool:

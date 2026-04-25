@@ -1,22 +1,25 @@
 /**
- * Inline instrumentation template for Node benchmarks.
+ * Inline instrumentation for Node benchmarks. Paste into the benchmark and
+ * call logTask() per task + writeResult() once at the end.
  *
- * Use this when the user declines the `evo-agent` SDK. Import the helpers
- * into the benchmark script and call logTask() + writeResult() in place of
- * the SDK's Run class. Zero new dependencies.
- *
- * Contract (same as the SDK):
- * - Read EVO_TRACES_DIR and EVO_EXPERIMENT_ID from process.env.
- * - Write task_<id>.json files into EVO_TRACES_DIR as each task finishes.
- * - Print a single JSON object with a "score" field to stdout at the end.
- * - All other output goes to stderr.
+ * Contract:
+ * - Reads EVO_TRACES_DIR, EVO_EXPERIMENT_ID, EVO_RESULT_PATH from process.env.
+ * - Writes traces/task_<id>.json per task.
+ * - Writes the final result JSON to EVO_RESULT_PATH, or stdout if unset.
  */
 
-import { writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import {
+  writeFileSync,
+  mkdirSync,
+  openSync,
+  closeSync,
+  renameSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 
 const TRACES_DIR = process.env.EVO_TRACES_DIR || null;
 const EXPERIMENT_ID = process.env.EVO_EXPERIMENT_ID || "unknown";
+const RESULT_PATH = process.env.EVO_RESULT_PATH || null;
 const SCORES = {};
 const TASK_META = {};
 const STARTED_AT = new Date().toISOString().replace(/\.\d{3}Z$/, "+00:00");
@@ -69,6 +72,26 @@ export function writeResult(score) {
       Object.entries(TASK_META).map(([k, v]) => [k, { ...v }])
     );
   }
-  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+  const payload = JSON.stringify(result, null, 2);
+  if (RESULT_PATH) {
+    mkdirSync(dirname(RESULT_PATH), { recursive: true });
+    // Claim + tmp+rename: duplicate writers fail-fast; crash mid-publish
+    // leaves an empty file (caught by load_result) not a partial write.
+    try {
+      closeSync(openSync(RESULT_PATH, "wx"));
+    } catch (e) {
+      if (e.code === "EEXIST") {
+        throw new Error(
+          `${RESULT_PATH} already exists; only one writeResult() per attempt`
+        );
+      }
+      throw e;
+    }
+    const tmp = RESULT_PATH + ".tmp";
+    writeFileSync(tmp, payload, "utf-8");
+    renameSync(tmp, RESULT_PATH);
+  } else {
+    process.stdout.write(payload + "\n");
+  }
   return score;
 }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Run, Gate } from "../src/index.js";
@@ -54,6 +54,76 @@ test("Run writes trace files and emits score JSON", async () => {
     const t1 = JSON.parse(readFileSync(join(dir, "task_1.json"), "utf-8"));
     assert.equal(t1.status, "failed");
     assert.equal(t1.failure_reason, "bad");
+
+    delete process.env.EVO_TRACES_DIR;
+    delete process.env.EVO_EXPERIMENT_ID;
+  });
+});
+
+test("Run writes result file when EVO_RESULT_PATH is set, stdout is silent", async () => {
+  await withTmp(async (dir) => {
+    process.env.EVO_TRACES_DIR = dir;
+    process.env.EVO_EXPERIMENT_ID = "exp-result-path";
+    process.env.EVO_RESULT_PATH = join(dir, "result.json");
+    const run = new Run();
+    run.report("0", { score: 1.0 });
+    run.report("1", { score: 0.0 });
+
+    const out = captureStdout(() => run.finish());
+    assert.equal(out, "", `expected empty stdout, got: ${out}`);
+
+    const written = JSON.parse(readFileSync(process.env.EVO_RESULT_PATH, "utf-8"));
+    assert.equal(written.score, 0.5);
+    assert.deepEqual(written.tasks, { "0": 1.0, "1": 0.0 });
+
+    const leftovers = readdirSync(dir).filter((n) => n.endsWith(".tmp"));
+    assert.deepEqual(leftovers, [], `leftover tmp files: ${leftovers}`);
+
+    delete process.env.EVO_TRACES_DIR;
+    delete process.env.EVO_EXPERIMENT_ID;
+    delete process.env.EVO_RESULT_PATH;
+  });
+});
+
+test("Run raises when result file already exists", async () => {
+  await withTmp(async (dir) => {
+    process.env.EVO_TRACES_DIR = dir;
+    process.env.EVO_EXPERIMENT_ID = "exp-duplicate";
+    const resultPath = join(dir, "result.json");
+    process.env.EVO_RESULT_PATH = resultPath;
+
+    // withTmp's cleanup runs synchronously after fn returns the promise, so
+    // recreate the dir before the test, then pre-create the result file as
+    // if an earlier writer published.
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(resultPath, '{"score": 0.0}', "utf-8");
+
+    const run = new Run();
+    run.report("0", { score: 0.5555 });
+
+    await assert.rejects(
+      () => run.finish(),
+      /already exists/,
+      "Expected error on duplicate write to result.json"
+    );
+
+    delete process.env.EVO_TRACES_DIR;
+    delete process.env.EVO_EXPERIMENT_ID;
+    delete process.env.EVO_RESULT_PATH;
+  });
+});
+
+test("Run falls back to stdout when EVO_RESULT_PATH is unset", async () => {
+  await withTmp(async (dir) => {
+    process.env.EVO_TRACES_DIR = dir;
+    process.env.EVO_EXPERIMENT_ID = "exp-stdout-fallback";
+    delete process.env.EVO_RESULT_PATH;
+    const run = new Run();
+    run.report("0", { score: 0.7 });
+
+    const out = captureStdout(() => run.finish());
+    const result = JSON.parse(out);
+    assert.equal(result.score, 0.7);
 
     delete process.env.EVO_TRACES_DIR;
     delete process.env.EVO_EXPERIMENT_ID;
