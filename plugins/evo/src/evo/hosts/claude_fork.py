@@ -235,19 +235,24 @@ def spawn_child(
     if background:
         out_f = stdout_log.open("w")
         err_f = stderr_log.open("w")
-        popen = subprocess.Popen(
-            cmd,
-            cwd=root,
-            stdout=out_f,
-            stderr=err_f,
-            start_new_session=True,
-        )
-        # Close the parent's copies of the log fds. After fork+exec the
-        # child has its own; subprocess.Popen does NOT close fd-passed
-        # file objects, only borrows fileno(). Without explicit close,
-        # CPython's refcount GC handles it but PyPy leaks until cycle GC.
-        out_f.close()
-        err_f.close()
+        try:
+            popen = subprocess.Popen(
+                cmd,
+                cwd=root,
+                stdout=out_f,
+                stderr=err_f,
+                start_new_session=True,
+            )
+        finally:
+            # Close the parent's copies of the log fds whether Popen
+            # succeeded or raised. After fork+exec the child has its own
+            # fds; subprocess.Popen does NOT close fd-passed file objects,
+            # only borrows fileno(). On the success path this avoids the
+            # CPython-only refcount-GC dependency; on the error path
+            # (claude binary missing, OOM, sandbox denial) it prevents
+            # orphaned fd retention in the parent.
+            out_f.close()
+            err_f.close()
         return {
             "background": True,
             "pid": popen.pid,
