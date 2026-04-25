@@ -97,12 +97,12 @@ def create_app(root: Path | None = None) -> Flask:
 
     @app.get("/api/node/<exp_id>/traces")
     def node_traces(exp_id: str):
-         traces_dir = experiments_dir_for(_root(), exp_id) / "traces"
-         payload = {}
-         if traces_dir.exists():
-             for path in sorted(traces_dir.glob("task_*.json")):
-                 payload[path.name] = json.loads(path.read_text(encoding="utf-8"))
-         return jsonify(payload)
+        traces_dir = experiments_dir_for(_root(), exp_id) / "traces"
+        payload = {}
+        if traces_dir.exists():
+            for path in sorted(traces_dir.glob("task_*.json")):
+                payload[path.name] = json.loads(path.read_text(encoding="utf-8"))
+        return jsonify(payload)
 
     @app.get("/api/node/<exp_id>/traces/<task_id>")
     def node_task_trace(exp_id: str, task_id: str):
