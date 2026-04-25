@@ -424,7 +424,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         salvaged_score = None
         salvaged_result = None
         try:
-            trace_files = sorted(traces_dir.glob("*.json"))
+            trace_files = sorted(traces_dir.glob("task_*.json"))
             if trace_files:
                 task_scores = {}
                 for tf in trace_files:
@@ -702,16 +702,16 @@ def cmd_traces(args: argparse.Namespace) -> int:
             print("{}")
         return 0
     traces_dir = attempt_traces_dir(root, args.exp_id, attempt)
-    if args.task:
-        path = traces_dir / f"task_{args.task}.json"
-        print(path.read_text(encoding="utf-8"))
+        if args.task:
+            path = traces_dir / f"task_{args.task}.json"
+            print(path.read_text(encoding="utf-8"))
+            return 0
+        payload = {}
+        if traces_dir.exists():
+            for path in sorted(traces_dir.glob("task_*.json")):
+                payload[path.name] = json.loads(path.read_text(encoding="utf-8"))
+        print(json.dumps(payload, indent=2))
         return 0
-    payload = {}
-    if traces_dir.exists():
-        for path in sorted(traces_dir.glob("*.json")):
-            payload[path.name] = json.loads(path.read_text(encoding="utf-8"))
-    print(json.dumps(payload, indent=2))
-    return 0
 
 
 def cmd_annotate(args: argparse.Namespace) -> int:
