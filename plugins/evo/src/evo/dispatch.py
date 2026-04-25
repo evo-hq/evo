@@ -21,7 +21,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .core import evo_dir, load_json
+from .core import (
+    DISPATCH_HOSTS,
+    allocate_experiment,
+    atomic_write_json,
+    current_commit,
+    evo_dir,
+    get_host,
+    load_json,
+    node_target_path,
+    load_config,
+    load_graph,
+)
 
 # ---------------------------------------------------------------------------
 # Layout & constants
@@ -234,3 +245,221 @@ def render_explore_prompt(
         parent_id=parent_id,
         explore_context_block=block,
     )
+
+
+# ---------------------------------------------------------------------------
+# EXECUTE-phase user message
+# ---------------------------------------------------------------------------
+
+#: Template for the child fork's first user message. The child inherits
+#: the explorer's transcript (skill + code reads) via fork-session, so
+#: this prompt only needs to deliver the per-child handle: the experiment
+#: it has been allocated, where to edit, the brief, and the budget.
+EXECUTE_USER_PROMPT_TEMPLATE = """EXECUTE phase begins now.
+Your experiment: {exp_id}
+Worktree: {worktree_path}
+Parent: {parent_id}
+
+Brief:
+{brief}
+
+Budget: {budget} iterations. Follow the protocol you loaded earlier. Begin.
+"""
+
+
+def render_execute_prompt(
+    *,
+    exp_id: str,
+    worktree_path: Path,
+    parent_id: str,
+    brief: str,
+    budget: int,
+) -> str:
+    """Concrete EXECUTE-phase user message for one child fork."""
+    return EXECUTE_USER_PROMPT_TEMPLATE.format(
+        exp_id=exp_id,
+        worktree_path=str(worktree_path),
+        parent_id=parent_id,
+        brief=brief.strip(),
+        budget=budget,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class DispatchNotSupportedError(RuntimeError):
+    """Raised when `evo dispatch` is invoked on a host without a fork
+    handler. The caller (CLI) translates this into guidance that points
+    the orchestrator at its host's native parallel-Task primitive."""
+
+
+class ExplorerSpawnError(RuntimeError):
+    """Explorer subprocess failed; orchestrator cannot proceed for this
+    parent until the underlying issue is fixed (or `--no-fork` is added
+    in a future revision)."""
+
+
+# ---------------------------------------------------------------------------
+# Orchestration: ensure_explorer + dispatch_child
+# ---------------------------------------------------------------------------
+
+
+def _require_dispatch_host(root: Path) -> str:
+    """Resolve and validate the current dispatch host. Raises
+    DispatchNotSupportedError if the workspace's host doesn't support
+    fork-cache. Callers translate this to user-facing guidance."""
+    host = get_host(root)
+    if host is None:
+        raise DispatchNotSupportedError(
+            "no host recorded for this workspace. "
+            "Run `evo host set <claude-code|codex|opencode|...>` first."
+        )
+    if host not in DISPATCH_HOSTS:
+        raise DispatchNotSupportedError(
+            f"`evo dispatch` is not supported on host={host}. "
+            "Use your host's parallel-Task primitive instead — see "
+            "plugins/evo/skills/optimize/SKILL.md. "
+            f"Currently dispatchable: {sorted(DISPATCH_HOSTS)}."
+        )
+    return host
+
+
+def ensure_explorer(
+    root: Path,
+    *,
+    parent_id: str,
+    explore_context: str | None = None,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Return a valid explorer record for ``parent_id``, creating one if
+    none exists or the cached one is stale.
+
+    Reuse predicate matches ``explorer_is_valid``. ``refresh=True`` forces
+    a rebuild even when the cache would otherwise be valid (operator
+    override; orchestrator passes this when it wants new
+    ``--explore-context`` to take effect mid-run).
+
+    Raises ``DispatchNotSupportedError`` if the host lacks fork support
+    and ``ExplorerSpawnError`` if the spawn subprocess fails.
+    """
+    host = _require_dispatch_host(root)
+
+    # Resolve parent worktree + commit. ``parent_id`` must be a real node.
+    graph = load_graph(root)
+    if parent_id not in graph["nodes"]:
+        raise RuntimeError(f"unknown parent: {parent_id}")
+    node = graph["nodes"][parent_id]
+    parent_worktree = Path(node["worktree"]) if node.get("worktree") else root
+    parent_commit_value = node.get("commit") or _resolve_parent_commit(root, parent_worktree)
+
+    skill_h = subagent_skill_hash()
+    ctx_h = hash_text(explore_context or "")
+
+    record = load_explorer_record(root, parent_id) if not refresh else None
+    if record is not None:
+        valid, reason = explorer_is_valid(
+            record,
+            parent_commit=parent_commit_value,
+            skill_hash=skill_h,
+            explore_context_hash=ctx_h,
+            current_host=host,
+        )
+        if valid:
+            return record
+        # Fall through to rebuild; reason is logged by the CLI layer.
+
+    # Rebuild via the host handler.
+    from .hosts import HOST_HANDLERS  # local import to avoid cycle
+    handler = HOST_HANDLERS.get(host)
+    if handler is None:
+        raise DispatchNotSupportedError(
+            f"no host handler registered for host={host}. "
+            "This is a bug — DISPATCH_HOSTS and HOST_HANDLERS drifted."
+        )
+    try:
+        new_record = handler.spawn_explorer(
+            root,
+            parent_id=parent_id,
+            parent_worktree=parent_worktree,
+            parent_commit=parent_commit_value,
+            explore_context=explore_context,
+        )
+    except Exception as exc:
+        raise ExplorerSpawnError(str(exc)) from exc
+
+    explorers_dir(root).mkdir(parents=True, exist_ok=True)
+    atomic_write_json(explorer_record_path(root, parent_id), new_record)
+    return new_record
+
+
+def _resolve_parent_commit(root: Path, parent_worktree: Path) -> str:
+    """Best-effort parent commit resolution. For non-root nodes the graph
+    already has the commit; this is a fallback that asks git directly."""
+    try:
+        return current_commit(parent_worktree)
+    except Exception:  # noqa: BLE001
+        return current_commit(root)
+
+
+def dispatch_child(
+    root: Path,
+    *,
+    parent_id: str,
+    brief: str,
+    budget: int,
+    explore_context: str | None = None,
+    refresh_explorer: bool = False,
+    background: bool = False,
+    job_dir_factory=None,
+) -> dict[str, Any]:
+    """Allocate one new experiment under ``parent_id``, ensure the
+    explorer is warm, then spawn a fork via the host handler.
+
+    Returns a dict with at minimum ``exp_id``, plus the host handler's
+    output (background pid + log paths, or foreground exit_code + usage).
+
+    ``job_dir_factory(exp_id) -> Path`` lets the CLI pick its own
+    ``.evo/forks/<job_id>/`` layout. Defaults to ``.evo/forks/<exp_id>/``.
+    """
+    host = _require_dispatch_host(root)
+    record = ensure_explorer(
+        root,
+        parent_id=parent_id,
+        explore_context=explore_context,
+        refresh=refresh_explorer,
+    )
+
+    node = allocate_experiment(root, parent_id=parent_id, hypothesis=brief)
+    exp_id = node["id"]
+    worktree_path = Path(node["worktree"])
+
+    if job_dir_factory is None:
+        job_dir = evo_dir(root) / "forks" / exp_id
+    else:
+        job_dir = job_dir_factory(exp_id)
+
+    from .hosts import HOST_HANDLERS  # local import to avoid cycle
+    handler = HOST_HANDLERS[host]
+    spawn_result = handler.spawn_child(
+        root,
+        explorer_record=record,
+        exp_id=exp_id,
+        worktree_path=worktree_path,
+        parent_id=parent_id,
+        brief=brief,
+        budget=budget,
+        job_dir=job_dir,
+        background=background,
+    )
+
+    return {
+        "exp_id": exp_id,
+        "parent_id": parent_id,
+        "worktree": str(worktree_path),
+        "job_dir": str(job_dir),
+        "explorer_session_id": record["session_id"],
+        **spawn_result,
+    }
