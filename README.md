@@ -41,10 +41,10 @@ evo --version                # evo-hq-cli 0.2.2
 
 Invoke: `/evo:discover`, `/evo:optimize`.
 
-**Codex** (requires 0.121.0-alpha.2 or newer -- `npm install -g @openai/codex@alpha` if you're on 0.120.0 stable)
+**Codex** (requires 0.122.0 or newer -- `npm install -g @openai/codex@latest`)
 
 ```bash
-codex marketplace add evo-hq/evo
+codex plugin marketplace add evo-hq/evo
 ```
 
 Then `/plugins` → `evo` → install. Invoke: `$evo discover`, `$evo optimize`.
