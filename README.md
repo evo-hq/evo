@@ -27,7 +27,7 @@ Claude Code bundles its own copy. Every other host calls `evo` as an external bi
 
 ```bash
 uv tool install evo-hq-cli   # or: pipx install evo-hq-cli
-evo --version                # evo-hq-cli 0.2.2
+evo --version                # evo-hq-cli 0.3.0
 ```
 
 ### 2. Add the plugin
@@ -142,7 +142,7 @@ For working on evo itself (not just using it):
 ```bash
 git clone https://github.com/evo-hq/evo
 cd evo
-uv run --project plugins/evo evo --version   # evo-hq-cli 0.2.2
+uv run --project plugins/evo evo --version   # evo-hq-cli 0.3.0
 ```
 
 `uv run` resolves dependencies on first use -- no `pip install` step.
