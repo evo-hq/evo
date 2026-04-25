@@ -61,6 +61,8 @@ Repeat until interrupted or stall limit reached:
 
 **Step 0 (always, before anything else): ensure you have read `.evo/project.md`.** Its contents define the optimization metric and goal; every pattern you report MUST be tied to a failure mode of that goal. If you haven't read it yet in this session, read it now -- before listing experiments, opening any `outcome.json`, or spawning sub-agents. If the file is missing, stop and tell the user.
 
+**Step 0.1 (one-time auto-migration): ensure the workspace knows what runtime you are.** Run `evo host show`. If it prints `<not set>`, the workspace pre-dates the host signature field — declare your runtime now: `evo host set <one of: claude-code, codex, opencode, openclaw, hermes, generic>`. You know what runtime you're operating in (your system prompt, env vars like `CLAUDECODE=1`, your own self-identity); pick the matching value. If genuinely unsure, use `generic`. Do not ask the user — this is a one-time silent migration. Subsequent rounds skip this step (`evo host show` returns the recorded value). After this, on `claude-code` the dispatch fork-cache becomes available (step 5a); other runtimes get no behavior change.
+
 ```bash
 evo scratchpad          # full state: tree, best path, frontier, annotations, diffs, gates, what-not-to-try
 evo frontier            # explorable nodes ranked by the configured strategy (JSON envelope: {strategy, nodes[{id,score,rank,...}], generated_at})
@@ -150,15 +152,7 @@ merge or re-scope one of them. The frontier/pruning logic handles tree-level exp
 
 ### 5. Spawn parallel optimization subagents
 
-The mechanism depends on the host recorded by `evo init` (see `evo host show`). Both paths produce the same observable outcome: N parallel children, each allocating an experiment under its assigned parent and running the worker protocol up to budget. The fork-cache path is faster + cheaper when available.
-
-#### 5pre. Host unset (existing workspaces upgrading from earlier evo)
-
-If `evo host show` prints `<not set>`, the workspace pre-dates the host signature field. Default to **5b** (the host's parallel-Task primitive) — that's the path you were using before the upgrade, behavior preserved. After this round, optionally tell the user:
-
-> "Your evo workspace pre-dates the host signature field. Run `evo host set <claude-code|codex|opencode|openclaw|hermes|generic>` once to record the runtime. On `claude-code` this also unlocks `evo dispatch` (shared explorer KV-cache across siblings; ~99% prefix reuse). Other hosts get no behavior change."
-
-Don't block the round on this — fall through to 5b and continue.
+The mechanism depends on the host recorded by `evo init` / step 0.1's migration (see `evo host show`). Both paths produce the same observable outcome: N parallel children, each allocating an experiment under its assigned parent and running the worker protocol up to budget. The fork-cache path is faster + cheaper when available.
 
 #### 5a. claude-code → `evo dispatch`
 
