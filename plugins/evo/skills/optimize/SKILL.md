@@ -152,6 +152,14 @@ merge or re-scope one of them. The frontier/pruning logic handles tree-level exp
 
 The mechanism depends on the host recorded by `evo init` (see `evo host show`). Both paths produce the same observable outcome: N parallel children, each allocating an experiment under its assigned parent and running the worker protocol up to budget. The fork-cache path is faster + cheaper when available.
 
+#### 5pre. Host unset (existing workspaces upgrading from earlier evo)
+
+If `evo host show` prints `<not set>`, the workspace pre-dates the host signature field. Default to **5b** (the host's parallel-Task primitive) — that's the path you were using before the upgrade, behavior preserved. After this round, optionally tell the user:
+
+> "Your evo workspace pre-dates the host signature field. Run `evo host set <claude-code|codex|opencode|openclaw|hermes|generic>` once to record the runtime. On `claude-code` this also unlocks `evo dispatch` (shared explorer KV-cache across siblings; ~99% prefix reuse). Other hosts get no behavior change."
+
+Don't block the round on this — fall through to 5b and continue.
+
 #### 5a. claude-code → `evo dispatch`
 
 On `claude-code`, dispatch one child per brief. Each call allocates a new experiment under `<parent>`, ensures an explorer session for that parent is warm (lazy on first dispatch), and forks a child via `claude -p --resume <SID> --fork-session`.
