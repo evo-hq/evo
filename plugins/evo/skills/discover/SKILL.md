@@ -150,8 +150,11 @@ build/
 
 ```bash
 evo init --target <file> --benchmark "<command using {worktree} and {target}>" --metric <max|min> \
+  --host <claude-code|codex|opencode|openclaw|hermes|generic> \
   --instrumentation-mode <sdk|inline> [--gate "<gate command>"]
 ```
+
+**`--host` is required.** Pass the host runtime you (the orchestrator) are running under. Allowed values: `claude-code`, `codex`, `opencode`, `openclaw`, `hermes`, `generic`. This is recorded in `.evo/meta.json` and read by `evo dispatch` (the optional fork-cache spawner). On `claude-code`, dispatch is available; on every other host evo's child-spawn falls back to your host's native parallel-Task primitive (no behavior change vs today). Pick the value matching the runtime you invoked `discover` from. Use `evo host set <value>` later if you change runtimes.
 
 **Placeholder semantics.** Benchmark and gate commands support two placeholders, resolved lazily at run time by `evo run` / gate evaluation:
 
@@ -166,7 +169,8 @@ Example for a benchmark written at `{worktree}/benchmark.py` that will be commit
 evo init \
   --target agent/solve.py \
   --benchmark "python3 {worktree}/benchmark.py --target {target}" \
-  --metric max
+  --metric max \
+  --host claude-code
 ```
 
 If the project uses a specific interpreter (poetry, pipenv, a venv), qualify it: `"poetry run python {worktree}/benchmark.py ..."`, `".venv/bin/python {worktree}/benchmark.py ..."`, etc.

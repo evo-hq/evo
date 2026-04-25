@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import DISTRIBUTION_NAME, __version__
 from .core import (
+    SUPPORTED_HOSTS,
     add_gate,
     append_annotation,
     append_infra_event,
@@ -32,6 +33,7 @@ from .core import (
     experiments_dir_for,
     fill_command_template,
     frontier_nodes,
+    get_host,
     graph_path,
     init_workspace,
     load_annotations,
@@ -50,6 +52,7 @@ from .core import (
     repo_root,
     reset_runtime_state,
     save_config,
+    set_host,
     update_node,
     utc_now,
     worktrees_path,
@@ -150,7 +153,17 @@ def cmd_init(args: argparse.Namespace) -> int:
     root = repo_root()
     if args.metric not in {"max", "min"}:
         raise RuntimeError("--metric must be `max` or `min`")
-    run_id = init_workspace(root, target=args.target, benchmark=args.benchmark, metric=args.metric, gate=args.gate)
+    if args.host not in SUPPORTED_HOSTS:
+        allowed = ", ".join(sorted(SUPPORTED_HOSTS))
+        raise RuntimeError(f"--host must be one of: {allowed}")
+    run_id = init_workspace(
+        root,
+        target=args.target,
+        benchmark=args.benchmark,
+        metric=args.metric,
+        gate=args.gate,
+        host=args.host,
+    )
     if args.instrumentation_mode:
         meta_file = evo_dir(root) / "meta.json"
         meta = json.loads(meta_file.read_text(encoding="utf-8"))
@@ -158,8 +171,22 @@ def cmd_init(args: argparse.Namespace) -> int:
         atomic_write_json(meta_file, meta)
     write_scratchpad(root)
     _start_dashboard_background(root, port=args.port)
-    print(f"Initialized evo workspace {run_id} at {workspace_path(root)}")
+    print(f"Initialized evo workspace {run_id} at {workspace_path(root)} (host={args.host})")
     return 0
+
+
+def cmd_host(args: argparse.Namespace) -> int:
+    root = repo_root()
+    action = args.host_action
+    if action == "show":
+        host = get_host(root)
+        print(host if host else "<not set>")
+        return 0
+    if action == "set":
+        set_host(root, args.value)
+        print(f"host set to {args.value}")
+        return 0
+    raise RuntimeError(f"unknown host action: {action}")
 
 
 def cmd_new(args: argparse.Namespace) -> int:
@@ -934,8 +961,26 @@ def build_parser() -> argparse.ArgumentParser:
     init_p.add_argument("--metric", required=True, choices=["max", "min"])
     init_p.add_argument("--gate")
     init_p.add_argument("--instrumentation-mode", choices=["sdk", "inline"])
+    init_p.add_argument(
+        "--host",
+        required=True,
+        choices=sorted(SUPPORTED_HOSTS),
+        help="orchestrator runtime (claude-code/codex/opencode/openclaw/hermes/generic). "
+             "Determines whether `evo dispatch` is available; other commands ignore it.",
+    )
     init_p.add_argument("--port", type=int, default=8080)
     init_p.set_defaults(func=cmd_init)
+
+    host_p = sub.add_parser(
+        "host",
+        help="show or set the orchestrator host signature",
+    )
+    host_sub = host_p.add_subparsers(dest="host_action", required=True)
+    host_show_p = host_sub.add_parser("show", help="print the current workspace host")
+    host_show_p.set_defaults(func=cmd_host)
+    host_set_p = host_sub.add_parser("set", help="update the workspace host")
+    host_set_p.add_argument("value", choices=sorted(SUPPORTED_HOSTS))
+    host_set_p.set_defaults(func=cmd_host)
 
     new_p = sub.add_parser("new")
     new_p.add_argument("--parent", required=True)
