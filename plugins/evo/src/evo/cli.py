@@ -241,6 +241,10 @@ def _is_pid_alive(pid: int) -> bool:
     except PermissionError:
         # pid exists but isn't ours — treat as alive
         return True
+    except OSError:
+        # Windows: os.kill(pid, 0) on a dead pid raises generic OSError
+        # (errno EINVAL from OpenProcess), not ProcessLookupError.
+        return False
 
 
 def _settle_job(root: Path, exp_id: str) -> str:
