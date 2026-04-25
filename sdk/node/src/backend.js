@@ -1,5 +1,11 @@
-import { writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import {
+  writeFileSync,
+  mkdirSync,
+  openSync,
+  closeSync,
+  renameSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 
 export class LocalBackend {
   setup({ tracesDir, experimentId } = {}) {
@@ -17,7 +23,29 @@ export class LocalBackend {
   }
 
   emitResult(result) {
-    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    const payload = JSON.stringify(result, null, 2);
+    const resultPath = process.env.EVO_RESULT_PATH;
+    if (!resultPath) {
+      process.stdout.write(payload + "\n");
+      return;
+    }
+    mkdirSync(dirname(resultPath), { recursive: true });
+    // Claim destination + tmp+rename: duplicate writers fail-fast on the
+    // 'wx' (O_EXCL) claim; a crash mid-publish leaves an empty file at
+    // resultPath (caught by load_result) instead of a partial write.
+    try {
+      closeSync(openSync(resultPath, "wx"));
+    } catch (e) {
+      if (e.code === "EEXIST") {
+        throw new Error(
+          `${resultPath} already exists; only one Run.finish() / writeResult() per attempt`
+        );
+      }
+      throw e;
+    }
+    const tmp = resultPath + ".tmp";
+    writeFileSync(tmp, payload, "utf-8");
+    renameSync(tmp, resultPath);
   }
 
   emitGateSummary({ passed, lines }) {

@@ -27,7 +27,7 @@ Claude Code bundles its own copy. Every other host calls `evo` as an external bi
 
 ```bash
 uv tool install evo-hq-cli   # or: pipx install evo-hq-cli
-evo --version                # evo-hq-cli 0.2.2
+evo --version                # evo-hq-cli 0.3.0
 ```
 
 ### 2. Add the plugin
@@ -41,10 +41,10 @@ evo --version                # evo-hq-cli 0.2.2
 
 Invoke: `/evo:discover`, `/evo:optimize`.
 
-**Codex** (requires 0.121.0-alpha.2 or newer -- `npm install -g @openai/codex@alpha` if you're on 0.120.0 stable)
+**Codex** (requires 0.122.0 or newer -- `npm install -g @openai/codex@latest`)
 
 ```bash
-codex marketplace add evo-hq/evo
+codex plugin marketplace add evo-hq/evo
 ```
 
 Then `/plugins` → `evo` → install. Invoke: `$evo discover`, `$evo optimize`.
@@ -142,7 +142,7 @@ For working on evo itself (not just using it):
 ```bash
 git clone https://github.com/evo-hq/evo
 cd evo
-uv run --project plugins/evo evo --version   # evo-hq-cli 0.2.2
+uv run --project plugins/evo evo --version   # evo-hq-cli 0.3.0
 ```
 
 `uv run` resolves dependencies on first use -- no `pip install` step.

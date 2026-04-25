@@ -1,6 +1,6 @@
 [project]
 name = "evo-hq-cli"
-version = "0.2.2"
+version = "0.3.0"
 description = "Structured experiment-driven code optimization with git worktrees, traces, and a local dashboard. CLI for the evo plugin (Claude Code, Codex)."
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -8,6 +8,7 @@ license-files = ["LICENSE", "NOTICE"]
 readme = "README.md"
 dependencies = [
   "flask>=3.0.0",
+  "portalocker>=2.8.0",
   "pyyaml>=6.0.0",
 ]
 

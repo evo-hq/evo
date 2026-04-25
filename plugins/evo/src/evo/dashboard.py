@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 from .core import (
     _load_meta,
@@ -19,7 +19,14 @@ from .core import (
     load_graph,
     notes_path,
     repo_root,
+    save_config,
     scratchpad_path,
+)
+from .frontier_strategies import (
+    DEFAULT_FRONTIER_STRATEGY,
+    FRONTIER_STRATEGIES,
+    resolve_from_config,
+    validate_frontier_strategy,
 )
 from .scratchpad import write_scratchpad
 
@@ -143,6 +150,27 @@ def create_app(root: Path | None = None) -> Flask:
         meta["active"] = run_id
         _save_meta(_root(), meta)
         return jsonify({"active": run_id})
+
+    @app.get("/api/frontier-strategy")
+    def get_frontier_strategy():
+        config = load_config(_root())
+        return jsonify({
+            "registry": FRONTIER_STRATEGIES,
+            "current": resolve_from_config(config),
+            "default": DEFAULT_FRONTIER_STRATEGY,
+        })
+
+    @app.post("/api/frontier-strategy")
+    def set_frontier_strategy():
+        body = request.get_json(silent=True) or {}
+        try:
+            normalized = validate_frontier_strategy(body)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        config = load_config(_root())
+        config["frontier_strategy"] = normalized
+        save_config(_root(), config)
+        return jsonify(normalized)
 
     return app
 

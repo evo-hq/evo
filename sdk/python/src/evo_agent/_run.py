@@ -53,6 +53,7 @@ class Run:
             experiment_id=self._experiment_id,
         )
         self._tasks: dict[str, float] = {}
+        self._task_meta: dict[str, dict[str, Any]] = {}
         self._task_started: dict[str, str] = {}
         self._logs: dict[str, list[Any]] = {}
         self._lock = threading.Lock()
@@ -87,9 +88,16 @@ class Run:
         started_at: str | None = None,
         ended_at: str | None = None,
         artifacts: dict[str, str] | None = None,
+        direction: str | None = None,
         **extra: Any,
     ) -> None:
         """Record the eval result for a task and write its trace.
+
+        *direction* is either ``"max"`` (higher score is better, default)
+        or ``"min"`` (lower is better, e.g. latency). Only needs to be set
+        when this task's direction differs from the benchmark's top-level
+        ``--metric``. Propagates to ``tasks_meta`` in the final result so
+        downstream selection strategies can interpret scores correctly.
 
         Timestamps are filled automatically when not provided:
 
@@ -104,6 +112,8 @@ class Run:
         now = _utc_now()
         if status is None:
             status = "passed" if score >= pass_threshold else "failed"
+        if direction is not None and direction not in ("max", "min"):
+            raise ValueError(f"direction must be 'max' or 'min', got {direction!r}")
 
         trace: dict[str, Any] = {
             "experiment_id": self._experiment_id,
@@ -111,6 +121,8 @@ class Run:
             "status": status,
             "score": score,
         }
+        if direction is not None:
+            trace["direction"] = direction
         if summary is not None:
             trace["summary"] = summary
         if failure_reason is not None:
@@ -129,6 +141,8 @@ class Run:
 
         with self._lock:
             self._tasks[task_id] = score
+            if direction is not None:
+                self._task_meta[task_id] = {"direction": direction}
             logs = self._logs.get(task_id)
             if logs:
                 trace["log"] = list(logs)
@@ -156,6 +170,8 @@ class Run:
             "started_at": self._started_at,
             "ended_at": _utc_now(),
         }
+        if self._task_meta:
+            result["tasks_meta"] = {k: dict(v) for k, v in self._task_meta.items()}
         self._backend.emit_result(result)
         return result
 

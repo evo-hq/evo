@@ -15,7 +15,11 @@
 <body>
   <!-- Top bar -->
   <header id="topbar">
-    <span class="logo">evo</span>
+    <svg class="logo" viewBox="80 70 620 210" xmlns="http://www.w3.org/2000/svg" aria-label="evo">
+      <text x="100" y="245" font-family="Inter, system-ui, sans-serif" font-weight="600" font-size="280" letter-spacing="-10" fill="currentColor">e</text>
+      <text x="290" y="245" font-family="Inter, system-ui, sans-serif" font-weight="600" font-size="280" letter-spacing="-10" fill="currentColor">v</text>
+      <circle cx="600" cy="170" r="84" fill="#FF6A2A"/>
+    </svg>
     <div class="divider"></div>
     <span id="target-file" class="target"></span>
     <div id="status-pill" class="pill pill-idle">
@@ -24,6 +28,7 @@
     </div>
     <div class="spacer"></div>
     <div id="run-switcher" class="run-switcher"></div>
+    <button id="strategy-btn" class="btn-ghost" onclick="openStrategy()" title="Frontier selection strategy">strategy</button>
     <span id="meta-info" class="meta"></span>
   </header>
 
@@ -101,6 +106,21 @@
   <div id="drawer-overlay" class="drawer-overlay hidden" onclick="closeDrawer()">
     <div id="drawer" class="drawer" onclick="event.stopPropagation()">
       <div id="drawer-content"></div>
+    </div>
+  </div>
+
+  <!-- Info popover (shared) -->
+  <div id="tip-popover" class="tip-popover hidden"></div>
+
+  <!-- Frontier strategy modal -->
+  <div id="strategy-overlay" class="modal-overlay hidden" onclick="closeStrategy()">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <span class="modal-title">Frontier selection strategy</span>
+        <div class="spacer"></div>
+        <span class="close-btn" onclick="closeStrategy()">&times;</span>
+      </div>
+      <div id="strategy-body" class="modal-body"></div>
     </div>
   </div>
 

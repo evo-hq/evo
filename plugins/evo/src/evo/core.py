@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +20,19 @@ META_FILE = "meta.json"
 PROJECT_FILE = "project.md"
 SCRATCHPAD_FILE = "scratchpad.md"
 NOTES_FILE = "notes.md"
+
+SUPPORTED_HOSTS = frozenset({
+    "claude-code",
+    "codex",
+    "opencode",
+    "openclaw",
+    "hermes",
+    "generic",
+})
+
+# Hosts that support evo dispatch's fork-cache mechanism. Other hosts use
+# their native parallel-Task primitive — see plugins/evo/skills/optimize/SKILL.md.
+DISPATCH_HOSTS = frozenset({"claude-code"})
 
 
 def utc_now() -> str:
@@ -59,6 +71,24 @@ def _save_meta(root: Path, meta: dict[str, Any]) -> None:
     path = _meta_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(path, meta)
+
+
+def get_host(root: Path) -> str | None:
+    """Return the orchestrator host recorded for this workspace, or None
+    if the workspace pre-dates the host-signature field. Existing commands
+    that don't need fork-cache should tolerate a None return."""
+    return _load_meta(root).get("host")
+
+
+def set_host(root: Path, host: str) -> None:
+    """Set the orchestrator host for this workspace. Validates against
+    SUPPORTED_HOSTS and rejects unknown values."""
+    if host not in SUPPORTED_HOSTS:
+        allowed = ", ".join(sorted(SUPPORTED_HOSTS))
+        raise RuntimeError(f"unknown host '{host}'; supported: {allowed}")
+    meta = _load_meta(root)
+    meta["host"] = host
+    _save_meta(root, meta)
 
 
 def workspace_path(root: Path) -> Path:
@@ -144,6 +174,8 @@ DEFAULT_MAX_ATTEMPTS = 3
 
 
 def default_config(root: Path, target: str, benchmark: str, metric: str, gate: str | None) -> dict[str, Any]:
+    # Import here to avoid a circular import at module load.
+    from .frontier_strategies import DEFAULT_FRONTIER_STRATEGY
     return {
         "repo_root": str(root),
         "workspace_dir": WORKSPACE_NAME,
@@ -155,6 +187,7 @@ def default_config(root: Path, target: str, benchmark: str, metric: str, gate: s
         "current_eval_epoch": 1,
         "comparison_blocked": False,
         "max_attempts": DEFAULT_MAX_ATTEMPTS,
+        "frontier_strategy": DEFAULT_FRONTIER_STRATEGY,
         "initialized_at": utc_now(),
     }
 
@@ -235,7 +268,14 @@ def list_runs(root: Path) -> list[dict[str, Any]]:
     return runs
 
 
-def init_workspace(root: Path, target: str, benchmark: str, metric: str, gate: str | None) -> str:
+def init_workspace(
+    root: Path,
+    target: str,
+    benchmark: str,
+    metric: str,
+    gate: str | None,
+    host: str | None = None,
+) -> str:
     run_id = _allocate_run(root)
     ensure_workspace_dirs(root)
     config = default_config(root, target, benchmark, metric, gate)
@@ -249,6 +289,8 @@ def init_workspace(root: Path, target: str, benchmark: str, metric: str, gate: s
         atomic_write_text(notes_path(root), "# Notes\n\n")
     if not scratchpad_path(root).exists():
         atomic_write_text(scratchpad_path(root), "# Scratchpad\n\n")
+    if host is not None:
+        set_host(root, host)
     return run_id
 
 
@@ -521,34 +563,41 @@ def fill_command_template(template: str, *, target: Path, worktree: Path) -> str
     return template.replace("{target}", str(target)).replace("{worktree}", str(worktree))
 
 
+def load_result(result_path: Path, stdout: str) -> tuple[float, dict[str, Any] | None]:
+    """Read score from the result file if present (strict), else parse stdout.
+
+    File present means a writer claimed this attempt. Empty / malformed /
+    missing-'score' all raise; the stdout fallback only applies when the
+    file is absent.
+    """
+    if result_path.exists():
+        if result_path.stat().st_size == 0:
+            raise ValueError(f"{result_path} is empty (benchmark crashed mid-publish)")
+        try:
+            parsed = json.loads(result_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{result_path} is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict) or "score" not in parsed:
+            raise ValueError(f"{result_path} missing 'score' field: {parsed!r}")
+        return float(parsed["score"]), parsed
+    return parse_score(stdout)
+
+
 def parse_score(stdout: str) -> tuple[float, dict[str, Any] | None]:
+    """Strict legacy fallback: stdout must be one JSON object with 'score'."""
     stripped = stdout.strip()
     if not stripped:
         raise ValueError("Benchmark output was empty")
     try:
         parsed = json.loads(stripped)
-        if isinstance(parsed, dict) and "score" in parsed:
-            return float(parsed["score"]), parsed
-        if isinstance(parsed, (int, float)):
-            return float(parsed), None
-    except json.JSONDecodeError:
-        pass
-
-    for line in reversed([line.strip() for line in stripped.splitlines() if line.strip()]):
-        try:
-            parsed = json.loads(line)
-            if isinstance(parsed, dict) and "score" in parsed:
-                return float(parsed["score"]), parsed
-            if isinstance(parsed, (int, float)):
-                return float(parsed), None
-        except json.JSONDecodeError:
-            match = re.search(r"\bscore\b\s*[:=]\s*(-?\d+(?:\.\d+)?)", line, re.IGNORECASE)
-            if match:
-                return float(match.group(1)), None
-            plain = re.fullmatch(r"-?\d+(?:\.\d+)?", line)
-            if plain:
-                return float(plain.group(0)), None
-    raise ValueError("Could not parse benchmark score from output")
+    except json.JSONDecodeError as exc:
+        preview = stripped[:200] + ("..." if len(stripped) > 200 else "")
+        raise ValueError(
+            f"Benchmark stdout is not a single JSON object ({exc}); got: {preview!r}"
+        ) from exc
+    if not isinstance(parsed, dict) or "score" not in parsed:
+        raise ValueError(f"Benchmark stdout JSON missing 'score' field: {parsed!r}")
+    return float(parsed["score"]), parsed
 
 
 def compare_scores(metric: str, candidate: float, parent: float | None) -> bool:
