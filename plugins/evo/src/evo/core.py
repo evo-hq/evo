@@ -22,6 +22,19 @@ PROJECT_FILE = "project.md"
 SCRATCHPAD_FILE = "scratchpad.md"
 NOTES_FILE = "notes.md"
 
+SUPPORTED_HOSTS = frozenset({
+    "claude-code",
+    "codex",
+    "opencode",
+    "openclaw",
+    "hermes",
+    "generic",
+})
+
+# Hosts that support evo dispatch's fork-cache mechanism. Other hosts use
+# their native parallel-Task primitive — see plugins/evo/skills/optimize/SKILL.md.
+DISPATCH_HOSTS = frozenset({"claude-code"})
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -59,6 +72,24 @@ def _save_meta(root: Path, meta: dict[str, Any]) -> None:
     path = _meta_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(path, meta)
+
+
+def get_host(root: Path) -> str | None:
+    """Return the orchestrator host recorded for this workspace, or None
+    if the workspace pre-dates the host-signature field. Existing commands
+    that don't need fork-cache should tolerate a None return."""
+    return _load_meta(root).get("host")
+
+
+def set_host(root: Path, host: str) -> None:
+    """Set the orchestrator host for this workspace. Validates against
+    SUPPORTED_HOSTS and rejects unknown values."""
+    if host not in SUPPORTED_HOSTS:
+        allowed = ", ".join(sorted(SUPPORTED_HOSTS))
+        raise RuntimeError(f"unknown host '{host}'; supported: {allowed}")
+    meta = _load_meta(root)
+    meta["host"] = host
+    _save_meta(root, meta)
 
 
 def workspace_path(root: Path) -> Path:
@@ -238,7 +269,14 @@ def list_runs(root: Path) -> list[dict[str, Any]]:
     return runs
 
 
-def init_workspace(root: Path, target: str, benchmark: str, metric: str, gate: str | None) -> str:
+def init_workspace(
+    root: Path,
+    target: str,
+    benchmark: str,
+    metric: str,
+    gate: str | None,
+    host: str | None = None,
+) -> str:
     run_id = _allocate_run(root)
     ensure_workspace_dirs(root)
     config = default_config(root, target, benchmark, metric, gate)
@@ -252,6 +290,8 @@ def init_workspace(root: Path, target: str, benchmark: str, metric: str, gate: s
         atomic_write_text(notes_path(root), "# Notes\n\n")
     if not scratchpad_path(root).exists():
         atomic_write_text(scratchpad_path(root), "# Scratchpad\n\n")
+    if host is not None:
+        set_host(root, host)
     return run_id
 
 
