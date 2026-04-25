@@ -189,6 +189,303 @@ def cmd_host(args: argparse.Namespace) -> int:
     raise RuntimeError(f"unknown host action: {action}")
 
 
+# ---------------------------------------------------------------------------
+# evo dispatch — fork-cache child spawning (claude-code only)
+# ---------------------------------------------------------------------------
+
+
+def _forks_dir(root: Path) -> Path:
+    return evo_dir(root) / "forks"
+
+
+def _job_dir(root: Path, exp_id: str) -> Path:
+    return _forks_dir(root) / exp_id
+
+
+def _job_meta_path(root: Path, exp_id: str) -> Path:
+    return _job_dir(root, exp_id) / "meta.json"
+
+
+def _job_status_path(root: Path, exp_id: str) -> Path:
+    return _job_dir(root, exp_id) / "status"
+
+
+def _job_result_path(root: Path, exp_id: str) -> Path:
+    return _job_dir(root, exp_id) / "result.json"
+
+
+def _write_status(root: Path, exp_id: str, status: str) -> None:
+    p = _job_status_path(root, exp_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(status + "\n", encoding="utf-8")
+
+
+def _read_status(root: Path, exp_id: str) -> str:
+    p = _job_status_path(root, exp_id)
+    if not p.exists():
+        return "<missing>"
+    return p.read_text(encoding="utf-8").strip()
+
+
+def _is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # pid exists but isn't ours — treat as alive
+        return True
+
+
+def _settle_job(root: Path, exp_id: str) -> str:
+    """Read meta+status; if status=running but pid is dead, transition to
+    'done' (or 'error' if the experiment node ended up failed). Idempotent.
+    Returns the final status string."""
+    status = _read_status(root, exp_id)
+    if status not in ("running",):
+        return status
+    meta_p = _job_meta_path(root, exp_id)
+    if not meta_p.exists():
+        return status
+    meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    pid = int(meta.get("pid", 0) or 0)
+    if pid and _is_pid_alive(pid):
+        return "running"
+    # Subprocess gone — settle the job.
+    new_status = "done"
+    # Check the experiment's actual outcome to color the status.
+    try:
+        result_p = experiment_result_path(root, exp_id)
+        if result_p.exists():
+            outcome = json.loads(result_p.read_text(encoding="utf-8"))
+            if outcome.get("status") in ("failed",):
+                new_status = "error"
+    except Exception:  # noqa: BLE001
+        pass
+    _write_status(root, exp_id, new_status)
+    # Materialize result.json combining meta + outcome (best-effort).
+    try:
+        result_summary = {
+            "exp_id": exp_id,
+            "parent_id": meta.get("parent_id"),
+            "host": meta.get("host"),
+            "started_at": meta.get("started_at"),
+            "ended_at": utc_now(),
+            "status": new_status,
+        }
+        if result_p.exists():
+            result_summary["outcome"] = json.loads(result_p.read_text(encoding="utf-8"))
+        atomic_write_json(_job_result_path(root, exp_id), result_summary)
+    except Exception:  # noqa: BLE001
+        pass
+    return new_status
+
+
+def cmd_dispatch(args: argparse.Namespace) -> int:
+    """Top-level `evo dispatch` dispatcher — routes to the action handler."""
+    action = args.dispatch_action
+    if action == "run":
+        return _cmd_dispatch_run(args)
+    if action == "wait":
+        return _cmd_dispatch_wait(args)
+    if action == "list":
+        return _cmd_dispatch_list(args)
+    if action == "status":
+        return _cmd_dispatch_status(args)
+    if action == "kill":
+        return _cmd_dispatch_kill(args)
+    raise RuntimeError(f"unknown dispatch action: {action}")
+
+
+def _cmd_dispatch_run(args: argparse.Namespace) -> int:
+    from .dispatch import (
+        DispatchNotSupportedError,
+        ExplorerSpawnError,
+        dispatch_child,
+    )
+    root = repo_root()
+    _require_workspace(root)  # surface the standard "not initialized" error
+    try:
+        out = dispatch_child(
+            root,
+            parent_id=args.parent,
+            brief=args.message,
+            budget=args.budget,
+            explore_context=args.explore_context,
+            refresh_explorer=args.refresh_explorer,
+            background=args.background,
+            job_dir_factory=lambda exp_id: _job_dir(root, exp_id),
+        )
+    except DispatchNotSupportedError as exc:
+        # User-facing guidance, exit 2 to distinguish from generic failure.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    except ExplorerSpawnError as exc:
+        print(f"ERROR: explorer spawn failed: {exc}", file=sys.stderr)
+        return 1
+
+    exp_id = out["exp_id"]
+    # Write meta + status atomically before returning so that wait/status
+    # commands see consistent state even if the orchestrator races.
+    meta = {
+        "exp_id": exp_id,
+        "parent_id": out["parent_id"],
+        "host": "claude-code",
+        "explorer_session_id": out["explorer_session_id"],
+        "worktree": out["worktree"],
+        "brief": args.message,
+        "budget": args.budget,
+        "background": out.get("background", False),
+        "started_at": out.get("started_at", utc_now()),
+        "pid": out.get("pid"),
+        "stdout_log": out.get("stdout_log"),
+        "stderr_log": out.get("stderr_log"),
+    }
+    atomic_write_json(_job_meta_path(root, exp_id), meta)
+
+    if args.background:
+        _write_status(root, exp_id, "running")
+        print(json.dumps({"job_id": exp_id, "exp_id": exp_id, "pid": out.get("pid"),
+                          "explorer_session_id": out["explorer_session_id"]}))
+        return 0
+
+    # Foreground: dispatch_child has already returned with exit_code/usage.
+    _settle_job(root, exp_id)
+    print(json.dumps({
+        "job_id": exp_id,
+        "exp_id": exp_id,
+        "exit_code": out.get("exit_code"),
+        "session_id": out.get("session_id"),
+        "explorer_session_id": out["explorer_session_id"],
+        "usage": out.get("usage", {}),
+    }, indent=2))
+    return 0 if out.get("exit_code", 1) == 0 else 1
+
+
+def _cmd_dispatch_wait(args: argparse.Namespace) -> int:
+    import time
+    root = repo_root()
+    _require_workspace(root)
+
+    if args.job_ids:
+        targets = list(args.job_ids)
+    else:
+        # All currently-running jobs in this workspace.
+        targets = []
+        if _forks_dir(root).exists():
+            for child in _forks_dir(root).iterdir():
+                if child.is_dir() and _read_status(root, child.name) == "running":
+                    targets.append(child.name)
+
+    if not targets:
+        print("no running jobs")
+        return 0
+
+    pending = set(targets)
+    poll_interval = float(os.environ.get("EVO_DISPATCH_WAIT_INTERVAL", "0.25"))
+    rc = 0
+    while pending:
+        for exp_id in list(pending):
+            status = _settle_job(root, exp_id)
+            if status not in ("running",):
+                pending.discard(exp_id)
+                row = {"exp_id": exp_id, "status": status}
+                # Pull a score / outcome line if available
+                try:
+                    rp = experiment_result_path(root, exp_id)
+                    if rp.exists():
+                        out = json.loads(rp.read_text(encoding="utf-8"))
+                        row["outcome_status"] = out.get("status")
+                        row["score"] = out.get("score")
+                except Exception:  # noqa: BLE001
+                    pass
+                if not args.quiet:
+                    print(json.dumps(row))
+                if status == "error":
+                    rc = 1
+        if pending:
+            time.sleep(poll_interval)
+    return rc
+
+
+def _cmd_dispatch_list(args: argparse.Namespace) -> int:
+    root = repo_root()
+    _require_workspace(root)
+    rows: list[dict] = []
+    if _forks_dir(root).exists():
+        for child in sorted(_forks_dir(root).iterdir()):
+            if not child.is_dir():
+                continue
+            exp_id = child.name
+            status = _settle_job(root, exp_id)  # opportunistically advances stale entries
+            meta_p = _job_meta_path(root, exp_id)
+            if not meta_p.exists():
+                continue
+            meta = json.loads(meta_p.read_text(encoding="utf-8"))
+            if args.running and status != "running":
+                continue
+            rows.append({
+                "exp_id": exp_id,
+                "status": status,
+                "parent_id": meta.get("parent_id"),
+                "started_at": meta.get("started_at"),
+                "brief": (meta.get("brief") or "")[:60],
+                "pid": meta.get("pid"),
+            })
+    if args.recent:
+        rows = rows[-args.recent:]
+    print(json.dumps(rows, indent=2))
+    return 0
+
+
+def _cmd_dispatch_status(args: argparse.Namespace) -> int:
+    root = repo_root()
+    _require_workspace(root)
+    exp_id = args.job_id
+    if not _job_dir(root, exp_id).exists():
+        print(f"ERROR: no fork job for {exp_id}", file=sys.stderr)
+        return 1
+    status = _settle_job(root, exp_id)
+    meta_p = _job_meta_path(root, exp_id)
+    meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.exists() else {}
+    out = {
+        "exp_id": exp_id,
+        "status": status,
+        "meta": meta,
+    }
+    rp = _job_result_path(root, exp_id)
+    if rp.exists():
+        out["result"] = json.loads(rp.read_text(encoding="utf-8"))
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def _cmd_dispatch_kill(args: argparse.Namespace) -> int:
+    import signal
+    root = repo_root()
+    _require_workspace(root)
+    exp_id = args.job_id
+    meta_p = _job_meta_path(root, exp_id)
+    if not meta_p.exists():
+        print(f"ERROR: no fork job for {exp_id}", file=sys.stderr)
+        return 1
+    meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    pid = int(meta.get("pid") or 0)
+    if not pid or not _is_pid_alive(pid):
+        print(f"job {exp_id} not running")
+        return 0
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    _write_status(root, exp_id, "killed")
+    print(f"sent SIGTERM to pid {pid}; status=killed")
+    return 0
+
+
 def cmd_new(args: argparse.Namespace) -> int:
     root = repo_root()
     config, graph = _require_workspace(root)
@@ -1106,6 +1403,62 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_p = sub.add_parser("dashboard")
     dashboard_p.add_argument("--port", type=int, default=8080)
     dashboard_p.set_defaults(func=cmd_dashboard)
+
+    dispatch_p = sub.add_parser(
+        "dispatch",
+        help="spawn a child fork from a parent's cached explorer session (claude-code only)",
+        description=(
+            "Allocate a new experiment under a parent and run a fork-session child "
+            "inheriting the parent's explorer KV cache. Available on host=claude-code "
+            "only; other hosts use their native parallel-Task primitive."
+        ),
+    )
+    dispatch_sub = dispatch_p.add_subparsers(dest="dispatch_action", required=True)
+
+    dispatch_run_p = dispatch_sub.add_parser(
+        "run",
+        help="allocate an experiment and run one fork child against it",
+    )
+    dispatch_run_p.add_argument("--parent", required=True, help="parent experiment id")
+    dispatch_run_p.add_argument("-m", "--message", required=True, help="brief / hypothesis (free-form text)")
+    dispatch_run_p.add_argument("--budget", type=int, default=3, help="iteration budget for the child (default 3)")
+    dispatch_run_p.add_argument(
+        "--explore-context",
+        default=None,
+        help="optional hint for the explorer's read pass; only used when explorer is being built",
+    )
+    dispatch_run_p.add_argument(
+        "--refresh-explorer",
+        action="store_true",
+        help="force rebuild of the explorer for this parent even if cache is valid",
+    )
+    dispatch_run_p.add_argument(
+        "--background",
+        action="store_true",
+        help="return immediately with job_id; use `evo dispatch wait` to block",
+    )
+    dispatch_run_p.set_defaults(func=cmd_dispatch)
+
+    dispatch_wait_p = dispatch_sub.add_parser(
+        "wait",
+        help="block until specified jobs finish; if none given, wait on all running",
+    )
+    dispatch_wait_p.add_argument("job_ids", nargs="*", help="exp_id of each job to wait on")
+    dispatch_wait_p.add_argument("--quiet", action="store_true", help="suppress per-job completion rows")
+    dispatch_wait_p.set_defaults(func=cmd_dispatch)
+
+    dispatch_list_p = dispatch_sub.add_parser("list", help="list dispatch jobs")
+    dispatch_list_p.add_argument("--running", action="store_true", help="only show running jobs")
+    dispatch_list_p.add_argument("--recent", type=int, default=None, help="trim to N most recent rows")
+    dispatch_list_p.set_defaults(func=cmd_dispatch)
+
+    dispatch_status_p = dispatch_sub.add_parser("status", help="show one job's full state")
+    dispatch_status_p.add_argument("job_id", help="exp_id of the job")
+    dispatch_status_p.set_defaults(func=cmd_dispatch)
+
+    dispatch_kill_p = dispatch_sub.add_parser("kill", help="SIGTERM a running job")
+    dispatch_kill_p.add_argument("job_id")
+    dispatch_kill_p.set_defaults(func=cmd_dispatch)
 
     return parser
 
