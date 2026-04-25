@@ -532,7 +532,7 @@ def parse_score(stdout: str, traces_dir: str | None = None) -> tuple[float, dict
                     parsed = json.loads(content)
                     if isinstance(parsed, dict) and "score" in parsed:
                         return float(parsed["score"]), parsed
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, ValueError, TypeError):
                 pass  # Fall back to parsing stdout
     
     # Fall back to original stdout parsing for backward compatibility
