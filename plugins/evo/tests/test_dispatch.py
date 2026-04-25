@@ -275,11 +275,16 @@ def test_dispatch_errors_on_unknown_parent(workspace: Path):
 
 
 def test_explorer_record_path_and_dir(workspace: Path):
-    """Path helpers point at the right place; dir is created lazily by writers."""
+    """Path helpers point at the right place under the active run dir;
+    dir is created lazily by writers. Per-run scoping means `evo reset`
+    cleans these up via the existing workspace rmtree, no special code
+    needed in reset_runtime_state."""
     p = explorer_record_path(workspace, "exp_0003")
-    assert p == workspace / ".evo" / "explorers" / "exp_0003.json"
-    # Dir doesn't exist until something writes — that's fine.
-    assert p.parent.parent.exists()  # .evo/
+    # Active run is run_0000 from the `workspace` fixture's init_workspace.
+    assert p == workspace / ".evo" / "run_0000" / "explorers" / "exp_0003.json"
+    # The active run dir must already exist (init created it); the explorers
+    # subdir is created on first write.
+    assert p.parent.parent.exists()  # <root>/.evo/run_0000/
 
 
 # ---------------------------------------------------------------------------

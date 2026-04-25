@@ -665,8 +665,14 @@ def test_dispatch_orchestrator_step01_codex(root: Path) -> None:
         [
             "codex", "exec",
             "--json",
-            "--full-auto",
+            # Test runs in an isolated tmpdir with no real benchmark; safe to
+            # bypass approvals so codex doesn't hang waiting for permission.
+            "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            # Pin reasoning effort low and ignore the user's ~/.codex/config.toml
+            # so a personal `model_reasoning_effort = "high"` doesn't make this
+            # test churn for many minutes on a trivial step-0.1 task.
+            "--ignore-user-config",
             "-c", "model_reasoning_effort=low",
             "-",
         ],

@@ -4,7 +4,7 @@ The orchestrator never imports this module directly; it goes through the
 `evo dispatch` CLI verb (added in a follow-up). This module owns:
 
 * the on-disk schema for cached explorer sessions
-  (`.evo/explorers/<parent_id>.json`)
+  (`.evo/<active-run>/explorers/<parent_id>.json`)
 * the predicates that decide when a cached explorer can be reused
 * hash helpers used by those predicates
 * the EXPLORE-phase user-message template the explorer subprocess sees
@@ -26,12 +26,10 @@ from .core import (
     allocate_experiment,
     atomic_write_json,
     current_commit,
-    evo_dir,
     get_host,
     load_json,
-    node_target_path,
-    load_config,
     load_graph,
+    workspace_path,
 )
 
 # ---------------------------------------------------------------------------
@@ -56,9 +54,11 @@ SUBAGENT_SKILL_RELPATH = Path("skills") / "subagent" / "SKILL.md"
 
 
 def explorers_dir(root: Path) -> Path:
-    """Top-level directory for explorer-session metadata. Workspace-scoped,
-    not per-run, because parent_id is workspace-stable once committed."""
-    return evo_dir(root) / EXPLORERS_DIR
+    """Per-run directory for explorer-session metadata. Lives under the
+    active run dir so that `evo reset` removes it along with everything
+    else for that run; parent_ids are run-scoped (next run renumbers from
+    exp_0000), so cross-run reuse would never be valid anyway."""
+    return workspace_path(root) / EXPLORERS_DIR
 
 
 def explorer_record_path(root: Path, parent_id: str) -> Path:
@@ -422,7 +422,7 @@ def dispatch_child(
     output (background pid + log paths, or foreground exit_code + usage).
 
     ``job_dir_factory(exp_id) -> Path`` lets the CLI pick its own
-    ``.evo/forks/<job_id>/`` layout. Defaults to ``.evo/forks/<exp_id>/``.
+    ``forks/<job_id>/`` layout. Defaults to ``<active-run>/forks/<exp_id>/``.
     """
     host = _require_dispatch_host(root)
     record = ensure_explorer(
@@ -437,7 +437,7 @@ def dispatch_child(
     worktree_path = Path(node["worktree"])
 
     if job_dir_factory is None:
-        job_dir = evo_dir(root) / "forks" / exp_id
+        job_dir = workspace_path(root) / "forks" / exp_id
     else:
         job_dir = job_dir_factory(exp_id)
 

@@ -119,7 +119,7 @@ def spawn_explorer(
 ) -> dict[str, Any]:
     """Run a fresh `claude -p` to build the EXPLORE-phase session for
     parent_id. Returns the record dict; caller is responsible for writing
-    it to .evo/explorers/<parent_id>.json.
+    it to <active-run>/explorers/<parent_id>.json.
 
     The cwd is the **repo root** (not the worktree) because evo's worker
     protocol asks subagents to call `evo ...` from the main repo. The
@@ -242,9 +242,12 @@ def spawn_child(
             stderr=err_f,
             start_new_session=True,
         )
-        # Don't close file handles here — they need to stay open for the
-        # OS-level redirect. The Popen object owns them; subprocess closes
-        # on exit.
+        # Close the parent's copies of the log fds. After fork+exec the
+        # child has its own; subprocess.Popen does NOT close fd-passed
+        # file objects, only borrows fileno(). Without explicit close,
+        # CPython's refcount GC handles it but PyPy leaks until cycle GC.
+        out_f.close()
+        err_f.close()
         return {
             "background": True,
             "pid": popen.pid,

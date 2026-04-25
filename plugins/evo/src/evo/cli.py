@@ -195,7 +195,9 @@ def cmd_host(args: argparse.Namespace) -> int:
 
 
 def _forks_dir(root: Path) -> Path:
-    return evo_dir(root) / "forks"
+    """Per-run forks directory, under the active run dir. `evo reset` blows
+    away the whole run dir so fork job state doesn't leak across resets."""
+    return workspace_path(root) / "forks"
 
 
 def _job_dir(root: Path, exp_id: str) -> Path:
@@ -353,6 +355,11 @@ def _cmd_dispatch_run(args: argparse.Namespace) -> int:
         return 0
 
     # Foreground: dispatch_child has already returned with exit_code/usage.
+    # Write status=running first so _settle_job has something to transition;
+    # without it _settle_job sees "<missing>" and short-circuits, leaving
+    # `evo dispatch list/status` reporting <missing> for completed foreground
+    # jobs.
+    _write_status(root, exp_id, "running")
     _settle_job(root, exp_id)
     print(json.dumps({
         "job_id": exp_id,
