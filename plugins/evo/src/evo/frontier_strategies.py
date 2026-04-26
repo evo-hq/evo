@@ -416,9 +416,11 @@ def append_frontier_log(root: Path, strategy: dict[str, Any],
                         returned_ids: list[str], seed: int | None = None) -> dict[str, Any]:
     """Append a frontier-selection event to .evo/infra_log.json."""
     path = infra_path(root)
+    seed_str = f" seed={seed}" if seed is not None else ""
     event = {
         "kind": "frontier",
-        "at": utc_now(),
+        "timestamp": utc_now(),
+        "message": f"frontier({strategy.get('kind', '?')}) -> {len(returned_ids)} id(s){seed_str}",
         "strategy": strategy,
         "returned_ids": returned_ids,
     }

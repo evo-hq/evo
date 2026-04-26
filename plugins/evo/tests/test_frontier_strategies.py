@@ -306,6 +306,36 @@ class TestLogging(unittest.TestCase):
             self.assertNotIn("seed", ev1)
             self.assertEqual(ev2["seed"], 42)
 
+    def test_event_matches_canonical_infra_schema(self):
+        # Regression for #22: scratchpad reads event['timestamp'] and
+        # event['message']; frontier events used to write 'at' and no
+        # message, KeyError'ing every downstream consumer.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".evo").mkdir()
+            (root / ".evo" / "meta.json").write_text(json.dumps({"active": None, "next_run": 0}))
+            (root / ".evo" / "config.json").write_text(json.dumps({}))
+            ev = fs.append_frontier_log(root, {"kind": "argmax", "params": {}}, ["exp_A"], seed=7)
+            self.assertIn("timestamp", ev)
+            self.assertIn("message", ev)
+            self.assertNotIn("at", ev)
+
+    def test_scratchpad_renders_after_frontier_log(self):
+        # Regression for #22: build_scratchpad must not KeyError on a
+        # frontier event in infra_log.json.
+        from evo.core import default_graph
+        from evo.scratchpad import build_scratchpad
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".evo").mkdir()
+            (root / ".evo" / "meta.json").write_text(json.dumps({"active": None, "next_run": 0}))
+            (root / ".evo" / "config.json").write_text(json.dumps({"metric": "max"}))
+            (root / ".evo" / "graph.json").write_text(json.dumps(default_graph()))
+            (root / ".evo" / "annotations.json").write_text(json.dumps({"annotations": []}))
+            fs.append_frontier_log(root, {"kind": "softmax", "params": {"temperature": 1, "k": 1}}, ["exp_A"], seed=7)
+            text = build_scratchpad(root)
+            self.assertIn("frontier(softmax)", text)
+
 
 if __name__ == "__main__":
     unittest.main()
