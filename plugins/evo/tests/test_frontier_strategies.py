@@ -336,6 +336,30 @@ class TestLogging(unittest.TestCase):
             text = build_scratchpad(root)
             self.assertIn("frontier(softmax)", text)
 
+    def test_scratchpad_tolerates_legacy_frontier_event(self):
+        # Regression for #22: a workspace that ran `evo frontier` on 0.3.0
+        # has events with key "at" and no "message". build_scratchpad must
+        # render those events instead of KeyError'ing on upgrade.
+        from evo.core import default_graph
+        from evo.scratchpad import build_scratchpad
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".evo").mkdir()
+            (root / ".evo" / "meta.json").write_text(json.dumps({"active": None, "next_run": 0}))
+            (root / ".evo" / "config.json").write_text(json.dumps({"metric": "max"}))
+            (root / ".evo" / "graph.json").write_text(json.dumps(default_graph()))
+            (root / ".evo" / "annotations.json").write_text(json.dumps({"annotations": []}))
+            legacy = {
+                "kind": "frontier",
+                "at": "2026-04-26T11:00:00Z",
+                "strategy": {"kind": "argmax"},
+                "returned_ids": ["exp_A"],
+            }
+            (root / ".evo" / "infra_log.json").write_text(json.dumps({"events": [legacy]}))
+            text = build_scratchpad(root)
+            self.assertIn("2026-04-26T11:00:00Z", text)
+            self.assertIn("frontier event", text)
+
 
 if __name__ == "__main__":
     unittest.main()

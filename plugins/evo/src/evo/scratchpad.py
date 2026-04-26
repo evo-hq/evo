@@ -211,7 +211,12 @@ def build_scratchpad(root: Path) -> str:
     if infra:
         for event in infra[-8:]:
             suffix = " (breaking)" if event.get("breaking") else ""
-            lines.append(f"- {event['timestamp']}: {event['message']}{suffix}")
+            # 0.3.0 frontier events shipped with key "at" and no "message"
+            # (#22). Read tolerantly so workspaces upgrading to >=0.3.1 don't
+            # KeyError on the pre-existing bad events still in their log.
+            ts = event.get("timestamp") or event.get("at") or "?"
+            msg = event.get("message") or f"{event.get('kind', '?')} event"
+            lines.append(f"- {ts}: {msg}{suffix}")
     else:
         lines.append("- No infrastructure events yet.")
 
