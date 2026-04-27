@@ -30,7 +30,7 @@ if (TRACES_DIR) mkdirSync(TRACES_DIR, { recursive: true });
  * Record the result for one task. `direction` is "max" (higher is better,
  * default) or "min" (lower is better, e.g. latency). Set it only when this
  * task's direction differs from the benchmark's top-level --metric.
- * Propagates to tasks_meta in the final stdout JSON.
+ * Propagates to tasks_meta in the final result JSON.
  */
 export function logTask(taskId, score, { summary, failureReason, log, direction, ...extra } = {}) {
   taskId = String(taskId);

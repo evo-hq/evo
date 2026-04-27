@@ -42,7 +42,7 @@ def log_task(
     *direction* is "max" (higher is better, default) or "min" (lower is
     better, e.g. latency). Only set it when this task's direction differs
     from the benchmark's top-level `--metric`. Propagates to `tasks_meta`
-    in the final stdout JSON for downstream selection strategies.
+    in the final result JSON for downstream selection strategies.
     """
     task_id = str(task_id)
     if direction is not None and direction not in ("max", "min"):
@@ -74,10 +74,9 @@ def log_task(
 
 
 def write_result(score: float | None = None) -> float:
-    """Emit the final score JSON to stdout and return the score.
-
-    The return value lets callers implement --min-score gate logic without
-    recomputing the aggregate.
+    """Write the final score JSON to $EVO_RESULT_PATH (or stdout if unset)
+    and return the score. The return lets callers gate on --min-score
+    without recomputing the aggregate.
     """
     if score is None:
         score = sum(_SCORES.values()) / len(_SCORES) if _SCORES else 0.0
