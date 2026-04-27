@@ -1,7 +1,7 @@
 """Python SDK usage examples. Install: `pip install evo-hq-agent`.
 
-The SDK auto-reads $EVO_TRACES_DIR and $EVO_EXPERIMENT_ID. Traces flush on
-each report() so the dashboard can stream progress live.
+The SDK auto-reads $EVO_TRACES_DIR, $EVO_EXPERIMENT_ID, and $EVO_RESULT_PATH.
+Traces flush on each report() so the dashboard can stream progress live.
 """
 
 from evo_agent import Run, Gate
@@ -20,8 +20,8 @@ with Run() as run:
             summary=f"reward={result.score:.2f}",
             failure_reason=None if result.passed else "task_failed",
         )
-# finish() runs on context exit: prints the score JSON to stdout and
-# writes one task_<id>.json per task under $EVO_TRACES_DIR.
+# finish() runs on context exit: writes score JSON to $EVO_RESULT_PATH
+# (or stdout if unset) and one task_<id>.json per task under $EVO_TRACES_DIR.
 
 
 # ---- Gate (exits 0 all-pass / 1 any-fail) ----

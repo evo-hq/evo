@@ -238,7 +238,7 @@ If the selected benchmark is new, build it in the worktree. See `references/cons
 
 - Design the scoring function (range, direction, meaningful-improvement threshold)
 - Assemble test cases (10-20 for programmatic, 15-30 for fuzzy, realistic workload for perf)
-- Write the runnable harness (stdout = single JSON with `score`, stderr = everything else)
+- Write the runnable harness (helper/SDK writes the score JSON to `$EVO_RESULT_PATH`; stdout and stderr are free for user output)
 - Goodhart check (document gaming strategies, mitigate each with a gate or held-out slice)
 - Held-out validation slice (60/70 training, 30/40 held-out) if the benchmark is hand-written
 
@@ -253,9 +253,7 @@ Paths below are relative to this `SKILL.md` file (resolve them against the skill
 - **SDK mode**: add `from evo_agent import Run` (Python) or `import { Run } from '@evo-hq/evo-agent'` (Node) to the benchmark script. Wrap the eval loop per `references/sdk_python.py` or `references/sdk_node.js`.
 - **Inline mode**: copy the helper from `references/inline_instrumentation.py` (or `.js`) into the benchmark. Use `log_task` / `logTask` per task and `write_result` / `writeResult` once at the end.
 
-The wire protocol is the same either way: `task_<id>.json` written to `$EVO_TRACES_DIR`, single `{"score": ...}` JSON on stdout at the end, everything else on stderr.
-
-If the underlying tool prints noisy stdout (progress bars, rich formatting, logging frameworks), redirect it to stderr.
+The wire protocol is the same either way: `task_<id>.json` written to `$EVO_TRACES_DIR`, score JSON written to `$EVO_RESULT_PATH`. Stdout is free for user output.
 
 ### 10c. Cheap validation run
 
@@ -267,37 +265,36 @@ Before the full baseline, validate the toolchain with the cheapest possible end-
 
 - `WORKTREE` = the worktree path returned by `evo new`
 - `TARGET` = `$WORKTREE/<relative target path, e.g. agent/solve.py>`
-- `VALIDATOR` = `<absolute path to this skill dir>/scripts/validate_stdout.py` -- resolve by taking the absolute path of this `SKILL.md`'s directory and appending `scripts/validate_stdout.py`
+- `VALIDATOR` = `<absolute path to this skill dir>/scripts/validate_result.py` -- resolve by taking the absolute path of this `SKILL.md`'s directory and appending `scripts/validate_result.py`
 
 ```bash
 # from main repo root
 WORKTREE="<...>"
 TARGET="$WORKTREE/<...>"
-VALIDATOR="<...>/scripts/validate_stdout.py"
+VALIDATOR="<...>/scripts/validate_result.py"
 
 mkdir -p .evo/validate
-EVO_TRACES_DIR=.evo/validate \
+ATTEMPT="$(mktemp -d .evo/validate/run-XXXXXX)"
+mkdir -p "$ATTEMPT/traces"
+
+EVO_TRACES_DIR="$ATTEMPT/traces" \
+EVO_RESULT_PATH="$ATTEMPT/result.json" \
+EVO_EXPERIMENT_ID=validate \
   python3 "$WORKTREE/benchmark.py" --target "$TARGET" \
-  2>.evo/validate/stderr.log \
-  | python3 "$VALIDATOR"
+  >"$ATTEMPT/stdout.log" 2>"$ATTEMPT/stderr.log"
+
+python3 "$VALIDATOR" "$ATTEMPT/result.json"
 ```
 
-Adapt the benchmark invocation (interpreter, args) to whatever you stored with `evo init`. The non-negotiable part is that the resulting bash command contains no literal `{worktree}`, `{target}`, or relative-script paths -- expand all of them to absolute paths before the shell runs the line.
+Adapt the benchmark invocation (interpreter, args) to whatever you stored with `evo init`. The non-negotiable part is that the resulting bash command contains no literal `{worktree}`, `{target}`, or relative-script paths -- expand all of them to absolute paths before the shell runs the line. Each invocation gets a fresh attempt subdir, so re-running on failure is safe.
 
-Notes:
-- Traces go to `.evo/validate/` at the main repo root (already locally ignored via step 6a). Avoids /tmp collisions and cross-process conflicts, keeps artifacts scoped to the project.
-
-The validator checks:
-- stdout is **only** valid JSON (no progress bars, tables, or logging mixed in)
-- JSON contains a `score` field with a numeric value
-
-If validation fails, the script prints a diagnostic. Fix the benchmark wrapper and re-validate before proceeding. Also verify:
+The validator asserts `result.json` exists, is non-empty, and is a JSON object with a numeric `score`. Also verify:
 
 - All dependencies resolve and the command completes.
 - Traces appear in `$EVO_TRACES_DIR` (if applicable).
 - Each gate script runs cleanly on the unmodified target.
 
-Fix any issues and re-validate before proceeding. This catches environment problems, import errors, missing data, and stdout pollution cheaply.
+Fix any issues and re-validate before proceeding.
 
 ### 10d. Commit inside the worktree
 

@@ -50,8 +50,8 @@ Benchmark quality is dominated by test case quality. Cheap-but-wrong tests produ
 
 Output contract (same as existing evo benchmarks):
 
-- **stdout:** a single JSON object with a `score` field and optional `tasks` breakdown. Example: `{"score": 0.78, "tasks": {"0": 1.0, "1": 0.5, ...}}`
-- **stderr:** all other output (logs, progress, debug)
+- **score channel:** a single JSON object with a `score` field and optional `tasks` breakdown, written to `$EVO_RESULT_PATH`. Example: `{"score": 0.78, "tasks": {"0": 1.0, "1": 0.5, ...}}`
+- **stdout / stderr:** free for user output (logs, progress, debug)
 - **exit code:** 0 on successful completion (even if score is low); non-zero only on infrastructure failure (import error, missing data, etc.)
 
 Use the SDK or inline instrumentation depending on the user's earlier choice (recorded in `.evo/meta.json` as `instrumentation_mode`).
