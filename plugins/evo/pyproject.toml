@@ -10,6 +10,7 @@ dependencies = [
   "flask>=3.0.0",
   "portalocker>=2.8.0",
   "pyyaml>=6.0.0",
+  "requests>=2.31.0",
 ]
 
 [project.urls]
