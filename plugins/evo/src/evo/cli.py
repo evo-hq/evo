@@ -169,19 +169,53 @@ def cmd_init(args: argparse.Namespace) -> int:
         if not workspaces:
             raise RuntimeError("--backend pool requires --workspaces /a,/b,/c")
         _validate_pool_slots(root, workspaces)
+    elif backend_name == "remote":
+        if not args.provider:
+            raise RuntimeError(
+                "--backend remote requires --provider <name> "
+                "(e.g. --provider modal). Run `evo init --help` for the list."
+            )
+        if workspaces:
+            raise RuntimeError(
+                "--workspaces is only valid with --backend pool, not remote."
+            )
     else:  # worktree (default)
         if workspaces:
             raise RuntimeError(
                 "--workspaces is only valid with --backend pool. "
                 "Did you mean: --backend pool --workspaces ...?"
             )
+        if args.provider:
+            raise RuntimeError(
+                "--provider is only valid with --backend remote."
+            )
 
     if args.commit_strategy is not None:
         commit_strategy = args.commit_strategy
-    elif backend_name == "pool":
+    elif backend_name in ("pool", "remote"):
+        # Both warm-state-preserving backends default to tracked-only:
+        # pool slots accumulate untracked warm state across leases; remote
+        # sandboxes likewise (image-baked deps, build caches inside the
+        # container, etc.) and benefit from the same gitignore-tolerance
+        # property -- a missed gitignore entry doesn't capture warm state
+        # into the experiment commit.
         commit_strategy = "tracked-only"
     else:
         commit_strategy = "all"
+
+    # Parse --provider-config k=v,k=v into a dict (remote backend only).
+    remote_provider_config: dict[str, Any] = {}
+    if backend_name == "remote" and args.provider_config:
+        for pair in args.provider_config.split(","):
+            pair = pair.strip()
+            if not pair:
+                continue
+            if "=" not in pair:
+                raise RuntimeError(
+                    f"--provider-config entries must be key=value, got {pair!r}"
+                )
+            key, _, value = pair.partition("=")
+            remote_provider_config[key.strip()] = value.strip()
 
     run_id = init_workspace(
         root,
@@ -193,6 +227,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         execution_backend=backend_name,
         workspaces=workspaces if backend_name == "pool" else None,
         commit_strategy=commit_strategy,
+        remote_provider=args.provider if backend_name == "remote" else None,
+        remote_provider_config=remote_provider_config if backend_name == "remote" else None,
     )
     if args.instrumentation_mode:
         meta_file = evo_dir(root) / "meta.json"
@@ -201,7 +237,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         atomic_write_json(meta_file, meta)
     write_scratchpad(root)
     _start_dashboard_background(root, port=args.port)
-    backend_msg = f" (backend={backend_name}, slots={len(workspaces)})" if backend_name == "pool" else ""
+    if backend_name == "pool":
+        backend_msg = f" (backend=pool, slots={len(workspaces)})"
+    elif backend_name == "remote":
+        backend_msg = f" (backend=remote, provider={args.provider})"
+    else:
+        backend_msg = ""
     print(
         f"Initialized evo workspace {run_id} at {workspace_path(root)} "
         f"(host={args.host}, commit_strategy={commit_strategy}){backend_msg}"
@@ -1625,16 +1666,28 @@ def build_parser() -> argparse.ArgumentParser:
     init_p.add_argument(
         "--backend",
         default="worktree",
-        choices=["worktree", "pool"],
+        choices=["worktree", "pool", "remote"],
         help="execution backend (default: worktree). `pool` leases user-provided "
              "pre-built workspaces instead of creating a fresh git worktree per "
-             "experiment. Requires --workspaces.",
+             "experiment. `remote` provisions a container via --provider and runs "
+             "experiments inside it via sandbox-agent's HTTP API.",
     )
     init_p.add_argument(
         "--workspaces",
         help="comma-separated absolute paths to pre-built workspace directories "
              "(required with --backend pool). Concurrent experiments cap at the "
              "pool size.",
+    )
+    init_p.add_argument(
+        "--provider",
+        help="remote sandbox provider (required with --backend remote). "
+             "POC ships `modal`; e2b / ssh / daytona land later.",
+    )
+    init_p.add_argument(
+        "--provider-config",
+        help="optional comma-separated key=value pairs forwarded to the "
+             "provider (--backend remote only). Provider-specific; see "
+             "evo.backends.sandbox_providers.<name>.",
     )
     init_p.add_argument(
         "--commit-strategy",

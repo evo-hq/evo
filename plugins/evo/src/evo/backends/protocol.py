@@ -74,3 +74,51 @@ class PoolSlotMissingCommit(BackendError):
 
 class PoolSlotInvalid(BackendError):
     """Slot path is missing, not a git working tree, or origin mismatch."""
+
+
+class RemoteBackendUnavailable(BackendError):
+    """Requested remote provider's SDK is not installed or its API is unreachable."""
+
+
+# ---------------------------------------------------------------------------
+# Remote sandbox provider types (alpha.3+)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SandboxSpec:
+    """What `SandboxProvider.provision` needs to spin up a remote sandbox."""
+
+    image_ref: str                      # provider-native image reference (e.g. Modal image hash)
+    env: dict[str, str]                 # env vars for the in-sandbox benchmark process
+    bearer_token: str                   # generated per-sandbox; passed to sandbox-agent
+    exposed_port: int = 8080            # sandbox-agent listen port inside the container
+    timeout_seconds: int = 3600         # provider-native lifetime cap
+
+
+@dataclass
+class SandboxHandle:
+    """What `SandboxProvider.provision` returns; opaque to the orchestrator
+    above the backend layer. The base_url + bearer_token is what the
+    sandbox-agent HTTP client speaks to."""
+
+    provider: str                       # echoed for diagnostics
+    base_url: str                       # https://<provider-tunnel>/...
+    bearer_token: str                   # what the orchestrator sends as Authorization
+    native_id: str                      # provider-native ID (e.g. modal sandbox.id)
+    metadata: dict[str, Any]            # opaque, provider-internal
+
+
+class SandboxProvider(Protocol):
+    """Pluggable adapter for a remote container provider (Modal, E2B, ...).
+
+    Each implementation lives in `evo.backends.sandbox_providers.<name>` as
+    a Python module that lazy-imports its provider SDK. `RemoteSandboxBackend`
+    is provider-agnostic; everything provider-specific is here.
+    """
+
+    name: str
+
+    def provision(self, spec: SandboxSpec) -> SandboxHandle: ...
+    def tear_down(self, handle: SandboxHandle) -> None: ...
+    def is_alive(self, handle: SandboxHandle) -> bool: ...

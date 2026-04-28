@@ -277,10 +277,16 @@ def init_workspace(
     execution_backend: str = "worktree",
     workspaces: list[str] | None = None,
     commit_strategy: str = "all",
+    remote_provider: str | None = None,
+    remote_provider_config: dict[str, Any] | None = None,
 ) -> str:
     if commit_strategy not in ("all", "tracked-only"):
         raise RuntimeError(
             f"commit_strategy must be 'all' or 'tracked-only', got {commit_strategy!r}"
+        )
+    if execution_backend == "remote" and not remote_provider:
+        raise RuntimeError(
+            "--backend remote requires --provider <name> (e.g. --provider modal)"
         )
     run_id = _allocate_run(root)
     ensure_workspace_dirs(root)
@@ -289,6 +295,11 @@ def init_workspace(
     config["commit_strategy"] = commit_strategy
     if execution_backend == "pool":
         config["execution_backend_config"] = {"slots": list(workspaces or [])}
+    if execution_backend == "remote":
+        config["execution_backend_config"] = {
+            "provider": remote_provider,
+            "provider_config": dict(remote_provider_config or {}),
+        }
     atomic_write_json(config_path(root), config)
     atomic_write_json(graph_path(root), default_graph())
     atomic_write_json(annotations_path(root), {"annotations": []})
@@ -304,6 +315,13 @@ def init_workspace(
     if execution_backend == "pool":
         from .backends import pool_state
         pool_state.init_state(root, list(workspaces or []))
+    if execution_backend == "remote":
+        from .backends import remote_state
+        remote_state.init_state(
+            root,
+            provider=remote_provider,
+            provider_config=dict(remote_provider_config or {}),
+        )
     return run_id
 
 
