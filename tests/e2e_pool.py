@@ -340,6 +340,45 @@ def test_dispatch_accepted_in_pool_mode_config(workdir: Path) -> None:
         _shutdown_dashboard(main)
 
 
+def test_reset_wipes_run_dir_keeps_slots(workdir: Path) -> None:
+    """`evo reset --yes` in pool mode removes `.evo/run_NNNN/` (graph,
+    config, experiments, pool_state.json) but leaves slot directories
+    untouched. After reset, `evo status` errors with 'workspace not
+    initialized'."""
+    main, slot1, slot2 = _build_pool_setup(workdir)
+    _evo(
+        ["init", "--target", "agent/solve.py",
+         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
+         "--metric", "max", "--host", "claude-code",
+         "--backend", "pool",
+         "--workspaces", f"{slot1},{slot2}"],
+        cwd=main,
+    )
+    try:
+        run_dir = main / ".evo" / "run_0000"
+        assert run_dir.exists()
+        assert (run_dir / "pool_state.json").exists()
+        slot1_marker = slot1 / ".build-cache-stamp"
+        slot2_marker = slot2 / ".build-cache-stamp"
+        assert slot1_marker.exists() and slot2_marker.exists()
+
+        _evo(["reset", "--yes"], cwd=main)
+
+        # Run dir gone, slot dirs intact.
+        assert not run_dir.exists(), f"{run_dir} should be removed"
+        assert slot1.exists() and slot2.exists()
+        assert slot1_marker.exists() and slot2_marker.exists()
+
+        # `evo status` errors out cleanly.
+        r = _evo(["status"], cwd=main, check=False)
+        combined = (r.stdout + r.stderr).lower()
+        assert "workspace is not initialized" in combined or "not initialized" in combined, (
+            r.stdout, r.stderr,
+        )
+    finally:
+        _shutdown_dashboard(main)
+
+
 def test_orphaned_lease_reconciled_on_next_allocate(workdir: Path) -> None:
     """If a process dies between `_mark_committed` and `release_lease`,
     the next `evo new` should reconcile: see the lease points at a
@@ -430,6 +469,7 @@ def main() -> None:
             test_discard_releases_lease_keeps_branch,
             test_cross_slot_commit_fetch,
             test_dispatch_accepted_in_pool_mode_config,
+            test_reset_wipes_run_dir_keeps_slots,
             test_orphaned_lease_reconciled_on_next_allocate,
         ):
             sub = workdir / fn.__name__
