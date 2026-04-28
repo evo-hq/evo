@@ -13,6 +13,16 @@ dependencies = [
   "requests>=2.31.0",
 ]
 
+[project.optional-dependencies]
+# Remote-sandbox provider SDKs. Install with `evo-hq-cli[modal]` or
+# `evo-hq-cli[all]`. Each provider's evo adapter lazy-imports its SDK
+# inside its module so users who don't want a given provider don't
+# carry its deps.
+modal = [
+    "modal>=0.62.0",
+]
+all = ["modal>=0.62.0"]
+
 [project.urls]
 Homepage = "https://github.com/evo-hq/evo"
 Repository = "https://github.com/evo-hq/evo"
