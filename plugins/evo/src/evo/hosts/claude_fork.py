@@ -199,6 +199,7 @@ def spawn_child(
     budget: int,
     job_dir: Path,
     background: bool = False,
+    lineage: bool = False,
 ) -> dict[str, Any]:
     """Run one child fork via `claude -p --resume <SID> --fork-session`.
 
@@ -208,6 +209,11 @@ def spawn_child(
 
     On ``background=True``, this returns immediately with the spawned
     Popen's pid; the caller (Phase 3 dispatch CLI) handles status tracking.
+
+    When ``lineage=True``, the SID being resumed is the parent experiment's
+    own session (not a freshly-warmed explorer). The EXECUTE prompt
+    prepends a context-shift notice so the child doesn't continue the
+    parent's work.
     """
     sid = explorer_record["session_id"]
     prompt = render_execute_prompt(
@@ -216,17 +222,23 @@ def spawn_child(
         parent_id=parent_id,
         brief=brief,
         budget=budget,
+        lineage=lineage,
     )
 
     job_dir.mkdir(parents=True, exist_ok=True)
     stdout_log = job_dir / "stdout.log"
     stderr_log = job_dir / "stderr.log"
 
+    # Dispatched workers run autonomously (--background is the default
+    # production path) and cannot block on permission prompts. The forked
+    # session inherits the explorer's session-scoped permissions, which
+    # don't cover Edit/Write/Bash by default; bypass for the worker.
     cmd = [
         CLAUDE_BIN, "-p",
         "--resume", sid,
         "--fork-session",
         "--output-format", "json",
+        "--permission-mode", "bypassPermissions",
     ]
     if DEFAULT_MODEL:
         cmd.extend(["--model", DEFAULT_MODEL])
