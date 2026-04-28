@@ -134,7 +134,10 @@ FRONTIER_STRATEGIES: dict[str, dict[str, Any]] = {
     },
 }
 
-DEFAULT_FRONTIER_STRATEGY: dict[str, Any] = {"kind": "argmax", "params": {}}
+DEFAULT_FRONTIER_STRATEGY: dict[str, Any] = {
+    "kind": "pareto_per_task",
+    "params": {"k": 5, "task_floor": 0.0},
+}
 
 
 # --------------------------------------------------------------------------- #
