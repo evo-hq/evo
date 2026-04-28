@@ -176,6 +176,13 @@ def cmd_init(args: argparse.Namespace) -> int:
                 "Did you mean: --backend pool --workspaces ...?"
             )
 
+    if args.commit_strategy is not None:
+        commit_strategy = args.commit_strategy
+    elif backend_name == "pool":
+        commit_strategy = "tracked-only"
+    else:
+        commit_strategy = "all"
+
     run_id = init_workspace(
         root,
         target=args.target,
@@ -185,6 +192,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         host=args.host,
         execution_backend=backend_name,
         workspaces=workspaces if backend_name == "pool" else None,
+        commit_strategy=commit_strategy,
     )
     if args.instrumentation_mode:
         meta_file = evo_dir(root) / "meta.json"
@@ -194,7 +202,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     write_scratchpad(root)
     _start_dashboard_background(root, port=args.port)
     backend_msg = f" (backend={backend_name}, slots={len(workspaces)})" if backend_name == "pool" else ""
-    print(f"Initialized evo workspace {run_id} at {workspace_path(root)} (host={args.host}){backend_msg}")
+    print(
+        f"Initialized evo workspace {run_id} at {workspace_path(root)} "
+        f"(host={args.host}, commit_strategy={commit_strategy}){backend_msg}"
+    )
     return 0
 
 
@@ -317,10 +328,12 @@ def cmd_workspace_status(args: argparse.Namespace) -> int:
     from .backends import pool_state
 
     state = pool_state.read_state(root)
+    commit_strategy = config.get("commit_strategy", "all")
     if args.json:
-        print(json.dumps(state, indent=2))
+        print(json.dumps({**state, "commit_strategy": commit_strategy}, indent=2))
         return 0
 
+    print(f"commit_strategy: {commit_strategy}")
     # Human-readable table. Lease is keyed by experiment status, not by the
     # transient `evo new` PID -- a lease persists across the multi-process
     # lifecycle (allocate, dispatch, run) until the experiment commits or is
@@ -855,6 +868,48 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # Shisa-kanko ack for tracked-only mode: when the worktree has any
+    # untracked, non-gitignored files, the agent must affirm with
+    # --i-staged-new-files that they have either staged any new source files
+    # or intentionally left them out. The check runs before _mark_active so
+    # an inadmissible run does not mutate node state.
+    commit_strategy = config.get("commit_strategy", "all")
+    if commit_strategy == "tracked-only":
+        worktree = Path(node["worktree"])
+        untracked_proc = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        untracked = [line for line in untracked_proc.stdout.splitlines() if line.strip()]
+        ack = getattr(args, "i_staged_new_files", None)
+        if untracked and ack != "yes":
+            print(
+                f"ERROR: {args.exp_id} cannot run: commit_strategy=tracked-only and "
+                f"{len(untracked)} untracked file(s) in worktree {worktree}:",
+                file=sys.stderr,
+            )
+            for path in untracked:
+                print(f"  {path}", file=sys.stderr)
+            print(
+                "\nFor each file: if it's a new source file, `git add` it. "
+                "If it's warm state (build artifacts, deps, weights), leave "
+                "it untracked -- it will persist in the slot but stay out of "
+                "the experiment commit. Then re-run with "
+                "`--i-staged-new-files yes`.",
+                file=sys.stderr,
+            )
+            if ack is not None and ack != "yes":
+                print(
+                    f"\n(--i-staged-new-files received value {ack!r}; the only "
+                    f"accepted value is 'yes'. This is intentional -- it forces "
+                    f"a second deliberate affirmation that the staging step ran.)",
+                    file=sys.stderr,
+                )
+            return 1
+
     # Bumped even on failed runs so NNN subdirs never collide.
     attempt_n = int(node.get("current_attempt", 0)) + 1
     started_at = utc_now()
@@ -964,7 +1019,11 @@ def cmd_run(args: argparse.Namespace) -> int:
 
         keep = compare_scores(metric, score, parent_score) and gate_passed
         if keep:
-            commit = maybe_commit_worktree(node, node.get("hypothesis", "experiment"))
+            commit = maybe_commit_worktree(
+                node,
+                node.get("hypothesis", "experiment"),
+                commit_strategy=commit_strategy,
+            )
 
             def _mark_committed(current_node: dict, _graph: dict) -> None:
                 current_node["status"] = "committed"
@@ -1566,6 +1625,14 @@ def build_parser() -> argparse.ArgumentParser:
              "(required with --backend pool). Concurrent experiments cap at the "
              "pool size.",
     )
+    init_p.add_argument(
+        "--commit-strategy",
+        choices=["all", "tracked-only"],
+        default=None,
+        help="commit policy for `evo run`. Default: 'tracked-only' for "
+             "--backend pool (preserves untracked warm state across leases), "
+             "'all' for worktree. Override only if you know why.",
+    )
     init_p.add_argument("--port", type=int, default=8080)
     init_p.set_defaults(func=cmd_init)
 
@@ -1602,6 +1669,17 @@ def build_parser() -> argparse.ArgumentParser:
     run_p = sub.add_parser("run")
     run_p.add_argument("exp_id")
     run_p.add_argument("--timeout", type=int, default=1800)
+    run_p.add_argument(
+        "--i-staged-new-files",
+        dest="i_staged_new_files",
+        default=None,
+        metavar="yes",
+        help="declarative ack (shisa-kanko): agent must pass exactly "
+             "`--i-staged-new-files yes` to affirm it has `git add`'d any new "
+             "source files in the worktree, leaving warm state untracked. "
+             "Required in tracked-only commit mode when the worktree has "
+             "untracked, non-gitignored files. No-op in commit_strategy=all.",
+    )
     run_p.set_defaults(func=cmd_run)
 
     done_p = sub.add_parser("done")

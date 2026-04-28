@@ -276,11 +276,17 @@ def init_workspace(
     host: str | None = None,
     execution_backend: str = "worktree",
     workspaces: list[str] | None = None,
+    commit_strategy: str = "all",
 ) -> str:
+    if commit_strategy not in ("all", "tracked-only"):
+        raise RuntimeError(
+            f"commit_strategy must be 'all' or 'tracked-only', got {commit_strategy!r}"
+        )
     run_id = _allocate_run(root)
     ensure_workspace_dirs(root)
     config = default_config(root, target, benchmark, metric, gate)
     config["execution_backend"] = execution_backend
+    config["commit_strategy"] = commit_strategy
     if execution_backend == "pool":
         config["execution_backend_config"] = {"slots": list(workspaces or [])}
     atomic_write_json(config_path(root), config)
@@ -541,11 +547,29 @@ def git_status_porcelain(path: Path) -> str:
     return result.stdout
 
 
-def maybe_commit_worktree(node: dict[str, Any], hypothesis: str) -> str | None:
+def maybe_commit_worktree(
+    node: dict[str, Any],
+    hypothesis: str,
+    commit_strategy: str = "all",
+) -> str | None:
+    if commit_strategy not in ("all", "tracked-only"):
+        raise RuntimeError(
+            f"commit_strategy must be 'all' or 'tracked-only', got {commit_strategy!r}"
+        )
     worktree = Path(node["worktree"])
     if not git_status_porcelain(worktree).strip():
         return current_commit(worktree)
-    subprocess.run(["git", "add", "-A"], cwd=worktree, check=True)
+    add_args = ["-A"] if commit_strategy == "all" else ["-u"]
+    subprocess.run(["git", "add", *add_args], cwd=worktree, check=True)
+    # In tracked-only mode the index may still be empty after `git add -u` if
+    # the only changes were untracked files. `git commit` would fail with
+    # "nothing to commit"; treat as a no-op and report the parent commit.
+    diff_check = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=worktree,
+    )
+    if diff_check.returncode == 0:
+        return current_commit(worktree)
     subprocess.run(
         ["git", "commit", "-m", f"evo: {node['id']} {hypothesis}"],
         cwd=worktree,
