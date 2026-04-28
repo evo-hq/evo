@@ -12,6 +12,7 @@ from pathlib import Path
 from . import DISTRIBUTION_NAME, __version__
 from .core import (
     SUPPORTED_HOSTS,
+    _load_meta,
     add_gate,
     append_annotation,
     append_infra_event,
@@ -810,6 +811,32 @@ def cmd_new(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fetch_remote_artifacts(
+    executor: Any,
+    sandbox_result_path: str,
+    sandbox_traces_dir: str,
+    local_result_path: Path,
+    local_traces_dir: Path,
+) -> None:
+    """After a remote benchmark/gate run, copy result.json + traces back
+    to the orchestrator's attempts/NNN/ directory so downstream readers
+    (`evo traces`, dashboard, score-salvage) see the same artifact shape
+    as a local run."""
+    # result.json
+    if executor.file_exists(sandbox_result_path):
+        try:
+            blob = executor.read_bytes(sandbox_result_path)
+            local_result_path.write_bytes(blob)
+        except Exception:
+            pass  # best-effort
+    # traces dir
+    local_traces_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        executor.fetch_dir(sandbox_traces_dir, local_traces_dir)
+    except Exception:
+        pass  # best-effort; salvage may still find what was already pulled
+
+
 def _run_command(command: str, cwd: Path, env: dict[str, str], stdout_path: Path, stderr_path: Path, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         command,
@@ -909,6 +936,32 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # Open the workspace executor for the lifetime of this run. Worktree
+    # and pool backends resolve to a LocalExecutor (subprocess + Path);
+    # the remote backend resolves to a RemoteExecutor that routes shell
+    # and fs ops through sandbox-agent over HTTP.
+    from .workspace_executor import workspace_executor_for
+    from .backends import load_backend
+    backend = load_backend(root)
+    with workspace_executor_for(backend, root, node) as executor:
+        return _cmd_run_impl(
+            args, root, config, graph, node, backend, executor,
+            max_attempts=max_attempts, evaluated_attempts=evaluated_attempts,
+        )
+
+
+def _cmd_run_impl(
+    args: argparse.Namespace,
+    root: Path,
+    config: dict,
+    graph: dict,
+    node: dict,
+    backend: Any,
+    executor: Any,
+    *,
+    max_attempts: int,
+    evaluated_attempts: int,
+) -> int:
     # Shisa-kanko ack for tracked-only mode: when the worktree has any
     # untracked, non-gitignored files, the agent must affirm with
     # --i-staged-new-files that they have either staged any new source files
@@ -917,14 +970,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     commit_strategy = config.get("commit_strategy", "all")
     if commit_strategy == "tracked-only":
         worktree = Path(node["worktree"])
-        untracked_proc = subprocess.run(
+        untracked_result = executor.run(
             ["git", "ls-files", "--others", "--exclude-standard"],
             cwd=worktree,
-            capture_output=True,
-            text=True,
-            check=True,
         )
-        untracked = [line for line in untracked_proc.stdout.splitlines() if line.strip()]
+        if untracked_result.exit_code != 0:
+            print(
+                f"ERROR: pre-flight `git ls-files` failed in {worktree}: "
+                f"{untracked_result.stderr[:500]}",
+                file=sys.stderr,
+            )
+            return 1
+        untracked = [line for line in untracked_result.stdout.splitlines() if line.strip()]
         ack = getattr(args, "i_staged_new_files", None)
         if untracked and ack != "yes":
             print(
@@ -974,38 +1031,87 @@ def cmd_run(args: argparse.Namespace) -> int:
     metric = config["metric"]
     parent_score = _resolve_parent_score(graph, node["parent"])
 
+    # In remote mode the workspace lives inside the sandbox; the benchmark
+    # writes to sandbox-local paths and we fetch artifacts back to local
+    # disk afterwards. In local mode these are all the same paths.
+    remote = executor.is_remote
+    if remote:
+        # Sandbox-internal paths. /workspace/repo is the experiment's
+        # checkout (set up by RemoteSandboxBackend._setup_workspace).
+        sandbox_traces_dir = "/workspace/repo/.evo/traces"
+        sandbox_result_path = "/workspace/repo/.evo/result.json"
+        run_cwd: Path | str = worktree   # /workspace/repo
+        env_traces_dir = sandbox_traces_dir
+        env_result_path = sandbox_result_path
+        # Pre-create the traces dir inside the sandbox so the benchmark
+        # can write into it without checking exists().
+        executor.run(
+            ["mkdir", "-p", sandbox_traces_dir],
+            cwd=worktree,
+        )
+    else:
+        run_cwd = root
+        env_traces_dir = str(traces_dir)
+        env_result_path = str(result_path)
+
     benchmark_cmd = fill_command_template(config["benchmark"], target=target, worktree=worktree)
-    env = os.environ.copy()
-    env["EVO_TRACES_DIR"] = str(traces_dir)
+    # Build env. In remote mode, only forward the EVO_* vars and leave
+    # the rest of os.environ off the wire (would leak local secrets).
+    if remote:
+        env = {}
+    else:
+        env = os.environ.copy()
+    env["EVO_TRACES_DIR"] = env_traces_dir
     env["EVO_WORKTREE"] = str(worktree)
     env["EVO_EXPERIMENT_ID"] = args.exp_id
     env["EVO_ATTEMPT"] = str(attempt_n)
-    env["EVO_RESULT_PATH"] = str(result_path)
+    env["EVO_RESULT_PATH"] = env_result_path
 
     # Captured before the benchmark runs so it survives crashes too.
-    # Use parent commit hash rather than branch ref. In pool mode the parent's
-    # branch lives in whichever slot ran it, not necessarily this slot;
-    # commit hashes are stable across slots once fetched.
+    # Use parent commit hash rather than branch ref: branch names like
+    # "main" exist locally but not necessarily in pool slots or remote
+    # sandbox checkouts, while commit hashes are stable. For root
+    # experiments, node["commit"] holds the parent commit hash recorded
+    # at allocate time (overwritten only when the experiment itself
+    # commits, but at that point we're past this codepath).
     if node["parent"] == "root":
-        parent_ref = current_branch(root)
+        parent_ref = node.get("commit") or current_branch(root)
     else:
         parent_node = _read_node(root, node["parent"])
         parent_ref = parent_node.get("commit") or parent_node["branch"]
-    diff_text = render_git_diff(root, parent_ref, worktree, relative_target(config))
+    diff_text = render_git_diff(
+        root, parent_ref, worktree, relative_target(config), executor=executor,
+    )
     (a_dir / "diff.patch").write_text(diff_text, encoding="utf-8")
 
     gate_records: list[dict] = []
     benchmark_record: dict | None = None
 
     try:
-        try:
-            bench = _run_command(benchmark_cmd, cwd=root, env=env, stdout_path=benchmark_log, stderr_path=benchmark_err, timeout=args.timeout)
-        except subprocess.TimeoutExpired:
+        # Run benchmark via sh -c so the user-provided command string
+        # (with placeholders interpolated) executes through a shell, same
+        # semantics as before.
+        bench = executor.stream(
+            ["sh", "-c", benchmark_cmd],
+            cwd=run_cwd, env=env, timeout=args.timeout,
+            stdout_path=benchmark_log, stderr_path=benchmark_err,
+        )
+        if bench.timed_out:
             raise RuntimeError("benchmark_timeout")
+        if (bench.exit_code or 0) != 0:
+            benchmark_record = {"command": benchmark_cmd, "returncode": bench.exit_code, "result": None}
+            # Try to fetch result.json + traces back even on failure --
+            # the benchmark may have written something useful before
+            # crashing.
+            if remote:
+                _fetch_remote_artifacts(executor, sandbox_result_path,
+                                        sandbox_traces_dir, result_path, traces_dir)
+            raise RuntimeError(f"benchmark_exit_{bench.exit_code}")
 
-        if bench.returncode != 0:
-            benchmark_record = {"command": benchmark_cmd, "returncode": bench.returncode, "result": None}
-            raise RuntimeError(f"benchmark_exit_{bench.returncode}")
+        # Pull result.json + traces from the sandbox (no-op for local).
+        if remote:
+            _fetch_remote_artifacts(executor, sandbox_result_path,
+                                    sandbox_traces_dir, result_path, traces_dir)
 
         score, parsed = load_result(result_path, bench.stdout)
         benchmark_record = {"command": benchmark_cmd, "returncode": 0, "result": parsed}
@@ -1031,9 +1137,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         for g in inherited_gates:
             gate_cmd = fill_command_template(g["command"], target=target, worktree=worktree)
             gate_log_file = a_dir / f"gate_{g['name']}.log"
-            try:
-                gate_result = _run_command(gate_cmd, cwd=root, env=gate_env, stdout_path=gate_log_file, stderr_path=gate_log_file, timeout=args.timeout)
-            except subprocess.TimeoutExpired:
+            gate_result = executor.stream(
+                ["sh", "-c", gate_cmd],
+                cwd=run_cwd, env=gate_env, timeout=args.timeout,
+                stdout_path=gate_log_file, stderr_path=gate_log_file,
+            )
+            if gate_result.timed_out:
                 gate_records.append({
                     "name": g["name"],
                     "from": gate_origins.get(g["name"], "config"),
@@ -1043,13 +1152,13 @@ def cmd_run(args: argparse.Namespace) -> int:
                     "error": "gate_timeout",
                 })
                 raise RuntimeError(f"gate_timeout:{g['name']}")
-            passed = gate_result.returncode == 0
+            passed = (gate_result.exit_code or 0) == 0
             gate_records.append({
                 "name": g["name"],
                 "from": gate_origins.get(g["name"], "config"),
                 "command": gate_cmd,
                 "passed": passed,
-                "returncode": gate_result.returncode,
+                "returncode": gate_result.exit_code,
             })
             if not passed:
                 gate_failures.append(g["name"])
@@ -1064,7 +1173,44 @@ def cmd_run(args: argparse.Namespace) -> int:
                 node,
                 node.get("hypothesis", "experiment"),
                 commit_strategy=commit_strategy,
+                executor=executor,
             )
+            # In remote mode the commit lives only in the sandbox's git db.
+            # Fetch it back to the orchestrator's repo so children
+            # branching off this experiment can resolve the parent commit.
+            # Skip when commit == parent (no source changes; benchmark
+            # only wrote to traces / result.json which are gitignored
+            # or outside the worktree). The parent is already local.
+            if remote and commit:
+                base_commit = (
+                    parent_ref if node["parent"] == "root" else (
+                        _read_node(root, node["parent"]).get("commit") or parent_ref
+                    )
+                )
+                if commit != base_commit:
+                    from .git_bundle import fetch_commit_from_sandbox
+                    from .backends import remote_state as _rs
+                    sandbox_record = next(
+                        (s for s in _rs.read_state(root)["sandboxes"]
+                         if (s.get("leased_by") or {}).get("exp_id") == args.exp_id),
+                        None,
+                    )
+                    bundle_dir = (sandbox_record or {}).get("bundle_dir")
+                    fetch_commit_from_sandbox(
+                        executor.client,                    # type: ignore[attr-defined]
+                        local_repo=root,
+                        base_commit=base_commit,
+                        head_commit=commit,
+                        sandbox_repo=str(worktree),
+                        bundle_dir=bundle_dir,
+                    )
+                    meta = _load_meta(root)
+                    run_id = meta.get("active", "run_0000")
+                    subprocess.run(
+                        ["git", "update-ref",
+                         f"refs/evo/{run_id}/{args.exp_id}", commit],
+                        cwd=root, check=False, capture_output=True,
+                    )
 
             def _mark_committed(current_node: dict, _graph: dict) -> None:
                 current_node["status"] = "committed"

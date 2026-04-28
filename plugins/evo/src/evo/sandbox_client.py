@@ -264,12 +264,15 @@ class SandboxAgentClient:
             timeout=DEFAULT_REQUEST_TIMEOUT,
         )
         self._check(resp)
+        # Response is a top-level JSON array of FsEntry objects.
+        # FsEntry shape: {name, path, entryType: "file"|"directory"|..., size, modified?}
         out = []
-        for entry in resp.json().get("entries", []):
+        for entry in resp.json() or []:
+            entry_type = (entry.get("entryType") or "").lower()
             out.append(FsEntry(
                 name=entry.get("name", ""),
                 path=entry.get("path", ""),
-                is_dir=bool(entry.get("isDir", False)),
+                is_dir=entry_type == "directory",
                 size=entry.get("size"),
             ))
         return out
@@ -283,10 +286,13 @@ class SandboxAgentClient:
         return resp.json()
 
     def fs_mkdir(self, path: str, recursive: bool = True) -> None:
-        body = {"path": path, "recursive": recursive}
+        # `recursive` kwarg kept for API symmetry with the existing local
+        # call sites, but sandbox-agent's mkdir always operates with
+        # mkdir-p semantics (intermediate dirs created); the flag is a
+        # no-op against the server. Server takes path as a query param.
+        del recursive
         resp = self._session.post(
-            self._url("/v1/fs/mkdir"),
-            json=body,
+            self._url(f"/v1/fs/mkdir?{urlencode({'path': path})}"),
             timeout=DEFAULT_REQUEST_TIMEOUT,
         )
         self._check(resp)

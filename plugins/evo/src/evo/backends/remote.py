@@ -89,17 +89,26 @@ class RemoteSandboxBackend:
             if needs_provision:
                 handle = self._provision_sandbox(slot_id)
                 self._handles[slot_id] = handle
-                # Persist provider-side metadata that survives orchestrator
-                # restart (the bearer_token is intentionally NOT persisted).
+                # Persist enough state to reconstruct the handle in a
+                # different process (evo new and evo run run in separate
+                # processes invoked by the agent). The bearer token IS
+                # written to disk -- the cleanest POC tradeoff. SPEC
+                # roadmap section "Open: secrets redaction policy"
+                # tracks the encrypted-keyfile / in-memory-only path
+                # for alpha.4. Until then, .evo/run_*/remote_state.json
+                # should be treated as workspace-private (gitignored
+                # via .evo/ already).
                 with remote_state.locked_state(ctx.root) as state:
                     sandbox = state["sandboxes"][slot_id]
                     sandbox["native_id"] = handle.native_id
                     sandbox["base_url"] = handle.base_url
+                    sandbox["bearer_token"] = handle.bearer_token
+                    sandbox["metadata"] = dict(handle.metadata or {})
                     sandbox["provisioned_at"] = utc_now()
 
             # Step 3: ship parent commit into the sandbox + check out the
-            # experiment's branch. Stubbed for commit 1/5; real impl in 4/5.
-            worktree_path = self._setup_workspace(ctx, handle)
+            # experiment's branch.
+            worktree_path = self._setup_workspace(ctx, handle, slot_id)
         except Exception:
             # Unwind: release the lease atomically. Provider-side handle
             # stays warm (transient failures shouldn't burn a sandbox).
@@ -260,27 +269,152 @@ class RemoteSandboxBackend:
         through provider_config.
         """
         token = secrets.token_urlsafe(32)
-        self._tokens[slot_id] = token
         spec = SandboxSpec(
             image_ref="evo-sandbox-base",   # provider resolves to its own image system
             env={},                          # alpha.4: forwarded user secrets
             bearer_token=token,
         )
         handle = self.provider.provision(spec)
+        # Use the handle's token, not the spec's. Manual provider returns
+        # its own configured token (the user-managed sandbox-agent was
+        # started with that token, not the freshly-generated one).
+        self._tokens[slot_id] = handle.bearer_token
         return handle
 
+    def client_for_node(self, root: Path, node: dict[str, Any]):
+        """Return a SandboxAgentClient pointed at the sandbox leased by `node`.
+
+        Used by cmd_run to route shell + fs ops through the backend's
+        HTTP client. Re-hydrates the SandboxHandle from on-disk state if
+        not in memory (different process; common because `evo new` and
+        `evo run` are separate subprocess invocations from the agent).
+        """
+        from ..sandbox_client import SandboxAgentClient
+
+        slot_id = self._slot_for_exp(root, node["id"])
+        if slot_id is None:
+            raise RuntimeError(
+                f"No sandbox leased by {node.get('id')!r}; "
+                f"call backend.allocate() first."
+            )
+        handle = self._handles.get(slot_id)
+        if handle is None:
+            # Cold-start: re-hydrate from remote_state.json. Bearer token
+            # IS persisted (POC tradeoff; see SPEC roadmap for the
+            # encrypted-keyfile work).
+            state = remote_state.read_state(root)
+            sandbox_record = next(
+                (s for s in state["sandboxes"] if s["id"] == slot_id), None
+            )
+            if sandbox_record is None or not sandbox_record.get("base_url"):
+                raise RuntimeError(
+                    f"Sandbox slot {slot_id} for {node.get('id')!r} has no "
+                    f"base_url in remote_state. Re-allocate via "
+                    f"`evo discard {node['id']} --reason ...` + "
+                    f"`evo new --parent ...`."
+                )
+            handle = SandboxHandle(
+                provider=state["provider"],
+                base_url=sandbox_record["base_url"],
+                bearer_token=sandbox_record.get("bearer_token", ""),
+                native_id=sandbox_record.get("native_id") or f"slot-{slot_id}",
+                metadata=sandbox_record.get("metadata") or {},
+            )
+            self._handles[slot_id] = handle
+            self._tokens[slot_id] = handle.bearer_token
+        token = self._tokens.get(slot_id, handle.bearer_token)
+        return SandboxAgentClient(handle.base_url, bearer_token=token)
+
     def _setup_workspace(
-        self, ctx: AllocateCtx, handle: SandboxHandle | None
+        self, ctx: AllocateCtx, handle: SandboxHandle | None, slot_id: int
     ) -> Path:
         """Ship parent commit into the sandbox + checkout the experiment branch.
 
-        STUB for commit 1/5. The real implementation lands in commit 4/5
-        once the sandbox-agent HTTP client and git-bundle helpers exist.
-        Returns the in-sandbox worktree path encoded as a Path so callers
-        that interpolate it into shell commands continue to work.
+        Steps:
+          1. Ensure the in-sandbox workspace exists and is a git repo.
+             The workspace path comes from handle.metadata["workspace_root"]
+             when set (manual provider configures this for non-/workspace
+             host filesystems); otherwise defaults to /workspace/repo.
+          2. Ship parent commit via git bundle.
+          3. Check out the experiment's branch at parent commit.
+
+        Returns the in-sandbox workspace path. In remote mode there's no
+        separate `git worktree`; the experiment's branch is checked out
+        in place in the cloned repo.
         """
-        # POC sandbox-internal layout: /workspace/exp_NNNN
-        return Path(f"/workspace/{ctx.exp_id}")
+        from ..sandbox_client import SandboxAgentClient
+        from ..git_bundle import (
+            SANDBOX_REPO_ROOT, SANDBOX_BUNDLE_DIR,
+            ship_commit_to_sandbox,
+        )
+
+        if handle is None:
+            raise RuntimeError(
+                "_setup_workspace called without a SandboxHandle; "
+                "indicates a backend ordering bug."
+            )
+        meta = handle.metadata or {}
+        workspace_root = meta.get("workspace_root", SANDBOX_REPO_ROOT)
+        bundle_dir = meta.get("bundle_dir", SANDBOX_BUNDLE_DIR)
+        token = self._tokens.get(slot_id, handle.bearer_token)
+        with SandboxAgentClient(handle.base_url, bearer_token=token) as client:
+            # 1. Ensure the in-sandbox repo dir exists and is a git repo.
+            client.fs_mkdir(workspace_root, recursive=True)
+            init_check = client.process_run(
+                "git", args=["rev-parse", "--git-dir"], cwd=workspace_root,
+            )
+            if init_check.exit_code != 0:
+                # Fresh sandbox: init the repo + set committer identity for
+                # any subsequent in-sandbox commits.
+                init_result = client.process_run(
+                    "git", args=["init", "-q"], cwd=workspace_root,
+                )
+                if init_result.exit_code != 0:
+                    raise RuntimeError(
+                        f"git init failed in sandbox: {init_result.stderr[:500]}"
+                    )
+                client.process_run(
+                    "git", args=["config", "user.email", "evo@sandbox"],
+                    cwd=workspace_root,
+                )
+                client.process_run(
+                    "git", args=["config", "user.name", "evo"],
+                    cwd=workspace_root,
+                )
+
+            # 2. Ship the parent commit. Skip if already there (re-leased
+            # sandbox case, common when keep_warm lands).
+            cat_check = client.process_run(
+                "git", args=["cat-file", "-e", ctx.parent_commit],
+                cwd=workspace_root,
+            )
+            if cat_check.exit_code != 0:
+                ship_commit_to_sandbox(
+                    client, local_repo=ctx.root, commit=ctx.parent_commit,
+                    sandbox_repo=workspace_root, bundle_dir=bundle_dir,
+                )
+
+            # 3. Check out the experiment's branch at parent commit.
+            checkout = client.process_run(
+                "git",
+                args=["checkout", "-B", ctx.branch, ctx.parent_commit],
+                cwd=workspace_root,
+            )
+            if checkout.exit_code != 0:
+                raise RuntimeError(
+                    f"git checkout -B {ctx.branch} {ctx.parent_commit} "
+                    f"failed in sandbox: {checkout.stderr[:500]}"
+                )
+
+        # Persist on the slot's state record so cmd_run can read the same
+        # path via the backend client without re-fetching the handle.
+        with remote_state.locked_state(ctx.root) as state:
+            for sandbox in state["sandboxes"]:
+                if sandbox["id"] == slot_id:
+                    sandbox["workspace_root"] = workspace_root
+                    sandbox["bundle_dir"] = bundle_dir
+                    break
+        return Path(workspace_root)
 
     def _slot_for_exp(self, root: Path, exp_id: str) -> int | None:
         """Return the slot id currently leased by `exp_id`, or None."""

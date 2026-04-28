@@ -33,8 +33,21 @@ def _load_modal(config: dict[str, Any]) -> SandboxProvider:
     return _modal_module.ModalProvider(config)
 
 
+def _load_manual(config: dict[str, Any]) -> SandboxProvider:
+    """`manual` provider: bring-your-own sandbox-agent.
+
+    Skips provisioning and tear-down; just wraps a pre-existing
+    (base_url, bearer_token) pair as a SandboxHandle. Useful for users
+    who run sandbox-agent on their own VM, and for tests that spawn a
+    real sandbox-agent on localhost.
+    """
+    from . import manual as _manual_module
+    return _manual_module.ManualProvider(config)
+
+
 _LOADERS: dict[str, Callable[[dict[str, Any]], SandboxProvider]] = {
     "modal": _load_modal,
+    "manual": _load_manual,
 }
 
 

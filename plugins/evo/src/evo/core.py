@@ -575,41 +575,85 @@ def maybe_commit_worktree(
     node: dict[str, Any],
     hypothesis: str,
     commit_strategy: str = "all",
+    executor: Any = None,
 ) -> str | None:
+    """Stage and commit the experiment's edits inside its workspace.
+
+    `executor` (a `WorkspaceExecutor`) routes git invocations either as
+    local subprocess (worktree/pool backends) or through sandbox-agent
+    (remote backend). Default `None` preserves backwards-compat for any
+    caller that hasn't been updated to pass one (resolves to local).
+    """
     if commit_strategy not in ("all", "tracked-only"):
         raise RuntimeError(
             f"commit_strategy must be 'all' or 'tracked-only', got {commit_strategy!r}"
         )
+    if executor is None:
+        from .workspace_executor import LocalExecutor
+        executor = LocalExecutor()
+
     worktree = Path(node["worktree"])
-    if not git_status_porcelain(worktree).strip():
-        return current_commit(worktree)
+    status = executor.run(["git", "status", "--porcelain"], cwd=worktree)
+    if status.exit_code != 0:
+        raise RuntimeError(
+            f"git status --porcelain failed in {worktree}: {status.stderr[:500]}"
+        )
+    if not status.stdout.strip():
+        # No changes; report the current HEAD as the commit so callers
+        # don't need to special-case the no-op path.
+        head = executor.run(["git", "rev-parse", "HEAD"], cwd=worktree)
+        return head.stdout.strip() if head.exit_code == 0 else None
+
     add_args = ["-A"] if commit_strategy == "all" else ["-u"]
-    subprocess.run(["git", "add", *add_args], cwd=worktree, check=True)
-    # In tracked-only mode the index may still be empty after `git add -u` if
-    # the only changes were untracked files. `git commit` would fail with
-    # "nothing to commit"; treat as a no-op and report the parent commit.
-    diff_check = subprocess.run(
-        ["git", "diff", "--cached", "--quiet"],
-        cwd=worktree,
+    add = executor.run(["git", "add", *add_args], cwd=worktree)
+    if add.exit_code != 0:
+        raise RuntimeError(f"git add failed: {add.stderr[:500]}")
+
+    # In tracked-only mode the index may still be empty after `git add -u`
+    # if the only changes were untracked files. `git commit` would fail
+    # with "nothing to commit"; treat as a no-op.
+    diff_check = executor.run(
+        ["git", "diff", "--cached", "--quiet"], cwd=worktree,
     )
-    if diff_check.returncode == 0:
-        return current_commit(worktree)
-    subprocess.run(
+    if diff_check.exit_code == 0:
+        head = executor.run(["git", "rev-parse", "HEAD"], cwd=worktree)
+        return head.stdout.strip() if head.exit_code == 0 else None
+
+    commit_result = executor.run(
         ["git", "commit", "-m", f"evo: {node['id']} {hypothesis}"],
         cwd=worktree,
-        check=True,
     )
-    return current_commit(worktree)
+    if commit_result.exit_code != 0:
+        raise RuntimeError(f"git commit failed: {commit_result.stderr[:500]}")
+    head = executor.run(["git", "rev-parse", "HEAD"], cwd=worktree)
+    return head.stdout.strip() if head.exit_code == 0 else None
 
 
-def render_git_diff(root: Path, parent_ref: str, worktree: Path, relative_path: str) -> str:
-    result = subprocess.run(
+def render_git_diff(
+    root: Path,
+    parent_ref: str,
+    worktree: Path,
+    relative_path: str,
+    executor: Any = None,
+) -> str:
+    """`git diff <parent_ref> -- <path>` against the experiment's worktree.
+
+    `executor` (a `WorkspaceExecutor`) routes the call appropriately for
+    the active backend. Default `None` resolves to a local executor for
+    backwards-compat with callers that haven't been updated.
+    """
+    if executor is None:
+        from .workspace_executor import LocalExecutor
+        executor = LocalExecutor()
+    result = executor.run(
         ["git", "diff", parent_ref, "--", relative_path],
         cwd=worktree,
-        check=True,
-        capture_output=True,
-        text=True,
     )
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"git diff {parent_ref} -- {relative_path} failed: "
+            f"{result.stderr[:500]}"
+        )
     return result.stdout
 
 

@@ -36,15 +36,25 @@ def ship_commit_to_sandbox(
     *,
     local_repo: Path,
     commit: str,
-    sandbox_repo: str = SANDBOX_REPO_ROOT,
+    sandbox_repo: str | None = None,
+    bundle_dir: str | None = None,
     bundle_filename: str = "parent.bundle",
 ) -> str:
     """Move a single commit (and all reachable objects) from the local
     repo into the sandbox's clone, then check it out as detached HEAD.
 
-    Returns the in-sandbox path of the bundle file (left in place for
-    diagnostics; idempotent overwrite on next ship).
+    `sandbox_repo` and `bundle_dir` default to the module-level
+    SANDBOX_REPO_ROOT / SANDBOX_BUNDLE_DIR but are read at CALL time
+    (not definition time) so tests and callers can override the layout
+    without monkey-patching gotchas.
+
+    Returns the in-sandbox path of the bundle file.
     """
+    if sandbox_repo is None:
+        sandbox_repo = SANDBOX_REPO_ROOT
+    if bundle_dir is None:
+        bundle_dir = SANDBOX_BUNDLE_DIR
+
     # 1. Build the bundle locally.
     bundle_blob = _create_bundle(local_repo, commit)
 
@@ -52,9 +62,9 @@ def ship_commit_to_sandbox(
     tar_bytes = _tar_single_file(bundle_filename, bundle_blob)
 
     # 3. Upload + extract.
-    client.fs_mkdir(SANDBOX_BUNDLE_DIR, recursive=True)
-    client.fs_upload_batch(SANDBOX_BUNDLE_DIR, tar_bytes)
-    sandbox_bundle_path = f"{SANDBOX_BUNDLE_DIR}/{bundle_filename}"
+    client.fs_mkdir(bundle_dir, recursive=True)
+    client.fs_upload_batch(bundle_dir, tar_bytes)
+    sandbox_bundle_path = f"{bundle_dir}/{bundle_filename}"
 
     # 4. Unbundle inside the sandbox.
     result = client.process_run(
@@ -76,7 +86,8 @@ def fetch_commit_from_sandbox(
     local_repo: Path,
     base_commit: str,
     head_commit: str,
-    sandbox_repo: str = SANDBOX_REPO_ROOT,
+    sandbox_repo: str | None = None,
+    bundle_dir: str | None = None,
     bundle_filename: str | None = None,
 ) -> None:
     """Pull `base_commit..head_commit` from the sandbox into the local
@@ -85,9 +96,13 @@ def fetch_commit_from_sandbox(
     Doesn't create any branch ref locally; callers should `git update-ref`
     if they want to pin the commit beyond the next `git gc`.
     """
+    if sandbox_repo is None:
+        sandbox_repo = SANDBOX_REPO_ROOT
+    if bundle_dir is None:
+        bundle_dir = SANDBOX_BUNDLE_DIR
     if bundle_filename is None:
         bundle_filename = f"exp-{head_commit[:12]}.bundle"
-    sandbox_bundle_path = f"{SANDBOX_BUNDLE_DIR}/{bundle_filename}"
+    sandbox_bundle_path = f"{bundle_dir}/{bundle_filename}"
 
     # 1. Stamp a temporary ref on the head commit. `git bundle create` needs
     # a named ref tip, not a bare commit (same constraint as the outbound
@@ -103,7 +118,7 @@ def fetch_commit_from_sandbox(
         )
 
     # 2. Build the incremental bundle inside the sandbox.
-    client.fs_mkdir(SANDBOX_BUNDLE_DIR, recursive=True)
+    client.fs_mkdir(bundle_dir, recursive=True)
     try:
         result = client.process_run(
             "git",
