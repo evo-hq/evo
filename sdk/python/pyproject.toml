@@ -1,6 +1,6 @@
 [project]
 name = "evo-hq-agent"
-version = "0.4.0-alpha.1"
+version = "0.4.0-alpha.2"
 description = "Lightweight reporting SDK for evo experiments. Zero dependencies."
 requires-python = ">=3.10"
 dependencies = []
