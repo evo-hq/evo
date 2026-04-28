@@ -157,6 +157,25 @@ def cmd_init(args: argparse.Namespace) -> int:
     if args.host not in SUPPORTED_HOSTS:
         allowed = ", ".join(sorted(SUPPORTED_HOSTS))
         raise RuntimeError(f"--host must be one of: {allowed}")
+
+    # Backend + workspaces validation. Strict: --backend pool requires
+    # --workspaces; --backend worktree (or omitted) refuses --workspaces.
+    backend_name = args.backend
+    workspaces_raw = args.workspaces
+    workspaces: list[str] = []
+    if workspaces_raw:
+        workspaces = [p.strip() for p in workspaces_raw.split(",") if p.strip()]
+    if backend_name == "pool":
+        if not workspaces:
+            raise RuntimeError("--backend pool requires --workspaces /a,/b,/c")
+        _validate_pool_slots(root, workspaces)
+    else:  # worktree (default)
+        if workspaces:
+            raise RuntimeError(
+                "--workspaces is only valid with --backend pool. "
+                "Did you mean: --backend pool --workspaces ...?"
+            )
+
     run_id = init_workspace(
         root,
         target=args.target,
@@ -164,6 +183,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         metric=args.metric,
         gate=args.gate,
         host=args.host,
+        execution_backend=backend_name,
+        workspaces=workspaces if backend_name == "pool" else None,
     )
     if args.instrumentation_mode:
         meta_file = evo_dir(root) / "meta.json"
@@ -172,8 +193,94 @@ def cmd_init(args: argparse.Namespace) -> int:
         atomic_write_json(meta_file, meta)
     write_scratchpad(root)
     _start_dashboard_background(root, port=args.port)
-    print(f"Initialized evo workspace {run_id} at {workspace_path(root)} (host={args.host})")
+    backend_msg = f" (backend={backend_name}, slots={len(workspaces)})" if backend_name == "pool" else ""
+    print(f"Initialized evo workspace {run_id} at {workspace_path(root)} (host={args.host}){backend_msg}")
     return 0
+
+
+def _validate_pool_slots(root: Path, slot_paths: list[str]) -> None:
+    """Sanity-check each pool slot at init time.
+
+    Each path must exist, be a git working tree, and share an `origin`
+    remote URL with the main repo. Slots are also canonicalized
+    (`Path.resolve`) to detect duplicates, symlink aliases, the main repo
+    itself, and overlapping/nested slot directories -- all of which would
+    cause two experiments to share one physical checkout.
+
+    Raises RuntimeError with a per-slot diagnostic on any failure.
+    """
+    main_origin = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    repo_canonical = root.resolve()
+
+    canonical: list[Path] = []
+    for idx, path_str in enumerate(slot_paths):
+        slot = Path(path_str)
+        if not slot.is_absolute():
+            raise RuntimeError(f"--workspaces[{idx}] must be absolute: {path_str}")
+        if not slot.exists():
+            raise RuntimeError(f"--workspaces[{idx}] does not exist: {slot}")
+
+        slot_canonical = slot.resolve()
+
+        # Reject the main repo itself: leasing it would let the next
+        # `evo new` run `git checkout -B evo/...` against the user's working
+        # branch -- silent data loss.
+        if slot_canonical == repo_canonical:
+            raise RuntimeError(
+                f"--workspaces[{idx}] resolves to the main repo ({slot_canonical}). "
+                f"A pool slot must be a separate clone; using main would let evo "
+                f"check out experiment branches over your working tree."
+            )
+
+        if not (slot_canonical / ".git").exists():
+            raise RuntimeError(
+                f"--workspaces[{idx}] is not a git working tree: {slot_canonical}"
+            )
+        if main_origin:
+            slot_origin = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=slot_canonical,
+                check=False,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if slot_origin and slot_origin != main_origin:
+                raise RuntimeError(
+                    f"--workspaces[{idx}] origin mismatch: {slot_origin} vs main {main_origin}"
+                )
+
+        # Reject duplicates and overlap. Two slot paths must not resolve to
+        # the same directory, and one slot must not be nested inside another.
+        for j, prior in enumerate(canonical):
+            if slot_canonical == prior:
+                raise RuntimeError(
+                    f"--workspaces[{idx}] ({slot_canonical}) is a duplicate of "
+                    f"--workspaces[{j}] (same canonical path or symlink alias). "
+                    f"Each slot must be a distinct directory."
+                )
+            try:
+                slot_canonical.relative_to(prior)
+                raise RuntimeError(
+                    f"--workspaces[{idx}] ({slot_canonical}) is nested inside "
+                    f"--workspaces[{j}] ({prior}). Pool slots cannot overlap."
+                )
+            except ValueError:
+                pass
+            try:
+                prior.relative_to(slot_canonical)
+                raise RuntimeError(
+                    f"--workspaces[{idx}] ({slot_canonical}) contains "
+                    f"--workspaces[{j}] ({prior}). Pool slots cannot overlap."
+                )
+            except ValueError:
+                pass
+        canonical.append(slot_canonical)
 
 
 def cmd_host(args: argparse.Namespace) -> int:
@@ -188,6 +295,79 @@ def cmd_host(args: argparse.Namespace) -> int:
         print(f"host set to {args.value}")
         return 0
     raise RuntimeError(f"unknown host action: {action}")
+
+
+# ---------------------------------------------------------------------------
+# evo workspace -- pool slot inspection and stale-lease release
+# ---------------------------------------------------------------------------
+
+
+def cmd_workspace_status(args: argparse.Namespace) -> int:
+    """Show pool slot occupancy. Errors clearly when pool mode is not active."""
+    root = repo_root()
+    config = load_config(root)
+    if config.get("execution_backend") != "pool":
+        print(
+            f"ERROR: workspace subcommand only applies in pool mode "
+            f"(execution_backend={config.get('execution_backend', 'worktree')!r}).",
+            file=sys.stderr,
+        )
+        return 1
+
+    from .backends import pool_state
+
+    state = pool_state.read_state(root)
+    if args.json:
+        print(json.dumps(state, indent=2))
+        return 0
+
+    # Human-readable table. Lease is keyed by experiment status, not by the
+    # transient `evo new` PID -- a lease persists across the multi-process
+    # lifecycle (allocate, dispatch, run) until the experiment commits or is
+    # discarded. PID is recorded for diagnostics only.
+    rows = []
+    rows.append(("SLOT", "PATH", "LEASED BY", "BRANCH"))
+    for slot in state["slots"]:
+        lease = slot.get("leased_by")
+        if lease is None:
+            leased_by = "(idle)"
+        else:
+            leased_by = f"{lease['exp_id']} (pid {lease['pid']})"
+        last_branch = slot.get("last_branch") or "(never leased)"
+        rows.append((str(slot["id"]), slot["path"], leased_by, f"last: {last_branch}"))
+    widths = [max(len(r[c]) for r in rows) for c in range(4)]
+    for row in rows:
+        print(
+            "  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
+        )
+    return 0
+
+
+def cmd_workspace_release(args: argparse.Namespace) -> int:
+    """Manually clear a slot's lease. For stale-lease recovery only."""
+    root = repo_root()
+    config = load_config(root)
+    if config.get("execution_backend") != "pool":
+        print("ERROR: workspace subcommand only applies in pool mode.", file=sys.stderr)
+        return 1
+    from .backends import pool_state
+
+    target = args.slot_id
+    with pool_state.locked_state(root) as state:
+        slot = next((s for s in state["slots"] if s["id"] == target), None)
+        if slot is None:
+            print(f"ERROR: slot {target} not in pool", file=sys.stderr)
+            return 1
+        if slot.get("leased_by") is None:
+            print(f"slot {target} ({slot['path']}) was already free")
+            return 0
+        prior = slot["leased_by"]
+        slot["leased_by"] = None
+    print(
+        f"released slot {target} ({slot['path']}); was held by "
+        f"{prior['exp_id']} (pid {prior['pid']})"
+    )
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +453,19 @@ def _settle_job(root: Path, exp_id: str) -> str:
     except Exception:  # noqa: BLE001
         pass
     _write_status(root, exp_id, new_status)
+    # Stamp the child's session_id onto the experiment node so future
+    # dispatches of THIS node's children can lineage-fork from it. For
+    # foreground dispatches the session_id is already in meta (set when
+    # spawn_child returned). For background dispatches we extract it from
+    # the captured stdout log here, on the done transition.
+    try:
+        sid = meta.get("child_session_id")
+        if not sid and meta.get("stdout_log"):
+            sid = _extract_session_id_from_log(Path(meta["stdout_log"]))
+        if sid:
+            _stamp_session_id(root, exp_id, sid)
+    except Exception:  # noqa: BLE001
+        pass
     # Materialize result.json combining meta + outcome (best-effort).
     try:
         result_summary = {
@@ -289,6 +482,57 @@ def _settle_job(root: Path, exp_id: str) -> str:
     except Exception:  # noqa: BLE001
         pass
     return new_status
+
+
+def _extract_session_id_from_log(log_path: Path) -> str | None:
+    """Parse a `claude -p --output-format json` stdout log for session_id.
+    Tolerates both single-JSON and JSONL formats. Used when settling a
+    background dispatch -- foreground already has session_id in meta."""
+    if not log_path.exists():
+        return None
+    try:
+        text = log_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    # Try single JSON value first.
+    try:
+        parsed = json.loads(text)
+        events = parsed if isinstance(parsed, list) else [parsed]
+    except json.JSONDecodeError:
+        events = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    for ev in events:
+        if isinstance(ev, dict) and ev.get("type") == "system" and ev.get("subtype") == "init":
+            sid = ev.get("session_id")
+            if sid:
+                return sid
+    for ev in events:
+        if isinstance(ev, dict) and ev.get("type") == "result":
+            sid = ev.get("session_id")
+            if sid:
+                return sid
+    return None
+
+
+def _stamp_session_id(root: Path, exp_id: str, session_id: str) -> None:
+    """Persist child session_id on the experiment node for lineage forking.
+    Idempotent: setting the same value is a no-op."""
+
+    def _apply(node: dict, _graph: dict) -> None:
+        if node.get("session_id") != session_id:
+            node["session_id"] = session_id
+            node["session_runtime"] = "claude-code"
+
+    update_node(root, exp_id, _apply)
 
 
 def cmd_dispatch(args: argparse.Namespace) -> int:
@@ -342,6 +586,8 @@ def _cmd_dispatch_run(args: argparse.Namespace) -> int:
         "parent_id": out["parent_id"],
         "host": "claude-code",
         "explorer_session_id": out["explorer_session_id"],
+        "lineage": out.get("lineage", False),
+        "child_session_id": out.get("session_id"),
         "worktree": out["worktree"],
         "brief": args.message,
         "budget": args.budget,
@@ -372,6 +618,7 @@ def _cmd_dispatch_run(args: argparse.Namespace) -> int:
         "exit_code": out.get("exit_code"),
         "session_id": out.get("session_id"),
         "explorer_session_id": out["explorer_session_id"],
+        "lineage": out.get("lineage", False),
         "usage": out.get("usage", {}),
     }, indent=2))
     return 0 if out.get("exit_code", 1) == 0 else 1
@@ -640,7 +887,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     env["EVO_RESULT_PATH"] = str(result_path)
 
     # Captured before the benchmark runs so it survives crashes too.
-    parent_ref = current_branch(root) if node["parent"] == "root" else _read_node(root, node["parent"])["branch"]
+    # Use parent commit hash rather than branch ref. In pool mode the parent's
+    # branch lives in whichever slot ran it, not necessarily this slot;
+    # commit hashes are stable across slots once fetched.
+    if node["parent"] == "root":
+        parent_ref = current_branch(root)
+    else:
+        parent_node = _read_node(root, node["parent"])
+        parent_ref = parent_node.get("commit") or parent_node["branch"]
     diff_text = render_git_diff(root, parent_ref, worktree, relative_target(config))
     (a_dir / "diff.patch").write_text(diff_text, encoding="utf-8")
 
@@ -730,6 +984,14 @@ def cmd_run(args: argparse.Namespace) -> int:
                 benchmark=benchmark_record, gates=gate_records,
                 commit=commit, parent_score=parent_score, metric=metric,
             )
+            # Release the workspace lease on transition into `committed`.
+            # Worktree backend: no-op. Pool backend: returns the slot to the
+            # free queue. Failed and evaluated transitions retain the lease.
+            from .backends import DiscardCtx as _DCtx, load_backend as _lb
+            committed_node = dict(node)
+            committed_node["status"] = "committed"
+            committed_node["commit"] = commit
+            _lb(root).release_lease(_DCtx(root=root, node=committed_node))
             write_scratchpad(root)
             delta = "" if parent_score is None else f" ({'+' if metric == 'max' else ''}{score - parent_score:.4f} vs parent)"
             print(f"COMMITTED {args.exp_id} {score}{delta}")
@@ -840,6 +1102,9 @@ def _record_done_result(root: Path, args: argparse.Namespace) -> int:
 
     update_node(root, args.exp_id, _mark)
     _finalize_result(root, args.exp_id, node, args.score, status, {"recorded_only": True})
+    if status == "committed":
+        from .backends import DiscardCtx as _DCtx, load_backend as _lb
+        _lb(root).release_lease(_DCtx(root=root, node={**node, "status": "committed"}))
     write_scratchpad(root)
     print(f"{status.upper()} {args.exp_id} {args.score}")
     return 0
@@ -1283,6 +1548,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="orchestrator runtime (claude-code/codex/opencode/openclaw/hermes/generic). "
              "Determines whether `evo dispatch` is available; other commands ignore it.",
     )
+    init_p.add_argument(
+        "--backend",
+        default="worktree",
+        choices=["worktree", "pool"],
+        help="execution backend (default: worktree). `pool` leases user-provided "
+             "pre-built workspaces instead of creating a fresh git worktree per "
+             "experiment. Requires --workspaces.",
+    )
+    init_p.add_argument(
+        "--workspaces",
+        help="comma-separated absolute paths to pre-built workspace directories "
+             "(required with --backend pool). Concurrent experiments cap at the "
+             "pool size.",
+    )
     init_p.add_argument("--port", type=int, default=8080)
     init_p.set_defaults(func=cmd_init)
 
@@ -1296,6 +1575,20 @@ def build_parser() -> argparse.ArgumentParser:
     host_set_p = host_sub.add_parser("set", help="update the workspace host")
     host_set_p.add_argument("value", choices=sorted(SUPPORTED_HOSTS))
     host_set_p.set_defaults(func=cmd_host)
+
+    workspace_p = sub.add_parser(
+        "workspace",
+        help="inspect or release pool slots (pool mode only)",
+    )
+    workspace_sub = workspace_p.add_subparsers(dest="workspace_action", required=True)
+    workspace_status_p = workspace_sub.add_parser("status", help="show pool slot occupancy")
+    workspace_status_p.add_argument("--json", action="store_true", help="emit JSON")
+    workspace_status_p.set_defaults(func=cmd_workspace_status)
+    workspace_release_p = workspace_sub.add_parser(
+        "release", help="manually clear a stale lease"
+    )
+    workspace_release_p.add_argument("slot_id", type=int)
+    workspace_release_p.set_defaults(func=cmd_workspace_release)
 
     new_p = sub.add_parser("new")
     new_p.add_argument("--parent", required=True)
