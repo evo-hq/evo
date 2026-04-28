@@ -41,9 +41,14 @@ if ! command -v evo >/dev/null 2>&1; then
 fi
 
 CLI_OUTPUT=$(evo --version 2>/dev/null || true)
+# Capture the version token after `evo-hq-cli`. The previous regex matched
+# only `N.N.N`, which silently dropped pre-release suffixes (e.g.
+# `0.4.0-alpha.1` was captured as `0.4.0`) and produced a spurious mismatch
+# against the plugin manifest. Allow any non-whitespace string so semver
+# pre-releases and PEP 440 forms (`0.4.0a1`) both match.
 CLI_VERSION=$(
     printf '%s\n' "$CLI_OUTPUT" \
-    | grep -oE 'evo-hq-cli[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' \
+    | grep -oE 'evo-hq-cli[[:space:]]+[^[:space:]]+' \
     | awk '{print $2}' \
     | head -1
 )
