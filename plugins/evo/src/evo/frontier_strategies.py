@@ -104,7 +104,9 @@ FRONTIER_STRATEGIES: dict[str, dict[str, Any]] = {
             "Preserves specialists the aggregate score would hide. Algorithm:\n\n"
             "1. For each task, find the top score across all frontier candidates.\n"
             "2. Collect candidates that tie for best on at least one task.\n"
-            "3. Drop any candidate weakly dominated by another on every task it wins.\n"
+            "3. Iteratively drop any candidate whose every winning front is also "
+            "won by another surviving candidate (set-cover dominance, lowest "
+            "aggregate score first).\n"
             "4. Sample K from the survivors with probability proportional to how "
             "many tasks each candidate is the best on.\n\n"
             "Honors `tasks_meta[task_id].direction` when the benchmark emits it "
@@ -112,9 +114,10 @@ FRONTIER_STRATEGIES: dict[str, dict[str, Any]] = {
             "back to the workspace-level `--metric` when a task has no direction.\n\n"
             "Intersects task keys across outcomes — a task only counts if every "
             "considered candidate reported it. Handles benchmark drift cleanly.\n\n"
-            "Inspired by GEPA (Agrawal et al., arXiv:2507.19457), specifically its "
-            "selection step. The genetic mutation + reflective LLM parts of GEPA "
-            "live elsewhere in evo's tree-search loop."
+            "Ports the candidate-selection algorithm from GEPA (Agrawal et al., "
+            "arXiv:2507.19457; gepa-ai/gepa src/gepa/gepa_utils.py). The genetic "
+            "mutation + reflective LLM parts of GEPA live elsewhere in evo's "
+            "tree-search loop."
         ),
         "params": [
             {"name": "k", "type": "int", "min": 1, "max": 50, "default": 5, "label": "Samples",
@@ -312,33 +315,17 @@ def _pick_pareto_per_task(nodes: list[dict], params: dict, metric: str,
         # Nothing to Pareto over (no tasks, or all below floor). Fall back to argmax.
         return _pick_argmax(nodes, {}, metric, outcomes, rng)
 
-    # Survivor set = union of per-task winners.
-    survivors: set[str] = set().union(*winners.values())
+    # GEPA-style dominance prune: drop y if for every front y is in, another
+    # surviving program also wins that front (set-cover semantics over per-task
+    # winning sets). Iterative -- removing one program can unblock removal of
+    # others. See gepa-ai/gepa src/gepa/gepa_utils.py: remove_dominated_programs.
+    aggregate = {n["id"]: _score_of(n, metric) for n in nodes}
+    survivors = _remove_dominated_set_cover(winners, aggregate)
 
-    # Dominance prune: drop A if some other B >= A on every task where A wins.
-    to_drop: set[str] = set()
-    for a in list(survivors):
-        a_winning_tasks = [t for t, w in winners.items() if a in w]
-        for b in survivors:
-            if a == b or b in to_drop:
-                continue
-            # b dominates a iff for every task where a wins, b's score >= a's score.
-            dominates = True
-            for t in a_winning_tasks:
-                bs = task_scores[b].get(t, float("-inf"))
-                as_ = task_scores[a].get(t, float("-inf"))
-                if bs < as_:
-                    dominates = False
-                    break
-            if dominates and any(
-                task_scores[b].get(t, float("-inf")) > task_scores[a].get(t, float("-inf"))
-                for t in a_winning_tasks
-            ):
-                to_drop.add(a)
-                break
-    survivors -= to_drop
+    if not survivors:
+        return _pick_argmax(nodes, {}, metric, outcomes, rng)
 
-    # Frequency weights.
+    # Frequency weights: number of fronts (tasks) each survivor wins.
     freq: dict[str, int] = {s: 0 for s in survivors}
     for w in winners.values():
         for s in w & survivors:
@@ -348,6 +335,43 @@ def _pick_pareto_per_task(nodes: list[dict], params: dict, metric: str,
     weights = [freq[n["id"]] for n in survivor_nodes]
     k = min(k, len(survivor_nodes))
     return _weighted_sample_without_replacement(survivor_nodes, weights, k, rng)
+
+
+def _is_dominated_by_cover(y: str, remaining: set[str],
+                            winners: dict[str, set[str]]) -> bool:
+    """y is dominated iff for every front y is in, some program in `remaining`
+    is also in that front."""
+    for front in winners.values():
+        if y not in front:
+            continue
+        if not any(other in remaining for other in front if other != y):
+            return False
+    return True
+
+
+def _remove_dominated_set_cover(winners: dict[str, set[str]],
+                                 aggregate: dict[str, float]) -> set[str]:
+    """Iteratively prune dominated programs, lowest aggregate score first.
+
+    Mirrors `remove_dominated_programs` in gepa-ai/gepa src/gepa/gepa_utils.py.
+    """
+    initial = set().union(*winners.values()) if winners else set()
+    if not initial:
+        return set()
+    ordered = sorted(initial, key=lambda p: aggregate.get(p, float("-inf")))
+    dominated: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for y in ordered:
+            if y in dominated:
+                continue
+            remaining = set(ordered) - {y} - dominated
+            if _is_dominated_by_cover(y, remaining, winners):
+                dominated.add(y)
+                changed = True
+                break
+    return set(ordered) - dominated
 
 
 PICKERS: dict[str, Callable[[list, dict, str, dict, random.Random], list[dict]]] = {

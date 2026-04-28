@@ -185,6 +185,20 @@ class TestParetoPerTask(unittest.TestCase):
         # dominates the other, so both land in the sample.
         self.assertEqual(picked, {"exp_A", "exp_B"})
 
+    def test_set_cover_dominance_drops_tied_subset_winner(self):
+        # A wins {t1} alone. B ties A on t1 AND wins t2 alone. Under set-cover
+        # dominance (GEPA semantics), every front A appears in (just t1) is
+        # also covered by B, so A is dominated and dropped. Score-vector
+        # dominance would keep A because B does not strictly beat A on t1.
+        outcomes = {
+            "exp_A": {"benchmark": {"result": {"tasks": {"t1": 0.9, "t2": 0.4}}}},
+            "exp_B": {"benchmark": {"result": {"tasks": {"t1": 0.9, "t2": 0.9}}}},
+        }
+        out, _ = fs.pick(NODES[:2], {"kind": "pareto_per_task", "params": {"k": 2, "task_floor": 0.0}},
+                         "max", outcomes=outcomes, seed=1)
+        picked = {n["id"] for n in out}
+        self.assertEqual(picked, {"exp_B"})
+
     def test_intersection_of_task_keys_when_drifting(self):
         # A and B agree on t1, t2; B also has t3 that A doesn't. Only the
         # intersection (t1, t2) should drive the Pareto front, so t3 doesn't
