@@ -22,6 +22,8 @@ These defaults can be overridden via arguments: `/optimize [subagents=N] [budget
 - **budget**: max iterations each subagent can run within its branch (default: 5)
 - **stall**: consecutive rounds with no improvement before auto-stopping (default: 5)
 
+**Pool mode (if active).** When the workspace was initialized with `--backend pool`, concurrent experiments cap at the pool size. Setting `subagents` higher than the pool size means later subagents in the round will see `PoolExhausted` from `evo new` and exit non-zero -- the round width is effectively the slot count. Run `evo workspace status` to see slot occupancy. Reduce `subagents` to the pool size if exhaustion is recurring. Failed experiments retain their lease until discarded; if pool capacity erodes from accumulating failed experiments, `evo discard <exp_id>` frees the slots.
+
 ## Prerequisites
 
 - Workspace must be initialized (`evo status` should succeed)
@@ -50,6 +52,8 @@ Orchestrator (this agent):
 ```
 
 Both layers read traces; the depth differs. The orchestrator scans for cross-cutting patterns (which failures are common, which branches plateau) -- enough to pick N non-overlapping briefs. Subagents read their pointer traces in depth, enough to commit to a concrete edit. Structured briefs are what prevent parallel subagents from duplicating each other's work.
+
+**Session lineage.** Dispatching a child of a committed experiment forks the parent experiment's own session, not a separately-warmed explorer. The child inherits the parent's full transcript -- reads, edits, benchmark output -- so the prefix cache carries through generations. Explorer warming runs only for children of root, where the parent has no session.
 
 **Trace instrumentation style**: `.evo/meta.json`'s `instrumentation_mode` records `sdk` vs `inline`. Subagents must stay consistent with it (see `skills/subagent/SKILL.md` for details).
 
@@ -174,7 +178,7 @@ evo dispatch wait
 
 The `--explore-context` flag is shared per parent (it shapes the explorer's read pass) -- pass it on the first dispatch from a given parent in a round, omit on subsequent ones. If you need a different focus mid-round, pass `--refresh-explorer` to force a rebuild.
 
-Each child inherits the explorer's transcript (worker protocol from `subagent/SKILL.md` + the parent's code reads), and its first user message is just the brief + budget. You don't pass the protocol again per child -- that's what the explorer's KV cache is for.
+Each child inherits its lineage source's transcript -- the parent experiment's own session if that parent has one, the explorer's session for children of root. The first user message is the brief + budget; for lineage forks, evo prepends a short notice that the parent's work is closed and the protocol may need re-reading if it was summarized during compaction. You don't repeat the protocol per child -- that's what the inherited KV cache is for.
 
 #### 5b. all other hosts → host's parallel-Task primitive (existing path)
 

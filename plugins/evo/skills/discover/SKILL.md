@@ -151,10 +151,17 @@ build/
 ```bash
 evo init --target <file> --benchmark "<command using {worktree} and {target}>" --metric <max|min> \
   --host <claude-code|codex|opencode|openclaw|hermes|generic> \
-  --instrumentation-mode <sdk|inline> [--gate "<gate command>"]
+  --instrumentation-mode <sdk|inline> [--gate "<gate command>"] \
+  [--backend <worktree|pool> [--workspaces /abs/ws-1,/abs/ws-2,...]]
 ```
 
 **`--host` is required.** Pass the host runtime you (the orchestrator) are running under. Allowed values: `claude-code`, `codex`, `opencode`, `openclaw`, `hermes`, `generic`. This is recorded in `.evo/meta.json` and read by `evo dispatch` (the optional fork-cache spawner). On `claude-code`, dispatch is available; on every other host evo's child-spawn falls back to your host's native parallel-Task primitive (no behavior change vs today). Pick the value matching the runtime you invoked `discover` from. Use `evo host set <value>` later if you change runtimes.
+
+**`--backend` is optional, default `worktree`.** Pass `--backend pool --workspaces /abs/ws-1,/abs/ws-2,...` when each experiment needs warm state outside git -- a large monorepo with multi-GB `node_modules/`, a populated build cache, prebuilt engine intermediates, ML weight files. evo leases a slot per experiment instead of creating a fresh `git worktree`; concurrent experiments cap at the pool size. Each slot must be a pre-built clone of the same repo (origin URL match) and have no uncommitted tracked changes when leased.
+
+**Pool mode prerequisites:**
+- All warm-state directories MUST be gitignored. `evo run` does `git add -A` and captures everything not ignored into the experiment commit; sibling slots then fail to check out that commit because their own untracked copies conflict. UE: `Build/`, `Intermediate/`, third-party binaries. Node: `node_modules/`. Rust: `target/`. ML: weight directories. Confirm `.gitignore` covers your warm state before running `evo init`.
+- Untracked files in slots are preserved across experiments -- benchmarks may see contamination from earlier experiments on the same slot. Verify reproducibility before trusting score deltas.
 
 **Placeholder semantics.** Benchmark and gate commands support two placeholders, resolved lazily at run time by `evo run` / gate evaluation:
 
@@ -372,6 +379,8 @@ evo traces <id> <task>              # per-task trace
 evo annotate <id> <task> "analysis" # record failure analysis
 evo scratchpad                      # full state: tree, best path, frontier, annotations, diffs, gates
 evo gate list <id>                  # effective gates at a node (inherited)
+evo workspace status                # pool slot occupancy (pool mode only)
+evo workspace release <slot-id>     # manually release a stuck pool lease
 ```
 
 ## Rules
