@@ -111,6 +111,18 @@ evo run <exp_id>
 
 This runs benchmark + gate and prints the result.
 
+**If the workspace was initialized with `commit_strategy=tracked-only` (the default for `--backend pool`):** `evo run` only commits modifications to *tracked* files. New files require an explicit `git add` from inside the worktree, then a shisa-kanko ack on the run command:
+
+```bash
+# inside the worktree -- only for new SOURCE files you want in the commit:
+cd <worktree_path> && git add path/to/new_file.py
+
+# then, from the main repo:
+evo run <exp_id> --i-staged-new-files yes
+```
+
+The ack flag is required when the worktree has any untracked, non-gitignored file. Without it, `evo run` errors closed and lists the files. For each file, decide: source (then `git add`) or warm state (leave untracked -- it persists in the slot for future experiments). Then re-run with `--i-staged-new-files yes`. The flag value must be exactly `yes`. In `commit_strategy=all` workspaces (default for `--backend worktree`) the flag is a silent no-op; safe to always pass.
+
 ### 5. Analyze the result
 
 `evo run` prints one of three outcomes:

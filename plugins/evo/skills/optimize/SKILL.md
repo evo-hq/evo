@@ -22,7 +22,9 @@ These defaults can be overridden via arguments: `/optimize [subagents=N] [budget
 - **budget**: max iterations each subagent can run within its branch (default: 5)
 - **stall**: consecutive rounds with no improvement before auto-stopping (default: 5)
 
-**Pool mode (if active).** When the workspace was initialized with `--backend pool`, concurrent experiments cap at the pool size. Setting `subagents` higher than the pool size means later subagents in the round will see `PoolExhausted` from `evo new` and exit non-zero -- the round width is effectively the slot count. Run `evo workspace status` to see slot occupancy. Reduce `subagents` to the pool size if exhaustion is recurring. Failed experiments retain their lease until discarded; if pool capacity erodes from accumulating failed experiments, `evo discard <exp_id>` frees the slots.
+**Pool mode (if active).** When the workspace was initialized with `--backend pool`, concurrent experiments cap at the pool size. Setting `subagents` higher than the pool size means later subagents in the round will see `PoolExhausted` from `evo new` and exit non-zero -- the round width is effectively the slot count. Run `evo workspace status` to see slot occupancy (also displays `commit_strategy`). Reduce `subagents` to the pool size if exhaustion is recurring. Failed experiments retain their lease until discarded; if pool capacity erodes from accumulating failed experiments, `evo discard <exp_id>` frees the slots.
+
+Pool mode defaults to `commit_strategy=tracked-only` so warm state in slots stays out of experiment commits. Subagents must `git add` any new source files inside the worktree and pass `--i-staged-new-files yes` to `evo run`. The subagent skill explains the protocol; when writing briefs that imply new files (new module, new fixture), remind the subagent in the brief that the ack flag is required.
 
 ## Prerequisites
 

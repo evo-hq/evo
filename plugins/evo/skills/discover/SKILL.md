@@ -152,7 +152,8 @@ build/
 evo init --target <file> --benchmark "<command using {worktree} and {target}>" --metric <max|min> \
   --host <claude-code|codex|opencode|openclaw|hermes|generic> \
   --instrumentation-mode <sdk|inline> [--gate "<gate command>"] \
-  [--backend <worktree|pool> [--workspaces /abs/ws-1,/abs/ws-2,...]]
+  [--backend <worktree|pool> [--workspaces /abs/ws-1,/abs/ws-2,...]] \
+  [--commit-strategy <all|tracked-only>]
 ```
 
 **`--host` is required.** Pass the host runtime you (the orchestrator) are running under. Allowed values: `claude-code`, `codex`, `opencode`, `openclaw`, `hermes`, `generic`. This is recorded in `.evo/meta.json` and read by `evo dispatch` (the optional fork-cache spawner). On `claude-code`, dispatch is available; on every other host evo's child-spawn falls back to your host's native parallel-Task primitive (no behavior change vs today). Pick the value matching the runtime you invoked `discover` from. Use `evo host set <value>` later if you change runtimes.
@@ -160,8 +161,11 @@ evo init --target <file> --benchmark "<command using {worktree} and {target}>" -
 **`--backend` is optional, default `worktree`.** Pass `--backend pool --workspaces /abs/ws-1,/abs/ws-2,...` when each experiment needs warm state outside git -- a large monorepo with multi-GB `node_modules/`, a populated build cache, prebuilt engine intermediates, ML weight files. evo leases a slot per experiment instead of creating a fresh `git worktree`; concurrent experiments cap at the pool size. Each slot must be a pre-built clone of the same repo (origin URL match) and have no uncommitted tracked changes when leased.
 
 **Pool mode prerequisites:**
-- All warm-state directories MUST be gitignored. `evo run` does `git add -A` and captures everything not ignored into the experiment commit; sibling slots then fail to check out that commit because their own untracked copies conflict. UE: `Build/`, `Intermediate/`, third-party binaries. Node: `node_modules/`. Rust: `target/`. ML: weight directories. Confirm `.gitignore` covers your warm state before running `evo init`.
+- Warm state should be gitignored as normal hygiene, but it is no longer load-bearing for slot integrity. `--backend pool` defaults to `--commit-strategy tracked-only`, which makes `evo run` use `git add -u` instead of `git add -A` -- only modifications and deletions of *tracked* files enter the experiment commit. Untracked files (build caches, deps, weights) are never staged regardless of gitignore status, so a missed gitignore line no longer breaks sibling-slot checkout.
+- Tradeoff: when an experiment creates a new source file, the agent must `git add` it explicitly inside the worktree, then pass `--i-staged-new-files yes` to `evo run`. The flag is a shisa-kanko ack -- if the worktree has any untracked, non-gitignored file, `evo run` errors closed and prints the file list.
 - Untracked files in slots are preserved across experiments -- benchmarks may see contamination from earlier experiments on the same slot. Verify reproducibility before trusting score deltas.
+
+**`--commit-strategy` is optional.** Default is derived from `--backend`: `tracked-only` for pool, `all` for worktree. Override with `--commit-strategy all` only when you need warm state to be part of the experiment commit (rare; pool slots become brittle). Override with `--commit-strategy tracked-only` on worktree mode if you want the same shisa-kanko discipline.
 
 **Placeholder semantics.** Benchmark and gate commands support two placeholders, resolved lazily at run time by `evo run` / gate evaluation:
 
