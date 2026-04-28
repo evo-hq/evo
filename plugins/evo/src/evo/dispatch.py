@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .locking import advisory_lock
 from .core import (
     DISPATCH_HOSTS,
     allocate_experiment,
@@ -267,6 +268,28 @@ Budget: {budget} iterations. Follow the protocol you loaded earlier. Begin.
 """
 
 
+# When forking from a parent experiment's session (lineage forking) instead of
+# from a freshly-warmed explorer, the child inherits the parent's full
+# transcript. The transcript includes the parent's EXECUTE work which the child
+# must NOT continue. It may also have been auto-compacted, summarizing the
+# protocol away. The lineage prompt explicitly closes the parent's task and
+# tells the child to re-read the protocol if it can't recall it.
+LINEAGE_EXECUTE_USER_PROMPT_TEMPLATE = """A new experiment is starting. Your prior work on {parent_id} is COMMITTED and CLOSED -- do not continue it.
+
+If your earlier transcript has been summarized during context compaction and you can no longer see the full worker protocol, re-read it from {protocol_path} before acting.
+
+EXECUTE phase begins now.
+Your experiment: {exp_id}
+Worktree: {worktree_path}
+Parent: {parent_id}
+
+Brief:
+{brief}
+
+Budget: {budget} iterations. Begin.
+"""
+
+
 def render_execute_prompt(
     *,
     exp_id: str,
@@ -274,8 +297,25 @@ def render_execute_prompt(
     parent_id: str,
     brief: str,
     budget: int,
+    lineage: bool = False,
 ) -> str:
-    """Concrete EXECUTE-phase user message for one child fork."""
+    """Concrete EXECUTE-phase user message for one child fork.
+
+    When ``lineage=True``, the child is forking from the parent experiment's
+    own session rather than from a freshly-warmed explorer. The prompt
+    prepends a context-shift notice and restates the protocol pointer so
+    that an auto-compacted parent transcript doesn't leave the child
+    without the worker protocol.
+    """
+    if lineage:
+        return LINEAGE_EXECUTE_USER_PROMPT_TEMPLATE.format(
+            exp_id=exp_id,
+            worktree_path=str(worktree_path),
+            parent_id=parent_id,
+            brief=brief.strip(),
+            budget=budget,
+            protocol_path=str(subagent_skill_path()),
+        )
     return EXECUTE_USER_PROMPT_TEMPLATE.format(
         exp_id=exp_id,
         worktree_path=str(worktree_path),
@@ -310,7 +350,13 @@ class ExplorerSpawnError(RuntimeError):
 def _require_dispatch_host(root: Path) -> str:
     """Resolve and validate the current dispatch host. Raises
     DispatchNotSupportedError if the workspace's host doesn't support
-    fork-cache. Callers translate this to user-facing guidance."""
+    fork-cache. Callers translate this to user-facing guidance.
+
+    Pool mode is supported: lineage forking (see ``dispatch_child``) means
+    we never read ``node["worktree"]`` for the parent, so slot reuse
+    doesn't expose stale filesystem state. Children fork from the parent
+    experiment's own session_id, which is workspace-independent.
+    """
     host = get_host(root)
     if host is None:
         raise DispatchNotSupportedError(
@@ -358,9 +404,12 @@ def ensure_explorer(
     skill_h = subagent_skill_hash()
     ctx_h = hash_text(explore_context or "")
 
+    # Fast path: cache hit outside any lock. Optimize's first round may
+    # fan out N background dispatches with the same parent; once one has
+    # warmed, the rest should hit cache without contending on the lock.
     record = load_explorer_record(root, parent_id) if not refresh else None
     if record is not None:
-        valid, reason = explorer_is_valid(
+        valid, _reason = explorer_is_valid(
             record,
             parent_commit=parent_commit_value,
             skill_hash=skill_h,
@@ -369,30 +418,48 @@ def ensure_explorer(
         )
         if valid:
             return record
-        # Fall through to rebuild; reason is logged by the CLI layer.
 
-    # Rebuild via the host handler.
-    from .hosts import HOST_HANDLERS  # local import to avoid cycle
-    handler = HOST_HANDLERS.get(host)
-    if handler is None:
-        raise DispatchNotSupportedError(
-            f"no host handler registered for host={host}. "
-            "This is a bug — DISPATCH_HOSTS and HOST_HANDLERS drifted."
-        )
-    try:
-        new_record = handler.spawn_explorer(
-            root,
-            parent_id=parent_id,
-            parent_worktree=parent_worktree,
-            parent_commit=parent_commit_value,
-            explore_context=explore_context,
-        )
-    except Exception as exc:
-        raise ExplorerSpawnError(str(exc)) from exc
-
+    # Slow path: serialize warming for this parent. The lock is per-parent
+    # so different parents can warm concurrently. Inside the lock we
+    # re-check the cache -- another caller may have just published while
+    # we were blocked acquiring.
     explorers_dir(root).mkdir(parents=True, exist_ok=True)
-    atomic_write_json(explorer_record_path(root, parent_id), new_record)
-    return new_record
+    lock_path = explorers_dir(root) / f"{parent_id}.warmlock"
+    with advisory_lock(lock_path):
+        if not refresh:
+            record = load_explorer_record(root, parent_id)
+            if record is not None:
+                valid, _reason = explorer_is_valid(
+                    record,
+                    parent_commit=parent_commit_value,
+                    skill_hash=skill_h,
+                    explore_context_hash=ctx_h,
+                    current_host=host,
+                )
+                if valid:
+                    return record
+
+        from .hosts import HOST_HANDLERS  # local import to avoid cycle
+
+        handler = HOST_HANDLERS.get(host)
+        if handler is None:
+            raise DispatchNotSupportedError(
+                f"no host handler registered for host={host}. "
+                "This is a bug — DISPATCH_HOSTS and HOST_HANDLERS drifted."
+            )
+        try:
+            new_record = handler.spawn_explorer(
+                root,
+                parent_id=parent_id,
+                parent_worktree=parent_worktree,
+                parent_commit=parent_commit_value,
+                explore_context=explore_context,
+            )
+        except Exception as exc:
+            raise ExplorerSpawnError(str(exc)) from exc
+
+        atomic_write_json(explorer_record_path(root, parent_id), new_record)
+        return new_record
 
 
 def _resolve_parent_commit(root: Path, parent_worktree: Path) -> str:
@@ -415,22 +482,50 @@ def dispatch_child(
     background: bool = False,
     job_dir_factory=None,
 ) -> dict[str, Any]:
-    """Allocate one new experiment under ``parent_id``, ensure the
-    explorer is warm, then spawn a fork via the host handler.
+    """Allocate one new experiment under ``parent_id``, then spawn a fork
+    via the host handler.
 
-    Returns a dict with at minimum ``exp_id``, plus the host handler's
-    output (background pid + log paths, or foreground exit_code + usage).
+    The session the child forks from is chosen by lineage:
 
-    ``job_dir_factory(exp_id) -> Path`` lets the CLI pick its own
-    ``forks/<job_id>/`` layout. Defaults to ``<active-run>/forks/<exp_id>/``.
+    * **Lineage fork (preferred).** If the parent experiment has its own
+      session_id (a previous dispatched experiment that committed),
+      fork directly from that session. The child inherits the parent's
+      reads / edits / benchmark output, gets prefix-cache reuse on the
+      shared transcript, and operates on its own freshly-allocated
+      workspace. No separate explorer warming required.
+
+    * **Explorer warming (fallback).** When the parent has no session_id
+      (the synthetic root, manually-recorded experiments via `evo done`,
+      or experiments whose attempt didn't go through dispatch), fall
+      back to today's explorer-warming flow: ensure the explorer for
+      this parent exists, then fork children from it.
+
+    Lineage forking is what makes dispatch work in pool mode: we never
+    read ``node["worktree"]`` for the parent (which may have been re-leased
+    to another experiment), only its session_id (which lives at the
+    Anthropic API and is workspace-independent).
     """
     host = _require_dispatch_host(root)
-    record = ensure_explorer(
-        root,
-        parent_id=parent_id,
-        explore_context=explore_context,
-        refresh=refresh_explorer,
-    )
+
+    parent = _read_parent_lineage(root, parent_id)
+    is_lineage = bool(parent and parent.get("session_id") and parent.get("session_runtime") == HOST_NAME_CLAUDE_CODE)
+    if is_lineage:
+        record = {
+            "parent_id": parent_id,
+            "session_id": parent["session_id"],
+            "host": HOST_NAME_CLAUDE_CODE,
+            "worktree_commit": parent.get("commit", ""),
+            "skill_hash": subagent_skill_hash(),
+            "explore_context_hash": hash_text(explore_context or ""),
+            "lineage": True,
+        }
+    else:
+        record = ensure_explorer(
+            root,
+            parent_id=parent_id,
+            explore_context=explore_context,
+            refresh=refresh_explorer,
+        )
 
     node = allocate_experiment(root, parent_id=parent_id, hypothesis=brief)
     exp_id = node["id"]
@@ -453,6 +548,7 @@ def dispatch_child(
         budget=budget,
         job_dir=job_dir,
         background=background,
+        lineage=is_lineage,
     )
 
     return {
@@ -461,5 +557,18 @@ def dispatch_child(
         "worktree": str(worktree_path),
         "job_dir": str(job_dir),
         "explorer_session_id": record["session_id"],
+        "lineage": is_lineage,
         **spawn_result,
     }
+
+
+HOST_NAME_CLAUDE_CODE = "claude-code"
+
+
+def _read_parent_lineage(root: Path, parent_id: str) -> dict[str, Any] | None:
+    """Read parent's lineage-relevant fields from the graph. Returns None
+    for the synthetic root or unknown parents."""
+    if parent_id == "root":
+        return None
+    graph = load_graph(root)
+    return graph["nodes"].get(parent_id)
