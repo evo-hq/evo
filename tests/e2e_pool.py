@@ -457,6 +457,254 @@ def test_cross_slot_commit_fetch(workdir: Path) -> None:
         _shutdown_dashboard(main)
 
 
+def test_tracked_only_excludes_ungitignored_warm_state(workdir: Path) -> None:
+    """The whole point of the alpha.2 fix. Pool slot has an untracked file that
+    the user forgot to .gitignore. Under tracked-only commit strategy, the
+    experiment commit must NOT include it -- otherwise sibling slots fail to
+    check out the commit because their own untracked copies conflict.
+
+    Also verifies the sibling slot can fetch+checkout the commit with its
+    OWN un-gitignored untracked file at the same path -- this is the bug
+    repro turned regression test.
+    """
+    main, slot1, slot2 = _build_pool_setup(workdir)
+
+    # Drop a junk file in each slot that is NOT in .gitignore. Mirrors the
+    # "user forgot to gitignore Engine/Plugins/ThirdParty/.../lib" footgun.
+    (slot1 / "stray-binary.bin").write_bytes(b"\x00" * 16)
+    (slot2 / "stray-binary.bin").write_bytes(b"\x00" * 16)
+
+    _evo(
+        ["init", "--target", "agent/solve.py",
+         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
+         "--metric", "max", "--host", "claude-code",
+         "--backend", "pool",
+         "--workspaces", f"{slot1},{slot2}"],
+        cwd=main,
+    )
+    try:
+        # Sanity-check the default landed.
+        config = json.loads(
+            (main / ".evo" / "run_0000" / "config.json").read_text(encoding="utf-8")
+        )
+        assert config["commit_strategy"] == "tracked-only", config
+
+        _evo(["new", "--parent", "root", "-m", "tracked edit"], cwd=main)
+
+        # Find the leased slot via workspace status (slot whose lease points
+        # at exp_0000). Then make a tracked-file edit so the commit isn't a
+        # no-op.
+        status = json.loads(
+            _evo(["workspace", "status", "--json"], cwd=main).stdout
+        )
+        leased_slot = next(
+            Path(s["path"]) for s in status["slots"]
+            if s.get("leased_by") and s["leased_by"].get("exp_id") == "exp_0000"
+        )
+        sibling_slot = slot2 if leased_slot == slot1 else slot1
+        (leased_slot / "agent" / "solve.py").write_text(
+            'def solve(t):\n    return t["a"] + t["b"]  # tracked edit\n',
+            encoding="utf-8",
+        )
+
+        # First run errors closed because the stray binary is untracked +
+        # non-gitignored, and the ack flag is missing.
+        result = _evo(["run", "exp_0000"], cwd=main, check=False)
+        assert result.returncode != 0, result.stdout
+        assert "stray-binary.bin" in result.stderr, result.stderr
+        assert "--i-staged-new-files yes" in result.stderr, result.stderr
+
+        # Re-run with the ack -- agent affirms it intends the binary to stay
+        # untracked. Run should produce a real commit (tracked edit landed).
+        out_run = _evo(
+            ["run", "exp_0000", "--i-staged-new-files", "yes"], cwd=main
+        ).stdout
+        assert "COMMITTED exp_0000" in out_run, out_run
+
+        # Stray binary must NOT be in the commit.
+        graph = json.loads(
+            (main / ".evo" / "run_0000" / "graph.json").read_text(encoding="utf-8")
+        )
+        node = graph["nodes"]["exp_0000"]
+        commit_sha = node["commit"]
+        assert commit_sha
+        committed_paths = _run(
+            ["git", "show", "--name-only", "--pretty=", commit_sha],
+            cwd=leased_slot,
+        ).stdout.splitlines()
+        assert "stray-binary.bin" not in committed_paths, committed_paths
+        assert "agent/solve.py" in committed_paths, committed_paths
+
+        # Stray binary still exists on disk in the slot, untracked.
+        assert (leased_slot / "stray-binary.bin").exists()
+        ls_files = _run(
+            ["git", "ls-files", "--error-unmatch", "stray-binary.bin"],
+            cwd=leased_slot, check=False,
+        )
+        assert ls_files.returncode != 0, "stray-binary.bin was committed"
+
+        # Bug repro: sibling slot fetches the commit and checks it out
+        # WITHOUT erroring, despite having its own untracked copy of the
+        # same path. Under alpha.1 (`git add -A`), this was the failure mode.
+        _run(["git", "fetch", str(leased_slot), commit_sha], sibling_slot)
+        checkout = _run(
+            ["git", "checkout", "--detach", commit_sha], sibling_slot, check=False
+        )
+        assert checkout.returncode == 0, (
+            f"sibling checkout failed: {checkout.stderr}"
+        )
+        # Sibling's own stray binary still on disk afterwards.
+        assert (sibling_slot / "stray-binary.bin").exists()
+    finally:
+        _shutdown_dashboard(main)
+
+
+def test_tracked_only_run_errors_without_ack_when_untracked_exists(workdir: Path) -> None:
+    """Pre-flight check fails closed when commit_strategy=tracked-only and
+    the worktree has untracked, non-gitignored files. Node state must not
+    be mutated -- failed status would obscure the user-error nature."""
+    main, slot1, slot2 = _build_pool_setup(workdir)
+    (slot1 / "leftover.tmp").write_text("oops", encoding="utf-8")
+    (slot2 / "leftover.tmp").write_text("oops", encoding="utf-8")
+
+    _evo(
+        ["init", "--target", "agent/solve.py",
+         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
+         "--metric", "max", "--host", "claude-code",
+         "--backend", "pool",
+         "--workspaces", f"{slot1},{slot2}"],
+        cwd=main,
+    )
+    try:
+        _evo(["new", "--parent", "root", "-m", "to fail preflight"], cwd=main)
+        result = _evo(["run", "exp_0000"], cwd=main, check=False)
+        assert result.returncode != 0
+        assert "leftover.tmp" in result.stderr
+        assert "tracked-only" in result.stderr
+
+        # Wrong value is also rejected, with a specific hint.
+        bad = _evo(
+            ["run", "exp_0000", "--i-staged-new-files", "true"], cwd=main, check=False
+        )
+        assert bad.returncode != 0
+        assert "'yes'" in bad.stderr, bad.stderr
+
+        # The node remains runnable -- pre-flight didn't transition it to
+        # failed/active.
+        graph = json.loads(
+            (main / ".evo" / "run_0000" / "graph.json").read_text(encoding="utf-8")
+        )
+        node = graph["nodes"]["exp_0000"]
+        assert node["status"] in ("pending", None, "active"), node
+        # current_attempt should not have been bumped (the run never started).
+        assert int(node.get("current_attempt", 0)) == 0, node
+    finally:
+        _shutdown_dashboard(main)
+
+
+def test_tracked_only_no_untracked_no_ack_needed(workdir: Path) -> None:
+    """Pre-flight should not require the ack flag when the worktree has no
+    untracked, non-gitignored files. Common case (only modified existing
+    tracked files) must stay friction-free."""
+    main, slot1, slot2 = _build_pool_setup(workdir)
+    # No stray files; .build-cache-stamp is gitignored so it doesn't count.
+    _evo(
+        ["init", "--target", "agent/solve.py",
+         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
+         "--metric", "max", "--host", "claude-code",
+         "--backend", "pool",
+         "--workspaces", f"{slot1},{slot2}"],
+        cwd=main,
+    )
+    try:
+        _evo(["new", "--parent", "root", "-m", "no-stray-files"], cwd=main)
+        out = _evo(["run", "exp_0000"], cwd=main).stdout
+        # Either COMMITTED or EVALUATED is fine; the assertion is "did not
+        # error on missing ack flag".
+        assert "exp_0000" in out
+    finally:
+        _shutdown_dashboard(main)
+
+
+def test_init_commit_strategy_override(workdir: Path) -> None:
+    """`--commit-strategy` flag overrides the per-backend default in both
+    directions. Pool can opt into 'all'; worktree can opt into 'tracked-only'."""
+    main, slot1, slot2 = _build_pool_setup(workdir)
+
+    # Pool with explicit --commit-strategy all.
+    _evo(
+        ["init", "--target", "agent/solve.py",
+         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
+         "--metric", "max", "--host", "claude-code",
+         "--backend", "pool",
+         "--workspaces", f"{slot1},{slot2}",
+         "--commit-strategy", "all"],
+        cwd=main,
+    )
+    try:
+        config = json.loads(
+            (main / ".evo" / "run_0000" / "config.json").read_text(encoding="utf-8")
+        )
+        assert config["commit_strategy"] == "all", config
+    finally:
+        _shutdown_dashboard(main)
+
+    # Fresh worktree-mode repo with --commit-strategy tracked-only.
+    bare = workdir / "bare2.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
+    wt_main = workdir / "wt-main"
+    subprocess.run(["git", "clone", "-q", str(bare), str(wt_main)], check=True)
+    _run(["git", "config", "user.email", "t@t"], wt_main)
+    _run(["git", "config", "user.name", "t"], wt_main)
+    (wt_main / "agent").mkdir()
+    (wt_main / "agent" / "solve.py").write_text(
+        'def solve(t):\n    return t["a"] + t["b"]\n', encoding="utf-8"
+    )
+    (wt_main / "benchmark.py").write_text(_BENCHMARK_SOURCE, encoding="utf-8")
+    _run(["git", "add", "."], wt_main)
+    _run(["git", "commit", "-qm", "baseline"], wt_main)
+    _run(["git", "push", "-q", "origin", "main"], wt_main)
+    (wt_main / ".git" / "info" / "exclude").write_text(".evo/\n", encoding="utf-8")
+
+    _evo(
+        ["init", "--target", "agent/solve.py",
+         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
+         "--metric", "max", "--host", "claude-code",
+         "--commit-strategy", "tracked-only"],
+        cwd=wt_main,
+    )
+    try:
+        config_wt = json.loads(
+            (wt_main / ".evo" / "run_0000" / "config.json").read_text(encoding="utf-8")
+        )
+        assert config_wt["commit_strategy"] == "tracked-only", config_wt
+        assert config_wt["execution_backend"] == "worktree", config_wt
+    finally:
+        _shutdown_dashboard(wt_main)
+
+
+def test_workspace_status_surfaces_commit_strategy(workdir: Path) -> None:
+    """`evo workspace status --json` includes commit_strategy at top level."""
+    main, slot1, slot2 = _build_pool_setup(workdir)
+    _evo(
+        ["init", "--target", "agent/solve.py",
+         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
+         "--metric", "max", "--host", "claude-code",
+         "--backend", "pool",
+         "--workspaces", f"{slot1},{slot2}"],
+        cwd=main,
+    )
+    try:
+        out = _evo(["workspace", "status", "--json"], cwd=main).stdout
+        payload = json.loads(out)
+        assert payload["commit_strategy"] == "tracked-only", payload
+        # Plain (non-JSON) output should print commit_strategy too.
+        plain = _evo(["workspace", "status"], cwd=main).stdout
+        assert "commit_strategy: tracked-only" in plain, plain
+    finally:
+        _shutdown_dashboard(main)
+
+
 def main() -> None:
     workdir = Path(tempfile.mkdtemp(prefix="evo-pool-test-"))
     try:
@@ -471,6 +719,11 @@ def main() -> None:
             test_dispatch_accepted_in_pool_mode_config,
             test_reset_wipes_run_dir_keeps_slots,
             test_orphaned_lease_reconciled_on_next_allocate,
+            test_tracked_only_excludes_ungitignored_warm_state,
+            test_tracked_only_run_errors_without_ack_when_untracked_exists,
+            test_tracked_only_no_untracked_no_ack_needed,
+            test_init_commit_strategy_override,
+            test_workspace_status_surfaces_commit_strategy,
         ):
             sub = workdir / fn.__name__
             sub.mkdir()

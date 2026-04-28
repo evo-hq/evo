@@ -932,6 +932,47 @@ def test_dispatch_orchestrator_step01_codex(root: Path) -> None:
     print(f"  PASS test_dispatch_orchestrator_step01_codex (host={final_host}, dispatch not used)")
 
 
+def test_worktree_mode_commit_strategy_unchanged(root: Path) -> None:
+    """Regression: alpha.2 must not alter worktree-mode behavior. Default
+    commit_strategy is 'all', `--i-staged-new-files yes` is a silent no-op,
+    untracked non-gitignored files in the worktree get committed."""
+    evo(
+        ["init", "--target", "agent.py",
+         "--benchmark", "python eval.py --agent {target}",
+         "--metric", "max", "--host", "generic"],
+        cwd=root,
+    )
+    config = json.loads(
+        (root / ".evo" / "run_0000" / "config.json").read_text(encoding="utf-8")
+    )
+    assert config["commit_strategy"] == "all", config
+    assert config["execution_backend"] == "worktree", config
+
+    evo(["new", "--parent", "root", "-m", "baseline"], cwd=root)
+    out_baseline = evo(["run", "exp_0000"], cwd=root)
+    assert "COMMITTED exp_0000" in out_baseline.stdout
+
+    evo(["new", "--parent", "exp_0000", "-m", "edit and stray"], cwd=root)
+    wt = root / ".evo" / "run_0000" / "worktrees" / "exp_0001"
+    write(wt / "agent.py", 'STATE = "GOOD"\n')
+    # An untracked, non-gitignored file in the worktree. In worktree mode
+    # this should be committed (`git add -A`) without requiring any ack.
+    write(wt / "scratch.txt", "scratch\n")
+    out = evo(
+        ["run", "exp_0001", "--i-staged-new-files", "yes"], cwd=root
+    )
+    assert "COMMITTED exp_0001" in out.stdout, out.stdout
+
+    graph = load_graph(root)
+    commit_sha = graph["nodes"]["exp_0001"]["commit"]
+    assert commit_sha
+    committed = run(
+        ["git", "show", "--name-only", "--pretty=", commit_sha], cwd=root
+    ).stdout.splitlines()
+    assert "scratch.txt" in committed, committed
+    assert "agent.py" in committed, committed
+
+
 def main() -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="evo-e2e-"))
     try:
@@ -990,6 +1031,12 @@ def main() -> None:
             test_sdk_gate_does_not_overwrite_benchmark_traces(sdk_gate_trace_repo)
         finally:
             _shutdown_dashboard(sdk_gate_trace_repo)
+
+        worktree_strategy_repo = temp_root / "worktree-strategy-repo"
+        worktree_strategy_repo.mkdir()
+        init_repo(worktree_strategy_repo)
+        setup_max_repo(worktree_strategy_repo)
+        test_worktree_mode_commit_strategy_unchanged(worktree_strategy_repo)
 
         # Live dispatch tests — gated by EVO_LIVE_TEST_CLAUDE=1.
         # Real claude -p / codex exec subprocesses, real LLM cost.
