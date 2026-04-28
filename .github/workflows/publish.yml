@@ -104,7 +104,17 @@ jobs:
         working-directory: sdk/node
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish
+        run: |
+          # Pre-release semver (e.g. 0.4.0-alpha.1, 0.4.0-rc.1) ships under
+          # the `alpha` dist-tag. Without this, `npm publish` would update
+          # `latest`, and existing stable users running `npm install
+          # @evo-hq/evo-agent` would silently get the pre-release.
+          VERSION=$(node -p "require('./package.json').version")
+          if echo "$VERSION" | grep -q '-'; then
+            npm publish --tag alpha
+          else
+            npm publish
+          fi
 
   publish-cli:
     if: |
