@@ -1127,8 +1127,19 @@ def _record_done_result(root: Path, args: argparse.Namespace) -> int:
     if node.get("status") not in (None, "pending", "active", "evaluated", "failed"):
         print(f"ERROR: {args.exp_id} has status '{node['status']}' -- cannot record again", file=sys.stderr)
         return 1
+    # `evo done` is the manual recording path; it mirrors `evo run`'s
+    # attempt-scoped artifact layout so that `evo traces` and the dashboard
+    # surface manually-recorded traces the same way as locally-run ones.
+    attempt_n = int(node.get("current_attempt", 0)) + 1
+
+    def _bump_attempt(current_node: dict, _graph: dict) -> None:
+        current_node["current_attempt"] = attempt_n
+
+    update_node(root, args.exp_id, _bump_attempt)
+    a_dir = attempt_dir(root, args.exp_id, attempt_n)
+    a_dir.mkdir(parents=True, exist_ok=True)
     if args.traces:
-        traces_dir = experiments_dir_for(root, args.exp_id) / "traces"
+        traces_dir = attempt_traces_dir(root, args.exp_id, attempt_n)
         traces_dir.mkdir(parents=True, exist_ok=True)
         source = Path(args.traces)
         if source.is_dir():

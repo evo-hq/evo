@@ -220,9 +220,29 @@ def build_scratchpad(root: Path) -> str:
     else:
         lines.append("- No infrastructure events yet.")
 
-    # Notes
+    # Notes -- aggregate per-node notes (from `evo set --note`) plus the
+    # legacy notes.md (left writable for `core.append_note` callers; the
+    # current shipping flow writes per-node).
     lines.extend(["", "## Notes"])
-    lines.append(_truncate(notes, limit=1200) if notes.strip() else "No notes yet.")
+    per_node_notes: list[str] = []
+    for node in graph["nodes"].values():
+        if node.get("id") == "root":
+            continue
+        for entry in node.get("notes", []):
+            ts = entry.get("timestamp", "")
+            text = entry.get("text", "").strip()
+            if not text:
+                continue
+            per_node_notes.append(f"- [{ts} {node['id']}] {text}")
+    aggregated_parts: list[str] = []
+    if per_node_notes:
+        aggregated_parts.append("\n".join(per_node_notes[-12:]))
+    if notes.strip():
+        aggregated_parts.append(_truncate(notes, limit=1200))
+    if aggregated_parts:
+        lines.extend(aggregated_parts)
+    else:
+        lines.append("No notes yet.")
     lines.append("")
     return "\n".join(lines)
 

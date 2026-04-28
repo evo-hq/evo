@@ -437,6 +437,13 @@ def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str
         nodes = graph["nodes"]
         if parent_id not in nodes:
             raise KeyError(f"Unknown parent experiment: {parent_id}")
+        parent = nodes[parent_id]
+        if parent.get("status") == "pruned":
+            raise RuntimeError(
+                f"Cannot allocate child of pruned parent {parent_id}. "
+                f"Pruning marks a branch as unpromising; branch elsewhere "
+                f"or re-status the parent if you want to continue here."
+            )
         next_id = graph.get("next_id", 0)
         exp_id = f"exp_{next_id:04d}"
         graph["next_id"] = next_id + 1
@@ -444,7 +451,6 @@ def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str
         meta = _load_meta(root)
         run_id = meta.get("active", "run")
         branch = f"evo/{run_id}/{exp_id}"
-        parent = nodes[parent_id]
         start_point = current_branch(root) if parent_id == "root" else parent["branch"]
         if not start_point:
             raise RuntimeError(f"Parent {parent_id} does not have a branch to fork from")

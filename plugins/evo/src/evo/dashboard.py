@@ -8,6 +8,8 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from .core import (
     _load_meta,
     _save_meta,
+    attempt_dir,
+    attempt_traces_dir,
     best_committed_score,
     evo_dir,
     experiments_dir_for,
@@ -102,26 +104,60 @@ def create_app(root: Path | None = None) -> Flask:
     def node(exp_id: str):
         return jsonify(load_graph(_root())["nodes"][exp_id])
 
+    def _latest_attempt_n(root: Path, exp_id: str) -> int | None:
+        """Return the highest attempt number on disk for an experiment, or
+        None if no attempt directory exists yet. Traces and logs are
+        attempt-scoped (`attempts/NNN/...`), so the dashboard always reads
+        the most recent attempt."""
+        exp_root = experiments_dir_for(root, exp_id) / "attempts"
+        if not exp_root.exists():
+            return None
+        candidates = sorted(
+            (int(p.name) for p in exp_root.iterdir() if p.is_dir() and p.name.isdigit()),
+            reverse=True,
+        )
+        return candidates[0] if candidates else None
+
     @app.get("/api/node/<exp_id>/traces")
     def node_traces(exp_id: str):
-        traces_dir = experiments_dir_for(_root(), exp_id) / "traces"
-        payload = {}
-        if traces_dir.exists():
-            for path in sorted(traces_dir.glob("*.json")):
-                payload[path.name] = json.loads(path.read_text(encoding="utf-8"))
+        attempt = _latest_attempt_n(_root(), exp_id)
+        payload: dict[str, dict] = {}
+        if attempt is not None:
+            traces_dir = attempt_traces_dir(_root(), exp_id, attempt)
+            if traces_dir.exists():
+                for path in sorted(traces_dir.glob("*.json")):
+                    payload[path.name] = json.loads(path.read_text(encoding="utf-8"))
         return jsonify(payload)
 
     @app.get("/api/node/<exp_id>/traces/<task_id>")
     def node_task_trace(exp_id: str, task_id: str):
-        trace_path = experiments_dir_for(_root(), exp_id) / "traces" / f"task_{task_id}.json"
+        attempt = _latest_attempt_n(_root(), exp_id)
+        if attempt is None:
+            return Response(json.dumps(None), status=404, mimetype="application/json")
+        trace_path = attempt_traces_dir(_root(), exp_id, attempt) / f"task_{task_id}.json"
+        if not trace_path.exists():
+            return Response(json.dumps(None), status=404, mimetype="application/json")
         return jsonify(json.loads(trace_path.read_text(encoding="utf-8")))
 
-    @app.get("/api/node/<exp_id>/log/<filename>")
+    @app.get("/api/node/<exp_id>/log/<path:filename>")
     def node_log(exp_id: str, filename: str):
-        path = experiments_dir_for(_root(), exp_id) / filename
-        if not path.exists():
+        # Resolve under experiments/<id>/. `path:` accepts forward-slashes
+        # so callers can request `attempts/001/benchmark.log` directly.
+        # Path traversal is constrained by anchoring under the experiment dir.
+        exp_root = experiments_dir_for(_root(), exp_id).resolve()
+        target = (exp_root / filename).resolve()
+        try:
+            target.relative_to(exp_root)
+        except ValueError:
+            return Response("", status=400, mimetype="text/plain")
+        # Auto-redirect bare names (e.g. "benchmark.log") to the latest attempt.
+        if not target.exists() and "/" not in filename:
+            attempt = _latest_attempt_n(_root(), exp_id)
+            if attempt is not None:
+                target = attempt_dir(_root(), exp_id, attempt) / filename
+        if not target.exists():
             return Response("", mimetype="text/plain")
-        return Response(path.read_text(encoding="utf-8"), mimetype="text/plain")
+        return Response(target.read_text(encoding="utf-8"), mimetype="text/plain")
 
     @app.get("/api/active")
     def active():
