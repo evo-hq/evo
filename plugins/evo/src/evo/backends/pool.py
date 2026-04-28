@@ -37,23 +37,29 @@ class PoolBackend:
     def allocate(self, ctx: AllocateCtx) -> AllocateResult:
         """Lease a free slot, validate it, branch in place, return the path.
 
-        Steps:
-        1. Lock pool_state.json. Find a slot with leased_by == null. Stale
-           leases (recorded PID dead but lease still set) are NOT auto-
-           reclaimed -- the user runs `evo workspace release <id>` after
-           confirming the slot is in a usable state.
-        2. Validate: path exists, git working tree of the same repo, no
-           uncommitted tracked changes, parent_commit reachable.
-        3. Mark `leased_by = {exp_id, pid, leased_at}`. Release lock.
-        4. `git checkout -B <branch> <parent_commit>` (no `git clean`).
-        5. On checkout failure, atomically clear the lease (only if it still
-           matches our exp_id+pid) and re-raise.
+        Lock hold time is minimized: the pool_state.json file lock is held
+        only long enough to reconcile orphaned leases, find an idle slot,
+        and mark `leased_by`. Validation (`git diff` in the slot) and parent
+        commit fetching (`git fetch --all`, sibling-slot fetches) run
+        outside the lock -- they can take seconds-to-minutes on large
+        repos and the advisory lock would otherwise time out concurrent
+        pool operations (`evo workspace status`, sibling `evo new` calls,
+        lease release on commit).
+
+        On any post-claim failure (validation, fetch, checkout), the lease
+        is released atomically only if it still matches our {exp_id, pid}.
         """
         slot_path = self._claim_slot(ctx)
         try:
+            self._validate_slot_basics(slot_path, self._slot_id_for(ctx.root, slot_path))
+            self._ensure_parent_commit(
+                slot_path,
+                ctx.parent_commit,
+                self._slot_id_for(ctx.root, slot_path),
+                self._all_slot_paths(ctx.root),
+            )
             self._checkout_in_slot(slot_path, ctx.branch, ctx.parent_commit)
         except Exception:
-            # Roll back the lease we just took, if it still matches us.
             self._release_if_matches(ctx.root, ctx.exp_id, os.getpid())
             raise
         head = subprocess.run(
@@ -79,18 +85,35 @@ class PoolBackend:
                     slot["leased_by"] = None
                     slot["last_branch"] = ctx.node.get("branch") or slot.get("last_branch")
 
-    def gc(self, ctx: DiscardCtx) -> None:
-        """No-op. Pool slots are user-owned; gc never touches them."""
+    def gc(self, ctx: DiscardCtx) -> bool:
+        """No-op. Pool slots are user-owned; gc never touches them. Returns
+        False so the CLI doesn't report pool nodes as freed by gc."""
+        return False
 
     def reset_all(self, root: Path) -> None:
-        """Release every lease. Slot directories untouched."""
+        """Release every lease, then wipe the run's controller-side state.
+
+        Slot directories are user-owned and never touched. But `.evo/run_NNNN/`
+        (graph.json, config, experiments, forks, pool_state.json) is evo's
+        own and gets removed -- mirroring WorktreeBackend.reset_all so that
+        `evo status` after `evo reset` correctly reports "workspace not
+        initialized" instead of returning stale run state.
+        """
+        import shutil
+
+        from ..core import workspace_path
+
         with state_io.locked_state(root) as state:
             for slot in state["slots"]:
                 slot["leased_by"] = None
+        shutil.rmtree(workspace_path(root), ignore_errors=True)
 
     # --- internals ---------------------------------------------------------
 
     def _claim_slot(self, ctx: AllocateCtx) -> Path:
+        """Reconcile + find + claim under the lock; nothing slow here.
+        Validation and git fetching happen in the caller, outside the lock.
+        """
         with state_io.locked_state(ctx.root) as state:
             self._reconcile_orphaned_leases(ctx.root, state)
             free_slot = next(
@@ -109,15 +132,29 @@ class PoolBackend:
                     f"Wait for an experiment to complete, or run "
                     f"`evo workspace status` to inspect."
                 )
-            slot_path = Path(free_slot["path"])
-            self._validate_slot_basics(slot_path, free_slot["id"])
-            self._ensure_parent_commit(slot_path, ctx.parent_commit, free_slot["id"], state["slots"])
             free_slot["leased_by"] = {
                 "exp_id": ctx.exp_id,
                 "pid": os.getpid(),
                 "leased_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             }
-            return slot_path
+            return Path(free_slot["path"])
+
+    @staticmethod
+    def _slot_id_for(root: Path, slot_path: Path) -> int:
+        """Map a slot path back to its id by reading the (no-lock) state."""
+        state = state_io.read_state(root)
+        for slot in state["slots"]:
+            if Path(slot["path"]) == slot_path:
+                return int(slot["id"])
+        return -1
+
+    @staticmethod
+    def _all_slot_paths(root: Path) -> list[dict]:
+        """Snapshot of slots (paths + ids) for sibling-fetch fallback. No
+        lock -- the snapshot is informational; if a sibling state changes
+        between snapshot and fetch, the fetch just falls through harmlessly.
+        """
+        return state_io.read_state(root)["slots"]
 
     @staticmethod
     def _validate_slot_basics(slot: Path, slot_id: int) -> None:

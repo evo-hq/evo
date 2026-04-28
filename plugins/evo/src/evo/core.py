@@ -504,11 +504,16 @@ def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str
         return node
 
 
-def remove_worktree_only(root: Path, node: dict[str, Any]) -> None:
-    """Remove the worktree directory only (no branch deletion). Used by `evo gc`."""
+def remove_worktree_only(root: Path, node: dict[str, Any]) -> bool:
+    """Remove the worktree directory only (no branch deletion). Used by `evo gc`.
+
+    Returns True if the backend actually freed disk-side state, False if it
+    was a no-op (pool mode -- slot directories are user-owned). Callers use
+    this to avoid reporting freed-resource counts that don't match reality.
+    """
     from .backends import DiscardCtx, load_backend
 
-    load_backend(root).gc(DiscardCtx(root=root, node=node))
+    return load_backend(root).gc(DiscardCtx(root=root, node=node))
 
 
 def delete_discarded_experiment(root: Path, node: dict[str, Any]) -> None:
