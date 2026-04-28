@@ -1158,8 +1158,12 @@ def cmd_gc(args: argparse.Namespace) -> int:
         if any(child.get("status") == "active" for child in children):
             continue
         worktree = Path(node["worktree"])
-        if worktree.exists():
-            remove_worktree_only(root, node)
+        if not worktree.exists():
+            continue
+        # Only report nodes whose backend actually freed something. In pool
+        # mode the slot directory always exists (user-owned) and gc is a
+        # no-op, so reporting the node as 'removed' would be misleading.
+        if remove_worktree_only(root, node):
             removed.append(node["id"])
     print(json.dumps({"removed": removed}, indent=2))
     return 0

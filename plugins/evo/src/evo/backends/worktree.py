@@ -75,9 +75,11 @@ class WorktreeBackend:
     def release_lease(self, ctx: DiscardCtx) -> None:
         """No-op. Worktree mode has no lease state."""
 
-    def gc(self, ctx: DiscardCtx) -> None:
-        """gc cleanup: remove worktree directory only (today's `cmd_gc` behavior)."""
+    def gc(self, ctx: DiscardCtx) -> bool:
+        """Remove worktree directory only (today's `cmd_gc` behavior).
+        Returns True so the CLI reports this node as freed."""
         self._remove_worktree_only(ctx.root, ctx.node)
+        return True
 
     def reset_all(self, root: Path) -> None:
         """Wipe all worktrees and branches for the active run."""
