@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -275,10 +274,15 @@ def init_workspace(
     metric: str,
     gate: str | None,
     host: str | None = None,
+    execution_backend: str = "worktree",
+    workspaces: list[str] | None = None,
 ) -> str:
     run_id = _allocate_run(root)
     ensure_workspace_dirs(root)
     config = default_config(root, target, benchmark, metric, gate)
+    config["execution_backend"] = execution_backend
+    if execution_backend == "pool":
+        config["execution_backend_config"] = {"slots": list(workspaces or [])}
     atomic_write_json(config_path(root), config)
     atomic_write_json(graph_path(root), default_graph())
     atomic_write_json(annotations_path(root), {"annotations": []})
@@ -291,6 +295,9 @@ def init_workspace(
         atomic_write_text(scratchpad_path(root), "# Scratchpad\n\n")
     if host is not None:
         set_host(root, host)
+    if execution_backend == "pool":
+        from .backends import pool_state
+        pool_state.init_state(root, list(workspaces or []))
     return run_id
 
 
@@ -411,6 +418,13 @@ def append_note(root: Path, content: str) -> None:
 
 
 def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str, Any]:
+    """Allocate a new experiment node and its workspace.
+
+    Graph mutation (ID generation, parent linking, status init) stays here;
+    workspace creation is delegated to the configured backend.
+    """
+    from .backends import AllocateCtx, load_backend
+
     gpath = graph_path(root)
     with advisory_lock(lock_file_for(gpath)):
         graph = load_json(gpath, default_graph())
@@ -424,35 +438,45 @@ def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str
         meta = _load_meta(root)
         run_id = meta.get("active", "run")
         branch = f"evo/{run_id}/{exp_id}"
-        worktree = worktrees_path(root) / exp_id
         parent = nodes[parent_id]
         start_point = current_branch(root) if parent_id == "root" else parent["branch"]
         if not start_point:
             raise RuntimeError(f"Parent {parent_id} does not have a branch to fork from")
 
-        # A freshly allocated experiment ID should be collision-free. If a stale
-        # branch or prunable worktree exists for that ID, clean it up here so a
-        # partial prior run does not block new allocation.
-        if worktree.exists():
-            subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root, check=False)
-            shutil.rmtree(worktree, ignore_errors=True)
-        subprocess.run(["git", "worktree", "prune"], cwd=root, check=False)
-        if git_branch_exists(root, branch):
-            subprocess.run(["git", "branch", "-D", branch], cwd=root, check=False)
+        # parent_commit is the canonical frozen reference for backends that
+        # need a commit hash (PoolBackend's `git checkout -B <branch> <hash>`).
+        # For non-root parents we trust what was recorded when the parent was
+        # committed -- in pool mode the parent's branch lives in a slot, not
+        # in the main repo, so a rev-parse against `start_point` from cwd=root
+        # would fail. Root children fall back to rev-parsing the main repo's
+        # current branch.
+        if parent_id == "root":
+            parent_commit = subprocess.run(
+                ["git", "rev-parse", start_point],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        else:
+            parent_commit = parent.get("commit")
+            if not parent_commit:
+                raise RuntimeError(
+                    f"Parent {parent_id} has no recorded commit; cannot allocate child"
+                )
 
-        subprocess.run(
-            ["git", "worktree", "add", "-b", branch, str(worktree), start_point],
-            cwd=root,
-            check=True,
+        backend = load_backend(root)
+        result = backend.allocate(
+            AllocateCtx(
+                root=root,
+                exp_id=exp_id,
+                parent_node=parent if parent_id != "root" else None,
+                parent_commit=parent_commit,
+                parent_ref=start_point,
+                branch=branch,
+                hypothesis=hypothesis,
+            )
         )
-
-        # Propagate project.md into the worktree so it's accessible even
-        # though it's not committed to git.
-        project_src = project_path(root)
-        if project_src.exists():
-            worktree_evo = worktree / WORKSPACE_NAME
-            worktree_evo.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(project_src), str(worktree_evo / PROJECT_FILE))
 
         node = {
             "id": exp_id,
@@ -464,9 +488,9 @@ def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str
             "updated_at": utc_now(),
             "eval_epoch": load_config(root).get("current_eval_epoch", 1),
             "score": None,
-            "branch": branch,
-            "worktree": str(worktree),
-            "commit": current_commit(worktree),
+            "branch": result.branch,
+            "worktree": str(result.worktree),
+            "commit": result.commit,
             "pruned_reason": None,
             "benchmark_result": None,
             "gate_result": None,
@@ -481,45 +505,24 @@ def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str
 
 
 def remove_worktree_only(root: Path, node: dict[str, Any]) -> None:
-    worktree = Path(node["worktree"])
-    if worktree.exists():
-        subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root, check=False)
-    if worktree.exists():
-        shutil.rmtree(worktree, ignore_errors=True)
-    subprocess.run(["git", "worktree", "prune"], cwd=root, check=False)
+    """Remove the worktree directory only (no branch deletion). Used by `evo gc`."""
+    from .backends import DiscardCtx, load_backend
+
+    load_backend(root).gc(DiscardCtx(root=root, node=node))
 
 
 def delete_discarded_experiment(root: Path, node: dict[str, Any]) -> None:
-    remove_worktree_only(root, node)
-    branch = node["branch"]
-    subprocess.run(["git", "branch", "-D", branch], cwd=root, check=False)
+    """Full cleanup: remove worktree and delete branch. Used by `evo discard`."""
+    from .backends import DiscardCtx, load_backend
+
+    load_backend(root).discard(DiscardCtx(root=root, node=node))
 
 
 def reset_runtime_state(root: Path) -> None:
     """Remove the active run's worktrees, branches, and directory."""
-    meta = _load_meta(root)
-    run_id = meta.get("active")
-    workspace = workspace_path(root)
-    wt_dir = worktrees_path(root)
-    subprocess.run(["git", "worktree", "prune"], cwd=root, check=False)
-    if wt_dir.exists():
-        for path in sorted(wt_dir.iterdir()):
-            if path.is_dir():
-                subprocess.run(["git", "worktree", "remove", "--force", str(path)], cwd=root, check=False)
-                shutil.rmtree(path, ignore_errors=True)
-    subprocess.run(["git", "worktree", "prune"], cwd=root, check=False)
-    # Only delete branches for this run (evo/<run_id>/*)
-    branch_prefix = f"refs/heads/evo/{run_id}/" if run_id else "refs/heads/evo/"
-    result = subprocess.run(
-        ["git", "for-each-ref", "--format=%(refname:short)", branch_prefix],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    for branch in [line.strip() for line in result.stdout.splitlines() if line.strip()]:
-        subprocess.run(["git", "branch", "-D", branch], cwd=root, check=False)
-    shutil.rmtree(workspace, ignore_errors=True)
+    from .backends import load_backend
+
+    load_backend(root).reset_all(root)
 
 
 def git_status_porcelain(path: Path) -> str:
