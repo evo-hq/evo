@@ -11,7 +11,9 @@ You give it a codebase. It discovers metrics to optimize, sets up the evaluation
 Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) -- where an LLM runs training experiments autonomously to beat its own best score. Autoresearch is a pure hill climb: try something, keep or revert, repeat on a single branch. Evo adds structure on top of that idea:
 
 - **Tree search over greedy hill climb.** Multiple directions can fork from any committed node, so exploration doesn't collapse to one path.
+- **Configurable frontier selection.** Argmax, top-K, ε-greedy, softmax, or [GEPA](https://arxiv.org/abs/2507.19457)-inspired Pareto-per-task. Configure from the dashboard to suit your task.
 - **Parallel semi-autonomous agents.** Spawn multiple subagents and run them simultaneously, each in its own git worktree. Each subagent reads traces, formulates hypotheses, and can run multiple iterations within its branch.
+- **Cross-cutting scans.** Each round the orchestrator fans out [RLM](https://arxiv.org/abs/2512.24601)-inspired scan sub-agents to read trace batches in parallel and report compound failure patterns -- gate-failure intersections, semantic root causes -- before writing the next round of briefs.
 - **Shared state.** Failure traces, annotations, and discarded hypotheses are accessible to every agent before it decides what to try next.
 - **Gating.** Regression tests or safety checks can be wired up as a gate. Experiments that don't pass get discarded.
 - **Observability.** A dashboard to monitor your experiments.
@@ -105,7 +107,7 @@ Under the hood, each experiment gets its own git worktree branching from its par
 
 ```
 Orchestrator (main agent)
-  - reads state, identifies failure patterns cross-cutting the tree
+  - reads state, fans out scan sub-agents to find cross-cutting failure patterns
   - writes a structured brief per subagent (objective, parent, boundaries, pointer traces)
   - collects results, prunes dead branches, adjusts strategy for next round
 
