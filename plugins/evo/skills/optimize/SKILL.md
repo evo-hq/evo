@@ -26,6 +26,8 @@ These defaults can be overridden via arguments: `/optimize [subagents=N] [budget
 
 Pool mode defaults to `commit_strategy=tracked-only` so warm state in slots stays out of experiment commits. Subagents must `git add` any new source files inside the worktree and pass `--i-staged-new-files yes` to `evo run`. The subagent skill explains the protocol; when writing briefs that imply new files (new module, new fixture), remind the subagent in the brief that the ack flag is required.
 
+**Remote-backend mode (`--backend remote`).** When the workspace is in remote mode, each experiment's worktree lives inside a separate remote container. Subagents use `evo bash / read / write / edit / glob / grep --exp-id <id>` instead of native `Bash`/`Read`/`Write`/`Edit` tools. **Every brief you write to a subagent in remote mode MUST start by stating the exp_id explicitly:** `"Your experiment id is exp_NNNN. Pass --exp-id exp_NNNN on every evo command."` This is the only thing that prevents one subagent from accidentally operating on another's container. evo CLI hard-errors if `--exp-id` is missing, but it can't catch a subagent that confidently passes the wrong id; the brief is the discipline.
+
 ## Prerequisites
 
 - Workspace must be initialized (`evo status` should succeed)

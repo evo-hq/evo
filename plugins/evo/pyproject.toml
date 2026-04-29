@@ -1,6 +1,6 @@
 [project]
 name = "evo-hq-cli"
-version = "0.4.0-alpha.2"
+version = "0.4.0-alpha.3"
 description = "Structured experiment-driven code optimization with git worktrees, traces, and a local dashboard. CLI for the evo plugin (Claude Code, Codex)."
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -22,6 +22,9 @@ modal = [
     "modal>=0.62.0",
 ]
 all = ["modal>=0.62.0"]
+mcp = [
+    "mcp>=1.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/evo-hq/evo"

@@ -320,6 +320,100 @@ def test_remote_backend_full_lifecycle(workdir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_workspace_ops_cli_subcommands(workdir: Path) -> None:
+    """`evo bash | read | write | edit | glob | grep --exp-id <id>` against
+    a real sandbox-agent on localhost. Validates the host-agnostic
+    discipline: every workspace op requires --exp-id, errors loudly without."""
+    repo = _build_repo(workdir)
+
+    with localhost_sandbox_agent() as (base_url, token):
+        sandbox_workspace = workdir / "in-sandbox-workspace"
+        sandbox_bundles = workdir / "in-sandbox-bundles"
+        provider_config = (
+            f"base_url={base_url},bearer_token={token},"
+            f"workspace_root={sandbox_workspace},"
+            f"bundle_dir={sandbox_bundles}"
+        )
+        _evo(
+            ["init", "--target", "agent.py",
+             "--benchmark", "python eval.py",
+             "--metric", "max", "--host", "generic",
+             "--backend", "remote", "--provider", "manual",
+             "--provider-config", provider_config],
+            cwd=repo,
+        )
+        try:
+            _evo(["new", "--parent", "root", "-m", "ws-ops test"], cwd=repo)
+
+            workspace_path = str(sandbox_workspace)
+
+            # 1. evo bash --exp-id (in-sandbox shell exec)
+            out = _evo(["bash", "--exp-id", "exp_0000",
+                        f"echo from-sandbox-{42}"], cwd=repo)
+            assert "from-sandbox-42" in out.stdout, out.stdout
+
+            # 2. evo write --exp-id (with --content)
+            _evo(["write", "--exp-id", "exp_0000",
+                  f"{workspace_path}/agent.py",
+                  "--content", "STATE = 'GOOD via evo write'\n"], cwd=repo)
+
+            # 3. evo read --exp-id (verify the write)
+            out = _evo(["read", "--exp-id", "exp_0000",
+                        f"{workspace_path}/agent.py"], cwd=repo)
+            assert "GOOD via evo write" in out.stdout, out.stdout
+
+            # 4. evo edit --exp-id (search-replace)
+            _evo(["edit", "--exp-id", "exp_0000",
+                  f"{workspace_path}/agent.py",
+                  "--old", "GOOD via evo write",
+                  "--new", "EVEN BETTER"], cwd=repo)
+            out = _evo(["read", "--exp-id", "exp_0000",
+                        f"{workspace_path}/agent.py"], cwd=repo)
+            assert "EVEN BETTER" in out.stdout, out.stdout
+
+            # 5. evo glob --exp-id
+            out = _evo(["glob", "--exp-id", "exp_0000",
+                        "*.py", "--path", workspace_path], cwd=repo)
+            assert "agent.py" in out.stdout, out.stdout
+            assert "eval.py" in out.stdout, out.stdout
+
+            # 6. evo grep --exp-id
+            out = _evo(["grep", "--exp-id", "exp_0000",
+                        "EVEN BETTER", "--path", workspace_path], cwd=repo)
+            assert "EVEN BETTER" in out.stdout, out.stdout
+
+            # 7. Strict --exp-id discipline: missing flag = error
+            missing = _evo(["bash", "echo nope"], cwd=repo, check=False)
+            assert missing.returncode != 0, missing.stdout
+            assert "exp-id" in (missing.stderr + missing.stdout).lower(), missing.stderr
+
+            # 8. Wrong/unleased exp_id = error (typo protection)
+            wrong = _evo(["bash", "--exp-id", "exp_9999", "echo wrong"],
+                         cwd=repo, check=False)
+            assert wrong.returncode != 0, wrong.stdout
+
+            # 9. Edit with non-unique --old refuses without --replace-all
+            # First write a file with two occurrences of the same string.
+            _evo(["write", "--exp-id", "exp_0000",
+                  f"{workspace_path}/dup.txt",
+                  "--content", "X\nX\n"], cwd=repo)
+            dup_attempt = _evo(["edit", "--exp-id", "exp_0000",
+                                f"{workspace_path}/dup.txt",
+                                "--old", "X", "--new", "Y"],
+                               cwd=repo, check=False)
+            assert dup_attempt.returncode != 0, dup_attempt.stdout
+            assert "not unique" in dup_attempt.stderr.lower(), dup_attempt.stderr
+            # And with --replace-all, both get replaced.
+            _evo(["edit", "--exp-id", "exp_0000",
+                  f"{workspace_path}/dup.txt",
+                  "--old", "X", "--new", "Y", "--replace-all"], cwd=repo)
+            out = _evo(["read", "--exp-id", "exp_0000",
+                        f"{workspace_path}/dup.txt"], cwd=repo)
+            assert out.stdout == "Y\nY\n", repr(out.stdout)
+        finally:
+            _shutdown_dashboard(repo)
+
+
 def main() -> None:
     workdir = Path(tempfile.mkdtemp(prefix="evo-remote-integ-"))
     try:
@@ -340,6 +434,7 @@ def main() -> None:
             test_process_run_executes_command,
             test_git_bundle_round_trip,
             test_remote_backend_full_lifecycle,
+            test_workspace_ops_cli_subcommands,
         ):
             sub = workdir / fn.__name__
             sub.mkdir()

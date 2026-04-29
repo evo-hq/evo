@@ -99,7 +99,24 @@ Parse the JSON output to get the experiment ID and worktree path.
 
 ### 3. Edit the target
 
-Read and edit the target file(s) using the **full worktree path** from `evo new` output (the `"target"` and `"worktree"` fields). Example: `"target": "/path/to/.evo/run_0000/worktrees/exp_0005/src/agent.py"` -- read and edit that exact path.
+How you edit depends on the workspace's execution backend (the `"worktree"` path returned by `evo new` tells you which case you're in):
+
+**Local backends (`--backend worktree` or `--backend pool`):** the worktree is a real path on this machine. Use your native `Read`/`Write`/`Edit` tools on that path directly. Example: `"target": "/path/to/.evo/run_0000/worktrees/exp_0005/src/agent.py"` -- read and edit that exact path.
+
+**Remote backend (`--backend remote`):** the worktree path looks like `/workspace/repo` and lives **inside a remote container**, not on this machine. Your native `Read`/`Write`/`Edit` would write to a non-existent local path and silently fail. Use `evo` workspace-op subcommands instead:
+
+```bash
+evo bash --exp-id <YOUR_EXP_ID> "<command>"
+evo read --exp-id <YOUR_EXP_ID> <path>
+evo write --exp-id <YOUR_EXP_ID> <path> --content "<text>"   # or pipe via stdin
+evo edit --exp-id <YOUR_EXP_ID> <path> --old "<s>" --new "<s>" [--replace-all]
+evo glob --exp-id <YOUR_EXP_ID> "<pattern>" [--path <dir>]
+evo grep --exp-id <YOUR_EXP_ID> "<pattern>" [--path <dir>]
+```
+
+`--exp-id` is **required** on every workspace op. The orchestrator gives you your exp_id at the start of the brief; pass it on every call. The check is strict by design: multiple subagents run concurrent experiments in different containers, and a silent default would let one subagent operate on another's container by accident.
+
+For multi-line edits, `evo edit --json-stdin` reads `{"old":...,"new":...,"replace_all":bool}` from stdin (avoids shell escaping for newlines / quotes).
 
 You may edit anything within the target scope. Do NOT modify benchmark, gate, or framework code.
 

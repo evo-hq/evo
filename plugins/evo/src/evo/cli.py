@@ -909,6 +909,186 @@ def _write_attempt_outcome(
     atomic_write_json(attempt_outcome_path(root, exp_id, attempt), payload)
 
 
+def _resolve_workspace_exp_id(args: argparse.Namespace) -> str:
+    """Return --exp-id, or error.
+
+    Strict by design: no env-var fallback, no implicit "active" experiment.
+    Multiple subagents run concurrent experiments; a silent default
+    would let one subagent operate on another's container by accident.
+    The orchestrator tells each subagent its exp_id via brief prose;
+    the subagent passes --exp-id on every call.
+    """
+    explicit = getattr(args, "exp_id", None)
+    if explicit:
+        return explicit
+    raise RuntimeError(
+        "evo workspace op: --exp-id is required. Every workspace-touching "
+        "command must name its experiment explicitly. The orchestrator "
+        "tells each subagent which experiment is theirs; pass that as "
+        "--exp-id <id> on every evo bash/read/write/edit/glob/grep call."
+    )
+
+
+def _open_workspace_executor(args: argparse.Namespace):
+    """Resolve exp_id, load backend, return (root, node, executor_ctxmgr).
+
+    Caller uses `with executor_ctxmgr as executor:`. Hits the same code
+    path that cmd_run uses, so behavior is identical -- local subprocess
+    in worktree/pool mode, sandbox-agent HTTP in remote mode.
+    """
+    from .workspace_executor import workspace_executor_for
+    from .backends import load_backend
+
+    root = repo_root()
+    _require_workspace(root)
+    exp_id = _resolve_workspace_exp_id(args)
+    node = _read_node(root, exp_id)
+    backend = load_backend(root)
+    return root, node, workspace_executor_for(backend, root, node)
+
+
+def cmd_ws_bash(args: argparse.Namespace) -> int:
+    """Run a shell command in the experiment's workspace (local or remote)."""
+    _root, node, executor_ctxmgr = _open_workspace_executor(args)
+    cmd = ["sh", "-c", args.command]
+    cwd = args.cwd or node["worktree"]
+    timeout = args.timeout if args.timeout and args.timeout > 0 else None
+    with executor_ctxmgr as executor:
+        result = executor.run(cmd, cwd=cwd, env=None, timeout=timeout)
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+        if not result.stdout.endswith("\n"):
+            sys.stdout.write("\n")
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+        if not result.stderr.endswith("\n"):
+            sys.stderr.write("\n")
+    return result.exit_code if result.exit_code is not None else 124
+
+
+def cmd_ws_read(args: argparse.Namespace) -> int:
+    """Read a file from the experiment's workspace; write content to stdout."""
+    _root, _node, executor_ctxmgr = _open_workspace_executor(args)
+    with executor_ctxmgr as executor:
+        if not executor.file_exists(args.path):
+            print(f"ERROR: not found: {args.path}", file=sys.stderr)
+            return 1
+        sys.stdout.buffer.write(executor.read_bytes(args.path))
+    return 0
+
+
+def cmd_ws_write(args: argparse.Namespace) -> int:
+    """Write a file in the experiment's workspace; content from stdin or
+    --content flag (the latter for shell-friendly single-line writes)."""
+    _root, _node, executor_ctxmgr = _open_workspace_executor(args)
+    if args.content is not None:
+        content = args.content
+    else:
+        content = sys.stdin.read()
+    with executor_ctxmgr as executor:
+        executor.write_text(args.path, content)
+    return 0
+
+
+def cmd_ws_edit(args: argparse.Namespace) -> int:
+    """Search-replace in a file inside the experiment's workspace.
+
+    Supports two input modes:
+      - --old / --new flags (simple, single-line)
+      - --json-stdin: read {"old": ..., "new": ..., "replace_all": bool}
+        from stdin (multi-line content with proper escaping)
+    """
+    if args.json_stdin:
+        spec = json.loads(sys.stdin.read())
+        old = spec["old"]
+        new = spec["new"]
+        replace_all = bool(spec.get("replace_all", False))
+    else:
+        if args.old is None or args.new is None:
+            raise RuntimeError(
+                "evo edit: pass --old/--new flags, or --json-stdin with "
+                "{'old':..., 'new':..., 'replace_all':...} on stdin"
+            )
+        old = args.old
+        new = args.new
+        replace_all = bool(args.replace_all)
+
+    _root, _node, executor_ctxmgr = _open_workspace_executor(args)
+    with executor_ctxmgr as executor:
+        try:
+            content = executor.read_text(args.path)
+        except Exception as exc:
+            print(f"ERROR: could not read {args.path}: {exc}", file=sys.stderr)
+            return 1
+        if old not in content:
+            print(
+                f"ERROR: --old string not found in {args.path}; no edit applied",
+                file=sys.stderr,
+            )
+            return 1
+        if not replace_all and content.count(old) > 1:
+            print(
+                f"ERROR: --old string is not unique in {args.path} "
+                f"(found {content.count(old)} occurrences). "
+                f"Pass --replace-all to substitute all, or include more "
+                f"surrounding context to make the match unique.",
+                file=sys.stderr,
+            )
+            return 1
+        new_content = (
+            content.replace(old, new) if replace_all
+            else content.replace(old, new, 1)
+        )
+        executor.write_text(args.path, new_content)
+    return 0
+
+
+def cmd_ws_glob(args: argparse.Namespace) -> int:
+    """List filenames matching a pattern in the experiment's workspace.
+
+    Implementation is intentionally simple: shells out to `find ... -name
+    <pattern>` so semantics match agents' expectations. Pattern is a
+    standard glob (`*.py`, `**/*.md`, etc.).
+    """
+    _root, node, executor_ctxmgr = _open_workspace_executor(args)
+    base = args.path or node["worktree"]
+    with executor_ctxmgr as executor:
+        # `find -name <pat>` only matches the basename; for **/-style
+        # patterns we use `-path` instead.
+        flag = "-path" if "/" in args.pattern else "-name"
+        result = executor.run(
+            ["find", str(base), flag, args.pattern],
+            cwd=str(base),
+        )
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    if (result.exit_code or 0) != 0 and result.stderr:
+        sys.stderr.write(result.stderr)
+    return result.exit_code if result.exit_code is not None else 1
+
+
+def cmd_ws_grep(args: argparse.Namespace) -> int:
+    """Search file content with ripgrep in the experiment's workspace.
+
+    Falls back to `grep -r` if `rg` isn't on PATH inside the workspace.
+    """
+    _root, node, executor_ctxmgr = _open_workspace_executor(args)
+    base = args.path or node["worktree"]
+    with executor_ctxmgr as executor:
+        which = executor.run(["which", "rg"], cwd=str(base))
+        if (which.exit_code or 1) == 0 and which.stdout.strip():
+            cmd = ["rg", "--no-heading", "--line-number", args.pattern, str(base)]
+        else:
+            cmd = ["grep", "-rn", args.pattern, str(base)]
+        result = executor.run(cmd, cwd=str(base))
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    if (result.exit_code or 0) not in (0, 1) and result.stderr:
+        # rg/grep exit 1 when no matches; that's normal, not an error.
+        sys.stderr.write(result.stderr)
+    return result.exit_code if result.exit_code is not None else 2
+
+
 def _block_if_epoch_requires_baseline(root: Path, parent_id: str, no_compare: bool) -> None:
     if no_compare:
         return
@@ -1898,6 +2078,83 @@ def build_parser() -> argparse.ArgumentParser:
     done_p.add_argument("--traces")
     done_p.add_argument("--no-compare", action="store_true")
     done_p.set_defaults(func=cmd_done)
+
+    # ---- Workspace operations (route to local fs OR remote sandbox) ----
+    # All of these REQUIRE explicit experiment context. Resolution order:
+    #   1. --exp-id <id>
+    #   2. $EVO_EXPERIMENT_ID env var
+    #   3. error
+    # The orchestrator passes --exp-id (or sets the env var when spawning a
+    # subagent process) to scope each subagent to its own experiment.
+    _ws_help = (
+        "(workspace op) targets the experiment given by --exp-id or "
+        "$EVO_EXPERIMENT_ID. Routes to the local worktree in worktree/pool "
+        "mode, or to the leased remote sandbox in remote mode."
+    )
+
+    def _add_exp_id_arg(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--exp-id",
+            dest="exp_id",
+            required=True,
+            help="experiment id to operate on. Required: workspace ops never "
+                 "default to an 'active' experiment because subagents run "
+                 "concurrent experiments and a silent default would corrupt "
+                 "the wrong container.",
+        )
+
+    bash_p = sub.add_parser("bash", help=_ws_help)
+    _add_exp_id_arg(bash_p)
+    bash_p.add_argument("command", help="shell command to run (passed to `sh -c`)")
+    bash_p.add_argument("--cwd", default=None,
+                        help="cwd for the command; defaults to the experiment's "
+                             "worktree path (sandbox-internal in remote mode)")
+    bash_p.add_argument("--timeout", type=int, default=None,
+                        help="seconds; default unbounded (the sandbox-side "
+                             "timeout still applies in remote mode)")
+    bash_p.set_defaults(func=cmd_ws_bash)
+
+    read_p = sub.add_parser("read", help=_ws_help)
+    _add_exp_id_arg(read_p)
+    read_p.add_argument("path", help="absolute path inside the workspace")
+    read_p.set_defaults(func=cmd_ws_read)
+
+    write_p = sub.add_parser("write", help=_ws_help)
+    _add_exp_id_arg(write_p)
+    write_p.add_argument("path", help="absolute path inside the workspace")
+    write_p.add_argument("--content", default=None,
+                         help="content to write (single-line). If omitted, "
+                              "reads from stdin (any size, any encoding).")
+    write_p.set_defaults(func=cmd_ws_write)
+
+    edit_p = sub.add_parser("edit", help=_ws_help)
+    _add_exp_id_arg(edit_p)
+    edit_p.add_argument("path", help="absolute path inside the workspace")
+    edit_p.add_argument("--old", default=None, help="old string (must be unique unless --replace-all)")
+    edit_p.add_argument("--new", default=None, help="new string")
+    edit_p.add_argument("--replace-all", action="store_true",
+                        help="replace every occurrence of --old (default: refuse if not unique)")
+    edit_p.add_argument("--json-stdin", action="store_true",
+                        help='read {"old":...,"new":...,"replace_all":bool} '
+                             'from stdin instead of --old/--new flags. Use '
+                             'this when old/new contain multi-line content '
+                             'or characters that are awkward in shell escapes.')
+    edit_p.set_defaults(func=cmd_ws_edit)
+
+    glob_p = sub.add_parser("glob", help=_ws_help)
+    _add_exp_id_arg(glob_p)
+    glob_p.add_argument("pattern", help="glob pattern (e.g. '*.py' or '**/*.md')")
+    glob_p.add_argument("--path", default=None,
+                        help="search root (defaults to the experiment's worktree)")
+    glob_p.set_defaults(func=cmd_ws_glob)
+
+    grep_p = sub.add_parser("grep", help=_ws_help)
+    _add_exp_id_arg(grep_p)
+    grep_p.add_argument("pattern", help="search pattern (passed to ripgrep, "
+                                         "or grep -r as fallback)")
+    grep_p.add_argument("--path", default=None,
+                        help="search root (defaults to the experiment's worktree)")
+    grep_p.set_defaults(func=cmd_ws_grep)
 
     discard_p = sub.add_parser("discard")
     discard_p.add_argument("exp_id")

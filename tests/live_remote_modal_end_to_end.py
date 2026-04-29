@@ -225,10 +225,7 @@ def test_multi_experiment_tree_modal() -> None:
             _evo(["new", "--parent", parent, "-m", hyp], cwd=repo, timeout=300)
             print(f"    new (provision + ship parent commit): {time.monotonic() - t0:.1f}s")
 
-            # Verify a fresh sandbox got provisioned (not reused). After
-            # the previous experiment's commit, release_lease tore down
-            # that sandbox. The current `evo new` should have provisioned
-            # a new one with a different native_id.
+            # Verify a fresh sandbox got provisioned (not reused).
             from evo.backends import remote_state as _rs
             state = _rs.read_state(repo)
             assert len(state["sandboxes"]) == 1, state
@@ -236,17 +233,23 @@ def test_multi_experiment_tree_modal() -> None:
             assert sandbox["leased_by"]["exp_id"] == exp_id, sandbox
             print(f"    sandbox native_id: {sandbox['native_id']}")
 
-            # The child experiment edits agent.py via direct local write
-            # to the in-sandbox path. We can't go through MCP yet (commit
-            # 5/5), so for this test we use sandbox-agent's PUT /v1/fs/file
-            # to apply the edit. This is what the MCP layer will do.
-            # First, get the sandbox URL+token from remote_state.
-            from evo.sandbox_client import SandboxAgentClient
-            base_url = sandbox["base_url"]
-            token = sandbox["bearer_token"]
-            with SandboxAgentClient(base_url, bearer_token=token) as client:
-                client.fs_write(f"{sandbox['workspace_root']}/agent.py",
-                                agent_content.encode("utf-8"))
+            # The "subagent" edits agent.py via the production path:
+            # `evo write --exp-id <id>`. This is what a real agent would
+            # invoke through its Bash tool. Routes through
+            # WorkspaceExecutor -> sandbox-agent HTTP -> in-sandbox fs.
+            workspace = sandbox["workspace_root"]
+            t_edit = time.monotonic()
+            _evo(["write", "--exp-id", exp_id,
+                  f"{workspace}/agent.py", "--content", agent_content],
+                 cwd=repo, timeout=60)
+            print(f"    edit via `evo write --exp-id`: {time.monotonic() - t_edit:.1f}s")
+
+            # Verify the edit landed -- read it back via `evo read`.
+            verify = _evo(["read", "--exp-id", exp_id,
+                           f"{workspace}/agent.py"], cwd=repo, timeout=30)
+            assert verify.stdout == agent_content, (
+                f"read-back mismatch:\n  wrote:  {agent_content!r}\n  read:   {verify.stdout!r}"
+            )
 
             t0 = time.monotonic()
             run_out = _evo(["run", exp_id], cwd=repo, timeout=300)
@@ -402,16 +405,19 @@ def test_branched_tree_modal() -> None:
             _evo(["new", "--parent", parent, "-m", hyp], cwd=repo, timeout=300)
             t_new = time.monotonic() - t0
 
-            # Driver writes the experiment's edit to the in-sandbox worktree
-            # via sandbox-agent (this is what the MCP layer in commit 5/5
-            # will do for a real claude/codex agent).
+            # The "subagent" edits agent.py via the production path:
+            # `evo write --exp-id <id>`. Each subagent passes its own
+            # exp_id; evo CLI looks up which sandbox is leased to that
+            # exp_id and routes the write there. This validates the
+            # safety property: subagent for exp_NNNN can only touch
+            # the sandbox leased to exp_NNNN.
             state = _rs.read_state(repo)
             sandbox = next(s for s in state["sandboxes"]
                            if (s.get("leased_by") or {}).get("exp_id") == exp_id)
-            with SandboxAgentClient(sandbox["base_url"],
-                                    bearer_token=sandbox["bearer_token"]) as client:
-                client.fs_write(f"{sandbox['workspace_root']}/agent.py",
-                                agent_content.encode("utf-8"))
+            workspace = sandbox["workspace_root"]
+            _evo(["write", "--exp-id", exp_id,
+                  f"{workspace}/agent.py", "--content", agent_content],
+                 cwd=repo, timeout=60)
 
             t0 = time.monotonic()
             run_out = _evo(["run", exp_id], cwd=repo, timeout=300, check=False)
