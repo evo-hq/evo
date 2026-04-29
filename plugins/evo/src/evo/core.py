@@ -274,32 +274,17 @@ def init_workspace(
     metric: str,
     gate: str | None,
     host: str | None = None,
-    execution_backend: str = "worktree",
-    workspaces: list[str] | None = None,
     commit_strategy: str = "all",
-    remote_provider: str | None = None,
-    remote_provider_config: dict[str, Any] | None = None,
 ) -> str:
     if commit_strategy not in ("all", "tracked-only"):
         raise RuntimeError(
             f"commit_strategy must be 'all' or 'tracked-only', got {commit_strategy!r}"
         )
-    if execution_backend == "remote" and not remote_provider:
-        raise RuntimeError(
-            "--backend remote requires --provider <name> (e.g. --provider modal)"
-        )
     run_id = _allocate_run(root)
     ensure_workspace_dirs(root)
     config = default_config(root, target, benchmark, metric, gate)
-    config["execution_backend"] = execution_backend
+    config["execution_backend"] = "worktree"
     config["commit_strategy"] = commit_strategy
-    if execution_backend == "pool":
-        config["execution_backend_config"] = {"slots": list(workspaces or [])}
-    if execution_backend == "remote":
-        config["execution_backend_config"] = {
-            "provider": remote_provider,
-            "provider_config": dict(remote_provider_config or {}),
-        }
     atomic_write_json(config_path(root), config)
     atomic_write_json(graph_path(root), default_graph())
     atomic_write_json(annotations_path(root), {"annotations": []})
@@ -312,16 +297,6 @@ def init_workspace(
         atomic_write_text(scratchpad_path(root), "# Scratchpad\n\n")
     if host is not None:
         set_host(root, host)
-    if execution_backend == "pool":
-        from .backends import pool_state
-        pool_state.init_state(root, list(workspaces or []))
-    if execution_backend == "remote":
-        from .backends import remote_state
-        remote_state.init_state(
-            root,
-            provider=remote_provider,
-            provider_config=dict(remote_provider_config or {}),
-        )
     return run_id
 
 
@@ -441,13 +416,18 @@ def append_note(root: Path, content: str) -> None:
         atomic_write_text(path, existing)
 
 
-def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str, Any]:
+def allocate_experiment(
+    root: Path,
+    parent_id: str,
+    hypothesis: str,
+    backend_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Allocate a new experiment node and its workspace.
 
     Graph mutation (ID generation, parent linking, status init) stays here;
     workspace creation is delegated to the configured backend.
     """
-    from .backends import AllocateCtx, load_backend
+    from .backends import AllocateCtx, backend_spec_from_config, load_backend
 
     gpath = graph_path(root)
     with advisory_lock(lock_file_for(gpath)):
@@ -495,7 +475,18 @@ def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str
                     f"Parent {parent_id} has no recorded commit; cannot allocate child"
                 )
 
-        backend = load_backend(root)
+        workspace_config = load_config(root)
+        if backend_override is None:
+            backend_name, backend_config = backend_spec_from_config(workspace_config)
+        else:
+            backend_name = backend_override["name"]
+            backend_config = dict(backend_override.get("config") or {})
+
+        backend = load_backend(
+            root,
+            explicit_name=backend_name,
+            explicit_config=backend_config,
+        )
         result = backend.allocate(
             AllocateCtx(
                 root=root,
@@ -518,6 +509,8 @@ def allocate_experiment(root: Path, parent_id: str, hypothesis: str) -> dict[str
             "updated_at": utc_now(),
             "eval_epoch": load_config(root).get("current_eval_epoch", 1),
             "score": None,
+            "backend": backend_name,
+            "backend_config": backend_config,
             "branch": result.branch,
             "worktree": str(result.worktree),
             "commit": result.commit,
@@ -543,14 +536,14 @@ def remove_worktree_only(root: Path, node: dict[str, Any]) -> bool:
     """
     from .backends import DiscardCtx, load_backend
 
-    return load_backend(root).gc(DiscardCtx(root=root, node=node))
+    return load_backend(root, node=node).gc(DiscardCtx(root=root, node=node))
 
 
 def delete_discarded_experiment(root: Path, node: dict[str, Any]) -> None:
     """Full cleanup: remove worktree and delete branch. Used by `evo discard`."""
     from .backends import DiscardCtx, load_backend
 
-    load_backend(root).discard(DiscardCtx(root=root, node=node))
+    load_backend(root, node=node).discard(DiscardCtx(root=root, node=node))
 
 
 def reset_runtime_state(root: Path) -> None:

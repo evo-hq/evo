@@ -138,7 +138,12 @@ def _build_pool_workspace(root: Path, workdir: Path) -> tuple[Path, Path]:
             "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
             "--metric", "max",
             "--host", "claude-code",
-            "--backend", "pool",
+        ],
+        cwd=root,
+    )
+    _evo(
+        [
+            "config", "backend", "pool",
             "--workspaces", f"{slots[0]},{slots[1]}",
         ],
         cwd=root,

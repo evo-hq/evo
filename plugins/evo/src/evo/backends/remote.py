@@ -50,8 +50,16 @@ class RemoteSandboxBackend:
 
     name = "remote"
 
-    def __init__(self, provider: SandboxProvider) -> None:
+    def __init__(
+        self,
+        provider: SandboxProvider,
+        *,
+        provider_name: str | None = None,
+        provider_config: dict[str, Any] | None = None,
+    ) -> None:
         self.provider = provider
+        self.provider_name = provider_name or provider.name
+        self.provider_config = dict(provider_config or {})
         # Tokens live in memory only; never persisted to remote_state.json.
         # Keyed by sandbox `id` (the local index, not the provider native_id).
         self._tokens: dict[int, str] = {}
@@ -78,6 +86,7 @@ class RemoteSandboxBackend:
 
         # Step 1: reconcile orphaned leases. Same shape as
         # `pool._reconcile_orphaned_leases`; see pool.py:249-270.
+        self._ensure_state_file(ctx.root)
         self._reconcile_orphaned(ctx.root)
 
         # Step 2: under the state lock, find or create a free sandbox slot
@@ -260,6 +269,32 @@ class RemoteSandboxBackend:
                 "provisioned_at": None,
             })
             return slot_id, True, None
+
+    def _ensure_state_file(self, root: Path) -> None:
+        """Create or reconcile remote_state.json for this provider config."""
+        state_path = remote_state.remote_state_path(root)
+        if state_path.exists():
+            state = remote_state.read_state(root)
+            if (
+                state.get("provider") == self.provider_name
+                and (state.get("provider_config", {}) or {}) == self.provider_config
+            ):
+                return
+            leased = [
+                sandbox["leased_by"]["exp_id"]
+                for sandbox in state.get("sandboxes", [])
+                if sandbox.get("leased_by")
+            ]
+            if leased:
+                raise RuntimeError(
+                    "cannot switch remote provider config while remote "
+                    f"sandboxes are still leased: {', '.join(leased)}"
+                )
+        remote_state.init_state(
+            root,
+            provider=self.provider_name,
+            provider_config=self.provider_config,
+        )
 
     def _provision_sandbox(self, slot_id: int) -> SandboxHandle:
         """Call the provider to spin up a new container.

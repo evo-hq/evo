@@ -10,6 +10,7 @@ its constructor, and append a `(name, loader)` entry to `_LOADERS`.
 """
 from __future__ import annotations
 
+import importlib
 from typing import Any, Callable
 
 from ..protocol import RemoteBackendUnavailable, SandboxProvider
@@ -58,12 +59,46 @@ def load_provider(name: str, config: dict[str, Any]) -> SandboxProvider:
     dependencies are missing. The error message is the user-facing surface
     -- keep it actionable.
     """
-    if name not in _LOADERS:
-        known = ", ".join(sorted(_LOADERS)) or "(none)"
+    if name in _LOADERS:
+        return _LOADERS[name](config)
+    if ":" in name or "." in name:
+        return _load_dotted_path_provider(name, config)
+    known = ", ".join(sorted(_LOADERS)) or "(none)"
+    raise RemoteBackendUnavailable(
+        f"Unknown remote provider {name!r}. Known providers: {known}."
+    )
+
+
+def _load_dotted_path_provider(name: str, config: dict[str, Any]) -> SandboxProvider:
+    if ":" in name:
+        module_name, _, attr_name = name.partition(":")
+    else:
+        module_name, _, attr_name = name.rpartition(".")
+    if not module_name or not attr_name:
         raise RemoteBackendUnavailable(
-            f"Unknown remote provider {name!r}. Known providers: {known}."
+            f"Provider import path {name!r} must look like "
+            "`pkg.module:ClassName` or `pkg.module.ClassName`."
         )
-    return _LOADERS[name](config)
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise RemoteBackendUnavailable(
+            f"Could not import provider module {module_name!r} from {name!r}: {exc}"
+        ) from exc
+    try:
+        provider_cls = getattr(module, attr_name)
+    except AttributeError as exc:
+        raise RemoteBackendUnavailable(
+            f"Provider import path {name!r} resolved module {module_name!r} but "
+            f"has no attribute {attr_name!r}."
+        ) from exc
+    try:
+        provider = provider_cls(config)
+    except Exception as exc:
+        raise RemoteBackendUnavailable(
+            f"Provider {name!r} could not be constructed: {exc}"
+        ) from exc
+    return provider
 
 
 def known_providers() -> list[str]:

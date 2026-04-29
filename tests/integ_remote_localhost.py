@@ -115,6 +115,14 @@ def test_unknown_provider_raises_clear_error() -> None:
         assert "Unknown remote provider" in str(exc), str(exc)
 
 
+def test_dotted_path_provider_loads() -> None:
+    provider = load_provider(
+        "evo.backends.sandbox_providers.manual:ManualProvider",
+        {"base_url": "http://127.0.0.1:9999", "bearer_token": "t"},
+    )
+    assert isinstance(provider, ManualProvider), provider
+
+
 def test_manual_provider_requires_base_url() -> None:
     """No base_url configured + no env override -> error."""
     # Stash the env var if set so the test is hermetic.
@@ -249,31 +257,34 @@ def test_remote_backend_full_lifecycle(workdir: Path) -> None:
         _evo(
             ["init", "--target", "agent.py",
              "--benchmark", "python eval.py",
-             "--metric", "max", "--host", "generic",
-             "--backend", "remote", "--provider", "manual",
-             "--provider-config", provider_config],
+             "--metric", "max", "--host", "generic"],
             cwd=repo,
         )
         try:
             config_path = repo / ".evo" / "run_0000" / "config.json"
             cfg = json.loads(config_path.read_text(encoding="utf-8"))
-            assert cfg["execution_backend"] == "remote", cfg
-            assert cfg["execution_backend_config"]["provider"] == "manual", cfg
-            # commit_strategy defaults to tracked-only for remote (parallels pool)
-            assert cfg["commit_strategy"] == "tracked-only", cfg
+            assert cfg["execution_backend"] == "worktree", cfg
+            assert "execution_backend_config" not in cfg, cfg
+            assert cfg["commit_strategy"] == "all", cfg
 
             # `evo new` should drive RemoteSandboxBackend.allocate, which
-            # provisions (a no-op for manual; just returns the URL) and
-            # ships the parent commit + checks out the experiment branch.
+            # provisions (a no-op for manual; just returns the URL), ships
+            # the parent commit, and persists the node-level backend choice.
             new_result = _evo(
-                ["new", "--parent", "root", "-m", "remote test"],
+                ["new", "--parent", "root", "-m", "remote test",
+                 "--remote", "manual",
+                 "--provider-config", provider_config],
                 cwd=repo, check=False,
-                env={"EVO_FORCE_FRESH_BACKEND": "1"},
             )
             assert new_result.returncode == 0, (
                 f"evo new failed:\nSTDOUT: {new_result.stdout}\n"
                 f"STDERR: {new_result.stderr}"
             )
+
+            graph = json.loads((repo / ".evo" / "run_0000" / "graph.json").read_text(encoding="utf-8"))
+            node = graph["nodes"]["exp_0000"]
+            assert node["backend"] == "remote", node
+            assert node["backend_config"]["provider"] == "manual", node
 
             state = remote_state.read_state(repo)
             assert state["provider"] == "manual", state
@@ -337,13 +348,16 @@ def test_workspace_ops_cli_subcommands(workdir: Path) -> None:
         _evo(
             ["init", "--target", "agent.py",
              "--benchmark", "python eval.py",
-             "--metric", "max", "--host", "generic",
-             "--backend", "remote", "--provider", "manual",
-             "--provider-config", provider_config],
+             "--metric", "max", "--host", "generic"],
             cwd=repo,
         )
         try:
-            _evo(["new", "--parent", "root", "-m", "ws-ops test"], cwd=repo)
+            _evo(
+                ["new", "--parent", "root", "-m", "ws-ops test",
+                 "--remote", "manual",
+                 "--provider-config", provider_config],
+                cwd=repo,
+            )
 
             workspace_path = str(sandbox_workspace)
 
@@ -421,6 +435,7 @@ def main() -> None:
         for fn in (
             test_known_providers_lists_modal_and_manual,
             test_unknown_provider_raises_clear_error,
+            test_dotted_path_provider_loads,
             test_manual_provider_requires_base_url,
         ):
             print(f"--- {fn.__name__} ---")

@@ -93,25 +93,77 @@ else:
     print(out)
 """
 
+_POOL_BENCHMARK_CMD = "python3 {worktree}/benchmark.py --target {target}"
+
+
+def _init_evo_workspace(
+    repo: Path,
+    *,
+    commit_strategy: str | None = None,
+) -> None:
+    args = [
+        "init",
+        "--target", "agent/solve.py",
+        "--benchmark", _POOL_BENCHMARK_CMD,
+        "--metric", "max",
+        "--host", "claude-code",
+    ]
+    if commit_strategy:
+        args.extend(["--commit-strategy", commit_strategy])
+    _evo(args, cwd=repo)
+
+
+def _config_pool_backend(repo: Path, slot_paths: list[Path]) -> None:
+    _evo(
+        [
+            "config", "backend", "pool",
+            "--workspaces", ",".join(str(path) for path in slot_paths),
+        ],
+        cwd=repo,
+    )
+
+
+def _init_pool_workspace(
+    repo: Path,
+    slot_paths: list[Path],
+    *,
+    commit_strategy: str | None = None,
+) -> None:
+    _init_evo_workspace(repo, commit_strategy=commit_strategy)
+    _config_pool_backend(repo, slot_paths)
+
 
 def test_init_validates_pool_slots(workdir: Path) -> None:
-    """init rejects: --backend pool without --workspaces, --workspaces without
-    --backend pool, missing slot path, non-git slot path."""
+    """Alpha.4 flow: init no longer accepts backend flags; pool validation
+    moved to `evo config backend pool ...`."""
     main, slot1, slot2 = _build_pool_setup(workdir)
 
-    # --backend pool requires --workspaces
+    # Task 1: init no longer accepts backend flags.
     r = _evo(
         ["init", "--target", "agent/solve.py", "--benchmark", "true",
          "--metric", "max", "--host", "claude-code", "--backend", "pool"],
         cwd=main, check=False,
     )
     assert r.returncode != 0, r.stdout
+    assert "unrecognized arguments" in r.stderr, r.stderr
+
+    _evo(
+        ["init", "--target", "agent/solve.py", "--benchmark", "true",
+         "--metric", "max", "--host", "claude-code"],
+        cwd=main,
+    )
+
+    # backend=pool requires workspaces
+    r = _evo(
+        ["config", "backend", "pool"],
+        cwd=main, check=False,
+    )
+    assert r.returncode != 0, r.stdout
     assert "requires --workspaces" in r.stderr, r.stderr
 
-    # --workspaces without --backend pool
+    # --workspaces without backend=pool
     r = _evo(
-        ["init", "--target", "agent/solve.py", "--benchmark", "true",
-         "--metric", "max", "--host", "claude-code",
+        ["config", "backend", "worktree",
          "--workspaces", f"{slot1},{slot2}"],
         cwd=main, check=False,
     )
@@ -120,9 +172,7 @@ def test_init_validates_pool_slots(workdir: Path) -> None:
 
     # Missing slot path
     r = _evo(
-        ["init", "--target", "agent/solve.py", "--benchmark", "true",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
+        ["config", "backend", "pool",
          "--workspaces", f"{slot1},/no/such/path"],
         cwd=main, check=False,
     )
@@ -133,9 +183,7 @@ def test_init_validates_pool_slots(workdir: Path) -> None:
     not_git = workdir / "not-git"
     not_git.mkdir()
     r = _evo(
-        ["init", "--target", "agent/solve.py", "--benchmark", "true",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
+        ["config", "backend", "pool",
          "--workspaces", f"{slot1},{not_git}"],
         cwd=main, check=False,
     )
@@ -147,14 +195,7 @@ def test_pool_lease_release_and_exhaustion(workdir: Path) -> None:
     """Two slots, three `evo new` calls: third hits PoolExhausted. After
     `evo run` commits exp_0000, the slot returns to the free queue."""
     main, slot1, slot2 = _build_pool_setup(workdir)
-    _evo(
-        ["init", "--target", "agent/solve.py",
-         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
-         "--workspaces", f"{slot1},{slot2}"],
-        cwd=main,
-    )
+    _init_pool_workspace(main, [slot1, slot2])
     try:
         _evo(["new", "--parent", "root", "-m", "first"], cwd=main)
         _evo(["new", "--parent", "root", "-m", "second"], cwd=main)
@@ -182,14 +223,7 @@ def test_untracked_files_persist_across_experiments(workdir: Path) -> None:
     """Untracked files in slots survive across pool leases. The agent's edits
     on a failed experiment should NOT be lost on retry."""
     main, slot1, slot2 = _build_pool_setup(workdir)
-    _evo(
-        ["init", "--target", "agent/solve.py",
-         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
-         "--workspaces", f"{slot1},{slot2}"],
-        cwd=main,
-    )
+    _init_pool_workspace(main, [slot1, slot2])
     try:
         # Run two experiments to completion; verify both stamps survive in
         # both slots (slot reuse doesn't blow away untracked files).
@@ -214,14 +248,7 @@ def test_discard_releases_lease_keeps_branch(workdir: Path) -> None:
     """`evo discard` releases the slot and (default) keeps the experiment's
     branch in the slot for inspection. Slot directory untouched."""
     main, slot1, slot2 = _build_pool_setup(workdir)
-    _evo(
-        ["init", "--target", "agent/solve.py",
-         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
-         "--workspaces", f"{slot1},{slot2}"],
-        cwd=main,
-    )
+    _init_pool_workspace(main, [slot1, slot2])
     try:
         _evo(["new", "--parent", "root", "-m", "to be discarded"], cwd=main)
         # Snapshot which slot got leased.
@@ -256,14 +283,13 @@ def test_discard_releases_lease_keeps_branch(workdir: Path) -> None:
 
 
 def test_main_repo_rejected_as_slot(workdir: Path) -> None:
-    """init refuses if a slot path resolves to the main repo. Otherwise the
-    next `evo new` would `git checkout -B evo/...` against the user's working
-    branch -- silent data loss."""
+    """config backend refuses if a slot path resolves to the main repo.
+    Otherwise the next `evo new` would `git checkout -B evo/...` against
+    the user's working branch -- silent data loss."""
     main, slot1, _slot2 = _build_pool_setup(workdir)
+    _init_evo_workspace(main)
     r = _evo(
-        ["init", "--target", "agent/solve.py", "--benchmark", "true",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
+        ["config", "backend", "pool",
          "--workspaces", f"{slot1},{main}"],
         cwd=main, check=False,
     )
@@ -272,13 +298,12 @@ def test_main_repo_rejected_as_slot(workdir: Path) -> None:
 
 
 def test_duplicate_and_aliased_slots_rejected(workdir: Path) -> None:
-    """Same path twice and symlink aliases both rejected at init."""
+    """Same path twice and symlink aliases both rejected at config time."""
     main, slot1, slot2 = _build_pool_setup(workdir)
+    _init_evo_workspace(main)
     # Same path twice
     r = _evo(
-        ["init", "--target", "agent/solve.py", "--benchmark", "true",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
+        ["config", "backend", "pool",
          "--workspaces", f"{slot1},{slot1}"],
         cwd=main, check=False,
     )
@@ -289,9 +314,7 @@ def test_duplicate_and_aliased_slots_rejected(workdir: Path) -> None:
     alias = workdir / "ws-1-alias"
     alias.symlink_to(slot1)
     r = _evo(
-        ["init", "--target", "agent/solve.py", "--benchmark", "true",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
+        ["config", "backend", "pool",
          "--workspaces", f"{slot1},{alias}"],
         cwd=main, check=False,
     )
@@ -304,9 +327,7 @@ def test_duplicate_and_aliased_slots_rejected(workdir: Path) -> None:
     nested = slot1 / "nested-clone"
     subprocess.run(["git", "clone", "-q", str(bare), str(nested)], check=True)
     r = _evo(
-        ["init", "--target", "agent/solve.py", "--benchmark", "true",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
+        ["config", "backend", "pool",
          "--workspaces", f"{slot1},{nested}"],
         cwd=main, check=False,
     )
@@ -321,14 +342,7 @@ def test_dispatch_accepted_in_pool_mode_config(workdir: Path) -> None:
     spawning a real LLM. End-to-end Lineage is tested under
     EVO_LIVE_TEST_CLAUDE=1."""
     main, slot1, slot2 = _build_pool_setup(workdir)
-    _evo(
-        ["init", "--target", "agent/solve.py",
-         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
-         "--workspaces", f"{slot1},{slot2}"],
-        cwd=main,
-    )
+    _init_pool_workspace(main, [slot1, slot2])
     try:
         # `evo dispatch list` is host-validating but doesn't spawn Claude.
         # In pool mode it should succeed (no PoolMode rejection).
@@ -346,14 +360,7 @@ def test_reset_wipes_run_dir_keeps_slots(workdir: Path) -> None:
     untouched. After reset, `evo status` errors with 'workspace not
     initialized'."""
     main, slot1, slot2 = _build_pool_setup(workdir)
-    _evo(
-        ["init", "--target", "agent/solve.py",
-         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
-         "--workspaces", f"{slot1},{slot2}"],
-        cwd=main,
-    )
+    _init_pool_workspace(main, [slot1, slot2])
     try:
         run_dir = main / ".evo" / "run_0000"
         assert run_dir.exists()
@@ -384,14 +391,7 @@ def test_orphaned_lease_reconciled_on_next_allocate(workdir: Path) -> None:
     the next `evo new` should reconcile: see the lease points at a
     `committed` node in the graph and clear it under the lock."""
     main, slot1, slot2 = _build_pool_setup(workdir)
-    _evo(
-        ["init", "--target", "agent/solve.py",
-         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
-         "--workspaces", f"{slot1},{slot2}"],
-        cwd=main,
-    )
+    _init_pool_workspace(main, [slot1, slot2])
     try:
         # Normal commit path -- exp_0000 committed, slot released cleanly.
         _evo(["new", "--parent", "root", "-m", "first"], cwd=main)
@@ -432,14 +432,7 @@ def test_cross_slot_commit_fetch(workdir: Path) -> None:
     """Branching off a committed experiment forces a different slot to fetch
     the parent_commit from a sibling slot."""
     main, slot1, slot2 = _build_pool_setup(workdir)
-    _evo(
-        ["init", "--target", "agent/solve.py",
-         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
-         "--workspaces", f"{slot1},{slot2}"],
-        cwd=main,
-    )
+    _init_pool_workspace(main, [slot1, slot2])
     try:
         # exp_0000 -> slot 0 (or 1; whichever is first free)
         _evo(["new", "--parent", "root", "-m", "parent"], cwd=main)
@@ -453,6 +446,38 @@ def test_cross_slot_commit_fetch(workdir: Path) -> None:
         # Verify it actually ran.
         out_run = _evo(["run", "exp_0002"], cwd=main).stdout
         assert "COMMITTED exp_0002" in out_run, out_run
+    finally:
+        _shutdown_dashboard(main)
+
+
+def test_pool_override_works_from_worktree_default(workdir: Path) -> None:
+    """`evo new --backend pool ...` works even when the workspace default
+    backend remains worktree. `evo run` must use the node-persisted backend."""
+    main, slot1, slot2 = _build_pool_setup(workdir)
+    _init_evo_workspace(main)
+    try:
+        _evo(
+            [
+                "new",
+                "--parent", "root",
+                "-m", "pool override",
+                "--backend", "pool",
+                "--workspaces", f"{slot1},{slot2}",
+            ],
+            cwd=main,
+        )
+        graph = json.loads(
+            (main / ".evo" / "run_0000" / "graph.json").read_text(encoding="utf-8")
+        )
+        node = graph["nodes"]["exp_0000"]
+        assert node["backend"] == "pool", node
+        assert node["backend_config"]["slots"] == [str(slot1), str(slot2)], node
+
+        pool_state_path = main / ".evo" / "run_0000" / "pool_state.json"
+        assert pool_state_path.exists(), pool_state_path
+
+        out = _evo(["run", "exp_0000"], cwd=main).stdout
+        assert "COMMITTED exp_0000" in out, out
     finally:
         _shutdown_dashboard(main)
 
@@ -474,14 +499,7 @@ def test_tracked_only_excludes_ungitignored_warm_state(workdir: Path) -> None:
     (slot1 / "stray-binary.bin").write_bytes(b"\x00" * 16)
     (slot2 / "stray-binary.bin").write_bytes(b"\x00" * 16)
 
-    _evo(
-        ["init", "--target", "agent/solve.py",
-         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
-         "--workspaces", f"{slot1},{slot2}"],
-        cwd=main,
-    )
+    _init_pool_workspace(main, [slot1, slot2], commit_strategy="tracked-only")
     try:
         # Sanity-check the default landed.
         config = json.loads(
@@ -567,14 +585,7 @@ def test_tracked_only_run_errors_without_ack_when_untracked_exists(workdir: Path
     (slot1 / "leftover.tmp").write_text("oops", encoding="utf-8")
     (slot2 / "leftover.tmp").write_text("oops", encoding="utf-8")
 
-    _evo(
-        ["init", "--target", "agent/solve.py",
-         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
-         "--workspaces", f"{slot1},{slot2}"],
-        cwd=main,
-    )
+    _init_pool_workspace(main, [slot1, slot2], commit_strategy="tracked-only")
     try:
         _evo(["new", "--parent", "root", "-m", "to fail preflight"], cwd=main)
         result = _evo(["run", "exp_0000"], cwd=main, check=False)
@@ -608,14 +619,7 @@ def test_tracked_only_no_untracked_no_ack_needed(workdir: Path) -> None:
     tracked files) must stay friction-free."""
     main, slot1, slot2 = _build_pool_setup(workdir)
     # No stray files; .build-cache-stamp is gitignored so it doesn't count.
-    _evo(
-        ["init", "--target", "agent/solve.py",
-         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
-         "--workspaces", f"{slot1},{slot2}"],
-        cwd=main,
-    )
+    _init_pool_workspace(main, [slot1, slot2], commit_strategy="tracked-only")
     try:
         _evo(["new", "--parent", "root", "-m", "no-stray-files"], cwd=main)
         out = _evo(["run", "exp_0000"], cwd=main).stdout
@@ -627,20 +631,13 @@ def test_tracked_only_no_untracked_no_ack_needed(workdir: Path) -> None:
 
 
 def test_init_commit_strategy_override(workdir: Path) -> None:
-    """`--commit-strategy` flag overrides the per-backend default in both
-    directions. Pool can opt into 'all'; worktree can opt into 'tracked-only'."""
+    """`--commit-strategy` remains an init-time choice independent of how
+    the backend is configured later."""
     main, slot1, slot2 = _build_pool_setup(workdir)
 
-    # Pool with explicit --commit-strategy all.
-    _evo(
-        ["init", "--target", "agent/solve.py",
-         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
-         "--workspaces", f"{slot1},{slot2}",
-         "--commit-strategy", "all"],
-        cwd=main,
-    )
+    # Init with explicit --commit-strategy all, then switch the default
+    # backend to pool. commit_strategy should stay untouched.
+    _init_pool_workspace(main, [slot1, slot2], commit_strategy="all")
     try:
         config = json.loads(
             (main / ".evo" / "run_0000" / "config.json").read_text(encoding="utf-8")
@@ -686,14 +683,7 @@ def test_init_commit_strategy_override(workdir: Path) -> None:
 def test_workspace_status_surfaces_commit_strategy(workdir: Path) -> None:
     """`evo workspace status --json` includes commit_strategy at top level."""
     main, slot1, slot2 = _build_pool_setup(workdir)
-    _evo(
-        ["init", "--target", "agent/solve.py",
-         "--benchmark", f"python3 {{worktree}}/benchmark.py --target {{target}}",
-         "--metric", "max", "--host", "claude-code",
-         "--backend", "pool",
-         "--workspaces", f"{slot1},{slot2}"],
-        cwd=main,
-    )
+    _init_pool_workspace(main, [slot1, slot2], commit_strategy="tracked-only")
     try:
         out = _evo(["workspace", "status", "--json"], cwd=main).stdout
         payload = json.loads(out)
@@ -701,6 +691,25 @@ def test_workspace_status_surfaces_commit_strategy(workdir: Path) -> None:
         # Plain (non-JSON) output should print commit_strategy too.
         plain = _evo(["workspace", "status"], cwd=main).stdout
         assert "commit_strategy: tracked-only" in plain, plain
+    finally:
+        _shutdown_dashboard(main)
+
+
+def test_config_backend_blocks_inflight_old_backend(workdir: Path) -> None:
+    """Changing the workspace default backend must fail while an
+    experiment using the old default is still in flight."""
+    main, slot1, slot2 = _build_pool_setup(workdir)
+    _init_pool_workspace(main, [slot1, slot2])
+    try:
+        _evo(["new", "--parent", "root", "-m", "hold pool lease"], cwd=main)
+        blocked = _evo(["config", "backend", "worktree"], cwd=main, check=False)
+        assert blocked.returncode != 0, blocked.stdout
+        assert "old backend" in blocked.stderr, blocked.stderr
+        assert "exp_0000" in blocked.stderr, blocked.stderr
+
+        _evo(["discard", "exp_0000", "--reason", "release lease"], cwd=main)
+        out = _evo(["config", "backend", "worktree"], cwd=main).stdout
+        assert "backend set to worktree" in out, out
     finally:
         _shutdown_dashboard(main)
 
@@ -716,6 +725,7 @@ def main() -> None:
             test_untracked_files_persist_across_experiments,
             test_discard_releases_lease_keeps_branch,
             test_cross_slot_commit_fetch,
+            test_pool_override_works_from_worktree_default,
             test_dispatch_accepted_in_pool_mode_config,
             test_reset_wipes_run_dir_keeps_slots,
             test_orphaned_lease_reconciled_on_next_allocate,
@@ -724,6 +734,7 @@ def main() -> None:
             test_tracked_only_no_untracked_no_ack_needed,
             test_init_commit_strategy_override,
             test_workspace_status_surfaces_commit_strategy,
+            test_config_backend_blocks_inflight_old_backend,
         ):
             sub = workdir / fn.__name__
             sub.mkdir()

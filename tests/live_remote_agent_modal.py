@@ -97,11 +97,17 @@ def _build_repo(workdir: Path) -> Path:
     return repo
 
 
-def _bootstrap_parent(repo: Path) -> tuple[str, float]:
+def _bootstrap_parent(repo: Path, provider_config: str) -> tuple[str, float]:
     """Set up a baseline experiment exp_0000 with score=1.0 so the agent
     has a meaningful target to beat. Returns (exp_id, score)."""
     print("--- bootstrap: provisioning parent exp_0000 (score=1.0) ---")
-    _evo(["new", "--parent", "root", "-m", "baseline"], cwd=repo, timeout=300)
+    _evo(
+        ["new", "--parent", "root", "-m", "baseline",
+         "--remote", "modal",
+         "--provider-config", provider_config],
+        cwd=repo,
+        timeout=300,
+    )
     _evo(["write", "--exp-id", "exp_0000",
           "/workspace/repo/agent.py",
           "--content", "STATE = 'GOOD'\n"], cwd=repo)
@@ -111,11 +117,16 @@ def _bootstrap_parent(repo: Path) -> tuple[str, float]:
     return "exp_0000", 1.0
 
 
-def _allocate_test_experiment(repo: Path, parent: str) -> str:
+def _allocate_test_experiment(repo: Path, parent: str, provider_config: str) -> str:
     """Allocate exp_0001 (or whatever id) under `parent`. Returns the id."""
     print("--- allocating test experiment under parent ---")
-    out = _evo(["new", "--parent", parent, "-m", "real-agent test"],
-               cwd=repo, timeout=300)
+    out = _evo(
+        ["new", "--parent", parent, "-m", "real-agent test",
+         "--remote", "modal",
+         "--provider-config", provider_config],
+        cwd=repo,
+        timeout=300,
+    )
     new_data = json.loads(out.stdout)
     print(f"    allocated: {new_data['id']} (worktree={new_data['worktree']})")
     return new_data["id"]
@@ -287,14 +298,12 @@ def test_real_subagent_against_modal() -> None:
             ["init", "--target", "agent.py",
              "--benchmark", "python eval.py",
              "--gate", "python gate.py",
-             "--metric", "max", "--host", "claude-code",
-             "--backend", "remote", "--provider", "modal",
-             "--provider-config", provider_config],
+             "--metric", "max", "--host", "claude-code"],
             cwd=repo,
         )
 
-        parent_id, parent_score = _bootstrap_parent(repo)
-        exp_id = _allocate_test_experiment(repo, parent_id)
+        parent_id, parent_score = _bootstrap_parent(repo, provider_config)
+        exp_id = _allocate_test_experiment(repo, parent_id, provider_config)
         brief = _build_brief(exp_id, parent_id, parent_score)
 
         print(f"\n--- BRIEF (USER message to subagent) ---")

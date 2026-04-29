@@ -34,6 +34,9 @@ class PoolBackend:
 
     name = "pool"
 
+    def __init__(self, slot_paths: list[str] | None = None) -> None:
+        self.slot_paths = list(slot_paths or [])
+
     def allocate(self, ctx: AllocateCtx) -> AllocateResult:
         """Lease a free slot, validate it, branch in place, return the path.
 
@@ -49,6 +52,7 @@ class PoolBackend:
         On any post-claim failure (validation, fetch, checkout), the lease
         is released atomically only if it still matches our {exp_id, pid}.
         """
+        self._ensure_state_file(ctx.root)
         slot_path = self._claim_slot(ctx)
         try:
             self._validate_slot_basics(slot_path, self._slot_id_for(ctx.root, slot_path))
@@ -107,6 +111,30 @@ class PoolBackend:
             for slot in state["slots"]:
                 slot["leased_by"] = None
         shutil.rmtree(workspace_path(root), ignore_errors=True)
+
+    def _ensure_state_file(self, root: Path) -> None:
+        """Initialize or reconcile pool_state.json for this backend config."""
+        state_path = state_io.pool_state_path(root)
+        if not state_path.exists():
+            state_io.init_state(root, self.slot_paths)
+            return
+
+        state = state_io.read_state(root)
+        existing_slots = [slot["path"] for slot in state.get("slots", [])]
+        if existing_slots == self.slot_paths:
+            return
+
+        leased = [
+            slot["leased_by"]["exp_id"]
+            for slot in state.get("slots", [])
+            if slot.get("leased_by")
+        ]
+        if leased:
+            raise RuntimeError(
+                "cannot switch pool slot sets while pool experiments are still "
+                f"leased: {', '.join(leased)}"
+            )
+        state_io.init_state(root, self.slot_paths)
 
     # --- internals ---------------------------------------------------------
 

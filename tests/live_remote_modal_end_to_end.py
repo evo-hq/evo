@@ -81,17 +81,35 @@ def _build_repo(workdir: Path) -> Path:
     return repo
 
 
+def _new_remote_modal(
+    repo: Path,
+    *,
+    parent: str,
+    hypothesis: str,
+    provider_config: str,
+    timeout: int = 300,
+):
+    return _evo(
+        [
+            "new",
+            "--parent", parent,
+            "-m", hypothesis,
+            "--remote", "modal",
+            "--provider-config", provider_config,
+        ],
+        cwd=repo,
+        timeout=timeout,
+    )
+
+
 def test_evo_run_against_modal() -> None:
     """End-to-end: provision Modal sandbox, run baseline experiment in it."""
     workdir = Path(tempfile.mkdtemp(prefix="evo-modal-e2e-"))
     repo = _build_repo(workdir)
 
     try:
-        # `evo init --backend remote --provider modal` -- no out-of-band
-        # provisioning. The Modal sandbox is spun up lazily by
-        # RemoteSandboxBackend.allocate during `evo new`. The bearer token
-        # is persisted to remote_state.json so the subsequent `evo run`
-        # subprocess can re-hydrate the SandboxHandle.
+        # Init records project facts only. Remote provisioning happens on
+        # the per-experiment override passed to `evo new`.
         provider_config = (
             "app_name=evo-live-e2e,"
             "timeout_seconds=300,"
@@ -100,9 +118,7 @@ def test_evo_run_against_modal() -> None:
         _evo(
             ["init", "--target", "agent.py",
              "--benchmark", "python eval.py",
-             "--metric", "max", "--host", "generic",
-             "--backend", "remote", "--provider", "modal",
-             "--provider-config", provider_config],
+             "--metric", "max", "--host", "generic"],
             cwd=repo,
         )
         print("--- evo init OK ---")
@@ -114,7 +130,13 @@ def test_evo_run_against_modal() -> None:
         #   4. Checks out the experiment's branch in the sandbox
         print("--- evo new exp_0000 (provisions Modal sandbox) ---")
         t0 = time.monotonic()
-        out = _evo(["new", "--parent", "root", "-m", "modal e2e baseline"], cwd=repo, timeout=300)
+        out = _new_remote_modal(
+            repo,
+            parent="root",
+            hypothesis="modal e2e baseline",
+            provider_config=provider_config,
+            timeout=300,
+        )
         print(f"    provisioned + allocated in {time.monotonic() - t0:.1f}s")
         print(f"    {out.stdout.strip()}")
 
@@ -205,9 +227,7 @@ def test_multi_experiment_tree_modal() -> None:
         _evo(
             ["init", "--target", "agent.py",
              "--benchmark", "python eval.py",
-             "--metric", "max", "--host", "generic",
-             "--backend", "remote", "--provider", "modal",
-             "--provider-config", provider_config],
+             "--metric", "max", "--host", "generic"],
             cwd=repo,
         )
         print("--- evo init OK ---")
@@ -222,7 +242,13 @@ def test_multi_experiment_tree_modal() -> None:
             print(f"\n--- depth {depth}: parent={parent} -> {exp_id} ---")
 
             t0 = time.monotonic()
-            _evo(["new", "--parent", parent, "-m", hyp], cwd=repo, timeout=300)
+            _new_remote_modal(
+                repo,
+                parent=parent,
+                hypothesis=hyp,
+                provider_config=provider_config,
+                timeout=300,
+            )
             print(f"    new (provision + ship parent commit): {time.monotonic() - t0:.1f}s")
 
             # Verify a fresh sandbox got provisioned (not reused).
@@ -370,9 +396,7 @@ def test_branched_tree_modal() -> None:
             ["init", "--target", "agent.py",
              "--benchmark", "python eval.py",
              "--gate", "python gate.py",
-             "--metric", "max", "--host", "generic",
-             "--backend", "remote", "--provider", "modal",
-             "--provider-config", provider_config],
+             "--metric", "max", "--host", "generic"],
             cwd=repo,
         )
         print("--- evo init OK (gate=python gate.py, metric=max) ---")
@@ -402,7 +426,13 @@ def test_branched_tree_modal() -> None:
             print(f"\n--- {exp_id} parent={parent} hypothesis={hyp!r} ---")
 
             t0 = time.monotonic()
-            _evo(["new", "--parent", parent, "-m", hyp], cwd=repo, timeout=300)
+            _new_remote_modal(
+                repo,
+                parent=parent,
+                hypothesis=hyp,
+                provider_config=provider_config,
+                timeout=300,
+            )
             t_new = time.monotonic() - t0
 
             # The "subagent" edits agent.py via the production path:

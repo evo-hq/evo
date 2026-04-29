@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import DISTRIBUTION_NAME, __version__
 from .core import (
@@ -151,6 +152,137 @@ def _start_dashboard_background(root: Path, port: int = 8080) -> None:
     print(f"Dashboard live: http://127.0.0.1:{actual_port} (pid {proc.pid}){note}")
 
 
+def _parse_provider_config_arg(raw: str | None) -> dict[str, str]:
+    config: dict[str, str] = {}
+    if not raw:
+        return config
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            raise RuntimeError(
+                f"--provider-config entries must be key=value, got {pair!r}"
+            )
+        key, _, value = pair.partition("=")
+        config[key.strip()] = value.strip()
+    return config
+
+
+def _parse_workspaces_arg(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def _parse_remote_spec(spec: str) -> tuple[str, dict[str, str]]:
+    """Parse `--remote <spec>` shorthand into provider name + config."""
+    if spec == "modal":
+        return "modal", {}
+    if spec.startswith("ssh:"):
+        host_spec = spec[len("ssh:"):]
+        if not host_spec:
+            raise RuntimeError("--remote ssh:... requires a non-empty host spec")
+        config: dict[str, str] = {"host": host_spec}
+        host, sep, port = host_spec.rpartition(":")
+        if sep and host and port.isdigit():
+            config = {"host": host, "port": port}
+        return "ssh", config
+    return spec, {}
+
+
+def _resolve_backend_cli_args(
+    *,
+    root: Path,
+    backend: str | None,
+    workspaces_raw: str | None,
+    provider: str | None,
+    provider_config_raw: str | None,
+    remote: str | None,
+    require_backend: bool,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Normalize backend CLI flags into `(name, config)`."""
+    workspaces = _parse_workspaces_arg(workspaces_raw)
+    provider_config = _parse_provider_config_arg(provider_config_raw)
+
+    if remote:
+        if provider:
+            raise RuntimeError(
+                "--remote cannot be combined with --provider; it already picks a provider."
+            )
+        if workspaces:
+            raise RuntimeError("--remote cannot be combined with --workspaces.")
+        if backend and backend != "remote":
+            raise RuntimeError("--remote implies --backend remote.")
+        backend = "remote"
+        remote_provider, remote_config = _parse_remote_spec(remote)
+        provider = remote_provider
+        provider_config = {**remote_config, **provider_config}
+
+    if backend is None:
+        if workspaces:
+            raise RuntimeError(
+                "--workspaces is only valid with --backend pool."
+            )
+        if provider:
+            raise RuntimeError(
+                "--provider is only valid with --backend remote."
+            )
+        if provider_config:
+            raise RuntimeError(
+                "--provider-config is only valid with --backend remote."
+            )
+        if require_backend:
+            raise RuntimeError("backend is required")
+        return None, None
+
+    if backend == "worktree":
+        if workspaces:
+            raise RuntimeError(
+                "--workspaces is only valid with --backend pool. "
+                "Did you mean: --backend pool --workspaces ...?"
+            )
+        if provider:
+            raise RuntimeError(
+                "--provider is only valid with --backend remote."
+            )
+        if provider_config:
+            raise RuntimeError(
+                "--provider-config is only valid with --backend remote."
+            )
+        return "worktree", {}
+
+    if backend == "pool":
+        if provider:
+            raise RuntimeError(
+                "--provider is only valid with --backend remote."
+            )
+        if provider_config:
+            raise RuntimeError(
+                "--provider-config is only valid with --backend remote."
+            )
+        if not workspaces:
+            raise RuntimeError("--backend pool requires --workspaces /a,/b,/c")
+        _validate_pool_slots(root, workspaces)
+        return "pool", {"slots": workspaces}
+
+    if backend == "remote":
+        if workspaces:
+            raise RuntimeError(
+                "--workspaces is only valid with --backend pool, not remote."
+            )
+        if not provider:
+            raise RuntimeError(
+                "--backend remote requires --provider <name> or --remote <spec>."
+            )
+        return "remote", {
+            "provider": provider,
+            "provider_config": provider_config,
+        }
+
+    raise RuntimeError(f"unknown backend {backend!r}")
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     root = repo_root()
     if args.metric not in {"max", "min"}:
@@ -159,64 +291,10 @@ def cmd_init(args: argparse.Namespace) -> int:
         allowed = ", ".join(sorted(SUPPORTED_HOSTS))
         raise RuntimeError(f"--host must be one of: {allowed}")
 
-    # Backend + workspaces validation. Strict: --backend pool requires
-    # --workspaces; --backend worktree (or omitted) refuses --workspaces.
-    backend_name = args.backend
-    workspaces_raw = args.workspaces
-    workspaces: list[str] = []
-    if workspaces_raw:
-        workspaces = [p.strip() for p in workspaces_raw.split(",") if p.strip()]
-    if backend_name == "pool":
-        if not workspaces:
-            raise RuntimeError("--backend pool requires --workspaces /a,/b,/c")
-        _validate_pool_slots(root, workspaces)
-    elif backend_name == "remote":
-        if not args.provider:
-            raise RuntimeError(
-                "--backend remote requires --provider <name> "
-                "(e.g. --provider modal). Run `evo init --help` for the list."
-            )
-        if workspaces:
-            raise RuntimeError(
-                "--workspaces is only valid with --backend pool, not remote."
-            )
-    else:  # worktree (default)
-        if workspaces:
-            raise RuntimeError(
-                "--workspaces is only valid with --backend pool. "
-                "Did you mean: --backend pool --workspaces ...?"
-            )
-        if args.provider:
-            raise RuntimeError(
-                "--provider is only valid with --backend remote."
-            )
-
     if args.commit_strategy is not None:
         commit_strategy = args.commit_strategy
-    elif backend_name in ("pool", "remote"):
-        # Both warm-state-preserving backends default to tracked-only:
-        # pool slots accumulate untracked warm state across leases; remote
-        # sandboxes likewise (image-baked deps, build caches inside the
-        # container, etc.) and benefit from the same gitignore-tolerance
-        # property -- a missed gitignore entry doesn't capture warm state
-        # into the experiment commit.
-        commit_strategy = "tracked-only"
     else:
         commit_strategy = "all"
-
-    # Parse --provider-config k=v,k=v into a dict (remote backend only).
-    remote_provider_config: dict[str, Any] = {}
-    if backend_name == "remote" and args.provider_config:
-        for pair in args.provider_config.split(","):
-            pair = pair.strip()
-            if not pair:
-                continue
-            if "=" not in pair:
-                raise RuntimeError(
-                    f"--provider-config entries must be key=value, got {pair!r}"
-                )
-            key, _, value = pair.partition("=")
-            remote_provider_config[key.strip()] = value.strip()
 
     run_id = init_workspace(
         root,
@@ -225,11 +303,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         metric=args.metric,
         gate=args.gate,
         host=args.host,
-        execution_backend=backend_name,
-        workspaces=workspaces if backend_name == "pool" else None,
         commit_strategy=commit_strategy,
-        remote_provider=args.provider if backend_name == "remote" else None,
-        remote_provider_config=remote_provider_config if backend_name == "remote" else None,
     )
     if args.instrumentation_mode:
         meta_file = evo_dir(root) / "meta.json"
@@ -238,15 +312,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         atomic_write_json(meta_file, meta)
     write_scratchpad(root)
     _start_dashboard_background(root, port=args.port)
-    if backend_name == "pool":
-        backend_msg = f" (backend=pool, slots={len(workspaces)})"
-    elif backend_name == "remote":
-        backend_msg = f" (backend=remote, provider={args.provider})"
-    else:
-        backend_msg = ""
     print(
         f"Initialized evo workspace {run_id} at {workspace_path(root)} "
-        f"(host={args.host}, commit_strategy={commit_strategy}){backend_msg}"
+        f"(host={args.host}, commit_strategy={commit_strategy})"
     )
     return 0
 
@@ -348,6 +416,86 @@ def cmd_host(args: argparse.Namespace) -> int:
         print(f"host set to {args.value}")
         return 0
     raise RuntimeError(f"unknown host action: {action}")
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    if args.config_action == "backend":
+        return cmd_config_backend(args)
+    raise RuntimeError(f"unknown config action: {args.config_action}")
+
+
+def cmd_config_backend(args: argparse.Namespace) -> int:
+    from .backends import backend_spec_for_node, backend_spec_from_config, load_backend
+
+    root = repo_root()
+    _require_workspace(root)
+    backend_name, backend_config = _resolve_backend_cli_args(
+        root=root,
+        backend=args.backend,
+        workspaces_raw=args.workspaces,
+        provider=args.provider,
+        provider_config_raw=args.provider_config,
+        remote=args.remote,
+        require_backend=True,
+    )
+    assert backend_name is not None
+    assert backend_config is not None
+
+    with advisory_lock(lock_file_for(graph_path(root))):
+        config = load_config(root)
+        graph = load_graph(root)
+        old_name, old_config = backend_spec_from_config(config)
+
+        # Validate that the target backend is constructible before mutating
+        # config.json. This catches missing provider SDKs early.
+        load_backend(
+            root,
+            explicit_name=backend_name,
+            explicit_config=backend_config,
+        )
+
+        if (backend_name, backend_config) != (old_name, old_config):
+            blocking: list[str] = []
+            for node_id, node in graph["nodes"].items():
+                if node_id == "root":
+                    continue
+                if node.get("status") not in {"pending", "active", "evaluated", "failed"}:
+                    continue
+                node_name, node_config = backend_spec_for_node(
+                    root,
+                    node,
+                    workspace_config=config,
+                )
+                if (node_name, node_config) == (old_name, old_config):
+                    blocking.append(node_id)
+            if blocking:
+                raise RuntimeError(
+                    "cannot change workspace default backend while experiments "
+                    f"with the old backend are still in flight: {', '.join(blocking)}"
+                )
+
+        config["execution_backend"] = backend_name
+        if backend_config:
+            config["execution_backend_config"] = backend_config
+        else:
+            config.pop("execution_backend_config", None)
+        save_config(root, config)
+
+        if backend_name == "pool":
+            from .backends import pool_state
+
+            pool_state.init_state(root, list(backend_config.get("slots", [])))
+
+    if backend_name == "pool":
+        summary = f"backend set to pool ({len(backend_config.get('slots', []))} slots)"
+    elif backend_name == "remote":
+        summary = (
+            f"backend set to remote (provider={backend_config['provider']})"
+        )
+    else:
+        summary = "backend set to worktree"
+    print(summary)
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -805,7 +953,24 @@ def cmd_new(args: argparse.Namespace) -> int:
     config, graph = _require_workspace(root)
     if args.parent not in graph["nodes"]:
         raise RuntimeError(f"unknown parent: {args.parent}")
-    node = allocate_experiment(root, parent_id=args.parent, hypothesis=args.message)
+    backend_name, backend_config = _resolve_backend_cli_args(
+        root=root,
+        backend=args.backend,
+        workspaces_raw=args.workspaces,
+        provider=args.provider,
+        provider_config_raw=args.provider_config,
+        remote=args.remote,
+        require_backend=False,
+    )
+    backend_override = None
+    if backend_name is not None:
+        backend_override = {"name": backend_name, "config": backend_config or {}}
+    node = allocate_experiment(
+        root,
+        parent_id=args.parent,
+        hypothesis=args.message,
+        backend_override=backend_override,
+    )
     target = node_target_path(root, config, node)
     print(json.dumps({"id": node["id"], "worktree": node["worktree"], "target": str(target)}, indent=2))
     return 0
@@ -940,10 +1105,10 @@ def _open_workspace_executor(args: argparse.Namespace):
     from .backends import load_backend
 
     root = repo_root()
-    _require_workspace(root)
+    config, _graph = _require_workspace(root)
     exp_id = _resolve_workspace_exp_id(args)
     node = _read_node(root, exp_id)
-    backend = load_backend(root)
+    backend = load_backend(root, node=node, workspace_config=config)
     return root, node, workspace_executor_for(backend, root, node)
 
 
@@ -1122,7 +1287,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # and fs ops through sandbox-agent over HTTP.
     from .workspace_executor import workspace_executor_for
     from .backends import load_backend
-    backend = load_backend(root)
+    backend = load_backend(root, node=node, workspace_config=config)
     with workspace_executor_for(backend, root, node) as executor:
         return _cmd_run_impl(
             args, root, config, graph, node, backend, executor,
@@ -1417,7 +1582,9 @@ def _cmd_run_impl(
             committed_node = dict(node)
             committed_node["status"] = "committed"
             committed_node["commit"] = commit
-            _lb(root).release_lease(_DCtx(root=root, node=committed_node))
+            _lb(root, node=committed_node, workspace_config=config).release_lease(
+                _DCtx(root=root, node=committed_node)
+            )
             write_scratchpad(root)
             delta = "" if parent_score is None else f" ({'+' if metric == 'max' else ''}{score - parent_score:.4f} vs parent)"
             print(f"COMMITTED {args.exp_id} {score}{delta}")
@@ -1541,7 +1708,10 @@ def _record_done_result(root: Path, args: argparse.Namespace) -> int:
     _finalize_result(root, args.exp_id, node, args.score, status, {"recorded_only": True})
     if status == "committed":
         from .backends import DiscardCtx as _DCtx, load_backend as _lb
-        _lb(root).release_lease(_DCtx(root=root, node={**node, "status": "committed"}))
+        committed_node = {**node, "status": "committed"}
+        _lb(root, node=committed_node, workspace_config=config).release_lease(
+            _DCtx(root=root, node=committed_node)
+        )
     write_scratchpad(root)
     print(f"{status.upper()} {args.exp_id} {args.score}")
     return 0
@@ -1990,38 +2160,11 @@ def build_parser() -> argparse.ArgumentParser:
              "Determines whether `evo dispatch` is available; other commands ignore it.",
     )
     init_p.add_argument(
-        "--backend",
-        default="worktree",
-        choices=["worktree", "pool", "remote"],
-        help="execution backend (default: worktree). `pool` leases user-provided "
-             "pre-built workspaces instead of creating a fresh git worktree per "
-             "experiment. `remote` provisions a container via --provider and runs "
-             "experiments inside it via sandbox-agent's HTTP API.",
-    )
-    init_p.add_argument(
-        "--workspaces",
-        help="comma-separated absolute paths to pre-built workspace directories "
-             "(required with --backend pool). Concurrent experiments cap at the "
-             "pool size.",
-    )
-    init_p.add_argument(
-        "--provider",
-        help="remote sandbox provider (required with --backend remote). "
-             "POC ships `modal`; e2b / ssh / daytona land later.",
-    )
-    init_p.add_argument(
-        "--provider-config",
-        help="optional comma-separated key=value pairs forwarded to the "
-             "provider (--backend remote only). Provider-specific; see "
-             "evo.backends.sandbox_providers.<name>.",
-    )
-    init_p.add_argument(
         "--commit-strategy",
         choices=["all", "tracked-only"],
         default=None,
-        help="commit policy for `evo run`. Default: 'tracked-only' for "
-             "--backend pool (preserves untracked warm state across leases), "
-             "'all' for worktree. Override only if you know why.",
+        help="commit policy for `evo run`. Default: 'all'. Override only "
+             "if you know why.",
     )
     init_p.add_argument("--port", type=int, default=8080)
     init_p.set_defaults(func=cmd_init)
@@ -2036,6 +2179,38 @@ def build_parser() -> argparse.ArgumentParser:
     host_set_p = host_sub.add_parser("set", help="update the workspace host")
     host_set_p.add_argument("value", choices=sorted(SUPPORTED_HOSTS))
     host_set_p.set_defaults(func=cmd_host)
+
+    config_p = sub.add_parser(
+        "config",
+        help="mutate workspace configuration",
+    )
+    config_sub = config_p.add_subparsers(dest="config_action", required=True)
+    config_backend_p = config_sub.add_parser(
+        "backend",
+        help="set the workspace default execution backend",
+    )
+    config_backend_p.add_argument("backend", choices=["worktree", "pool", "remote"])
+    config_backend_p.add_argument(
+        "--workspaces",
+        help="comma-separated absolute paths to pre-built workspace directories "
+             "(required with backend=pool).",
+    )
+    config_backend_p.add_argument(
+        "--provider",
+        help="remote sandbox provider (required with backend=remote unless "
+             "--remote is used).",
+    )
+    config_backend_p.add_argument(
+        "--provider-config",
+        help="optional comma-separated key=value pairs forwarded to the "
+             "remote provider.",
+    )
+    config_backend_p.add_argument(
+        "--remote",
+        help="shorthand for backend=remote. Examples: modal, ssh:user@host, "
+             "my_pkg.providers:Provider.",
+    )
+    config_backend_p.set_defaults(func=cmd_config_backend)
 
     workspace_p = sub.add_parser(
         "workspace",
@@ -2054,6 +2229,31 @@ def build_parser() -> argparse.ArgumentParser:
     new_p = sub.add_parser("new")
     new_p.add_argument("--parent", required=True)
     new_p.add_argument("-m", "--message", required=True)
+    new_p.add_argument(
+        "--backend",
+        choices=["worktree", "pool", "remote"],
+        help="per-experiment backend override. Omit to use the workspace default.",
+    )
+    new_p.add_argument(
+        "--workspaces",
+        help="comma-separated absolute paths to pre-built workspace directories "
+             "(required with --backend pool).",
+    )
+    new_p.add_argument(
+        "--provider",
+        help="remote sandbox provider (required with --backend remote unless "
+             "--remote is used).",
+    )
+    new_p.add_argument(
+        "--provider-config",
+        help="optional comma-separated key=value pairs forwarded to the "
+             "remote provider.",
+    )
+    new_p.add_argument(
+        "--remote",
+        help="shorthand for remote backend selection. Examples: modal, "
+             "ssh:user@host, my_pkg.providers:Provider.",
+    )
     new_p.set_defaults(func=cmd_new)
 
     run_p = sub.add_parser("run")
