@@ -34,6 +34,7 @@ from .protocol import (
     SandboxProvider,
     SandboxSpec,
 )
+from .state_keys import backend_state_key
 
 
 class RemoteSandboxBackend:
@@ -60,6 +61,13 @@ class RemoteSandboxBackend:
         self.provider = provider
         self.provider_name = provider_name or provider.name
         self.provider_config = dict(provider_config or {})
+        self.state_key = backend_state_key(
+            self.name,
+            {
+                "provider": self.provider_name,
+                "provider_config": self.provider_config,
+            },
+        )
         # Tokens live in memory only; never persisted to remote_state.json.
         # Keyed by sandbox `id` (the local index, not the provider native_id).
         self._tokens: dict[int, str] = {}
@@ -107,7 +115,7 @@ class RemoteSandboxBackend:
                 # for alpha.4. Until then, .evo/run_*/remote_state.json
                 # should be treated as workspace-private (gitignored
                 # via .evo/ already).
-                with remote_state.locked_state(ctx.root) as state:
+                with remote_state.locked_state(ctx.root, self.state_key) as state:
                     sandbox = state["sandboxes"][slot_id]
                     sandbox["native_id"] = handle.native_id
                     sandbox["base_url"] = handle.base_url
@@ -146,7 +154,7 @@ class RemoteSandboxBackend:
                 # Best-effort; sandbox may already be gone (network blip,
                 # provider-side timeout). State cleanup proceeds regardless.
                 pass
-        with remote_state.locked_state(ctx.root) as state:
+        with remote_state.locked_state(ctx.root, self.state_key) as state:
             # Drop the slot entirely on discard. Re-allocate gets a fresh
             # provision; no half-states left around.
             state["sandboxes"] = [
@@ -175,7 +183,7 @@ class RemoteSandboxBackend:
         Returns True if anything got cleaned up so cli.cmd_gc reports it.
         """
         cleaned = False
-        with remote_state.locked_state(ctx.root) as state:
+        with remote_state.locked_state(ctx.root, self.state_key) as state:
             keep: list[dict[str, Any]] = []
             for sandbox in state["sandboxes"]:
                 if sandbox.get("leased_by") is None:
@@ -198,7 +206,7 @@ class RemoteSandboxBackend:
     def reset_all(self, root: Path) -> None:
         """Tear down every recorded sandbox and wipe the workspace dir."""
         try:
-            state = remote_state.read_state(root)
+            state = remote_state.read_state(root, self.state_key)
         except FileNotFoundError:
             state = {"sandboxes": []}
         for sandbox in state.get("sandboxes", []):
@@ -232,7 +240,7 @@ class RemoteSandboxBackend:
         """
         from ..backends.protocol import PoolExhausted
 
-        with remote_state.locked_state(ctx.root) as state:
+        with remote_state.locked_state(ctx.root, self.state_key) as state:
             free = [s for s in state["sandboxes"] if s.get("leased_by") is None]
             if free:
                 sandbox = free[0]
@@ -272,9 +280,9 @@ class RemoteSandboxBackend:
 
     def _ensure_state_file(self, root: Path) -> None:
         """Create or reconcile remote_state.json for this provider config."""
-        state_path = remote_state.remote_state_path(root)
+        state_path = remote_state.remote_state_path(root, self.state_key)
         if state_path.exists():
-            state = remote_state.read_state(root)
+            state = remote_state.read_state(root, self.state_key)
             if (
                 state.get("provider") == self.provider_name
                 and (state.get("provider_config", {}) or {}) == self.provider_config
@@ -294,6 +302,7 @@ class RemoteSandboxBackend:
             root,
             provider=self.provider_name,
             provider_config=self.provider_config,
+            state_key=self.state_key,
         )
 
     def _provision_sandbox(self, slot_id: int) -> SandboxHandle:
@@ -337,7 +346,7 @@ class RemoteSandboxBackend:
             # Cold-start: re-hydrate from remote_state.json. Bearer token
             # IS persisted (POC tradeoff; see SPEC roadmap for the
             # encrypted-keyfile work).
-            state = remote_state.read_state(root)
+            state = remote_state.read_state(root, self.state_key)
             sandbox_record = next(
                 (s for s in state["sandboxes"] if s["id"] == slot_id), None
             )
@@ -443,7 +452,7 @@ class RemoteSandboxBackend:
 
         # Persist on the slot's state record so cmd_run can read the same
         # path via the backend client without re-fetching the handle.
-        with remote_state.locked_state(ctx.root) as state:
+        with remote_state.locked_state(ctx.root, self.state_key) as state:
             for sandbox in state["sandboxes"]:
                 if sandbox["id"] == slot_id:
                     sandbox["workspace_root"] = workspace_root
@@ -454,7 +463,7 @@ class RemoteSandboxBackend:
     def _slot_for_exp(self, root: Path, exp_id: str) -> int | None:
         """Return the slot id currently leased by `exp_id`, or None."""
         try:
-            state = remote_state.read_state(root)
+            state = remote_state.read_state(root, self.state_key)
         except FileNotFoundError:
             return None
         for sandbox in state["sandboxes"]:
@@ -467,7 +476,7 @@ class RemoteSandboxBackend:
         """Atomically release the lease on `slot_id` only if it's currently
         held by `exp_id`. Mirror of pool._release_if_matches (pool.py:240-246).
         """
-        with remote_state.locked_state(root) as state:
+        with remote_state.locked_state(root, self.state_key) as state:
             for sandbox in state["sandboxes"]:
                 if sandbox["id"] == slot_id:
                     lease = sandbox.get("leased_by")
@@ -495,7 +504,7 @@ class RemoteSandboxBackend:
             return
 
         terminal = {"committed", "discarded"}
-        with remote_state.locked_state(root) as state_locked:
+        with remote_state.locked_state(root, self.state_key) as state_locked:
             for sandbox in state_locked["sandboxes"]:
                 lease = sandbox.get("leased_by")
                 if not lease:

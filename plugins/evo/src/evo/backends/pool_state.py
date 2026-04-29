@@ -1,4 +1,4 @@
-"""File-locked reader/writer for `pool_state.json`.
+"""File-locked reader/writer for keyed pool state files.
 
 Schema:
 {
@@ -23,16 +23,52 @@ from typing import Any, Iterator
 from ..locking import advisory_lock
 
 
-def pool_state_path(root: Path) -> Path:
-    """Path to the active run's pool_state.json. Resolves the run dir lazily."""
+def _state_dir(root: Path) -> Path:
     from ..core import workspace_path
 
-    return workspace_path(root) / "pool_state.json"
+    return workspace_path(root) / "backend_state"
 
 
-def init_state(root: Path, slot_paths: list[str]) -> None:
-    """Create a fresh pool_state.json with all slots free. Called by `evo init`."""
-    state_path = pool_state_path(root)
+def pool_state_path(root: Path, state_key: str | None = None) -> Path:
+    """Path to this pool config's state file."""
+    if state_key is None:
+        from ..core import workspace_path
+
+        return workspace_path(root) / "pool_state.json"
+    return _state_dir(root) / f"pool-{state_key}.json"
+
+
+def _migrate_legacy_if_needed(root: Path, state_key: str) -> Path:
+    keyed = pool_state_path(root, state_key)
+    if keyed.exists():
+        return keyed
+    legacy = pool_state_path(root, None)
+    if legacy.exists():
+        keyed.parent.mkdir(parents=True, exist_ok=True)
+        legacy.replace(keyed)
+    return keyed
+
+
+def _resolve_state_path(root: Path, state_key: str | None) -> Path:
+    if state_key is not None:
+        return _migrate_legacy_if_needed(root, state_key)
+    legacy = pool_state_path(root, None)
+    if legacy.exists():
+        return legacy
+    state_dir = _state_dir(root)
+    matches = sorted(state_dir.glob("pool-*.json")) if state_dir.exists() else []
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        return legacy
+    raise RuntimeError(
+        "multiple pool state files exist for this run; pass an explicit state key"
+    )
+
+
+def init_state(root: Path, slot_paths: list[str], state_key: str) -> None:
+    """Create a fresh keyed pool-state file with all slots free."""
+    state_path = pool_state_path(root, state_key)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state = {
         "slots": [
@@ -48,8 +84,8 @@ def _lock_path(state_path: Path) -> Path:
 
 
 @contextmanager
-def locked_state(root: Path) -> Iterator[dict[str, Any]]:
-    """Open pool_state.json under a file lock for read-modify-write.
+def locked_state(root: Path, state_key: str) -> Iterator[dict[str, Any]]:
+    """Open this pool config's state file under a file lock for RMW.
 
     Yields the parsed state; the caller mutates it in place. On exit, the
     state is written via tmp-and-rename so a process killed mid-write leaves
@@ -57,7 +93,7 @@ def locked_state(root: Path) -> Iterator[dict[str, Any]]:
     """
     from ..core import atomic_write_json
 
-    state_path = pool_state_path(root)
+    state_path = _migrate_legacy_if_needed(root, state_key)
     if not state_path.exists():
         raise FileNotFoundError(f"pool_state.json missing at {state_path}")
     with advisory_lock(_lock_path(state_path)):
@@ -66,12 +102,14 @@ def locked_state(root: Path) -> Iterator[dict[str, Any]]:
         atomic_write_json(state_path, state)
 
 
-def read_state(root: Path) -> dict[str, Any]:
-    """Read-only snapshot of pool_state.json. Acquires the lock briefly to
+def read_state(root: Path, state_key: str | None = None) -> dict[str, Any]:
+    """Read-only snapshot of this pool config's state file.
+
+    Acquires the lock briefly to
     avoid reading a partial file mid-rewrite (atomic_write_json should make
     this redundant, but the lock costs us nothing and rules out edge cases
     on filesystems with weak rename semantics)."""
-    state_path = pool_state_path(root)
+    state_path = _resolve_state_path(root, state_key)
     if not state_path.exists():
         raise FileNotFoundError(f"pool_state.json missing at {state_path}")
     with advisory_lock(_lock_path(state_path)):

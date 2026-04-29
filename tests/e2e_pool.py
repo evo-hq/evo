@@ -356,7 +356,7 @@ def test_dispatch_accepted_in_pool_mode_config(workdir: Path) -> None:
 
 def test_reset_wipes_run_dir_keeps_slots(workdir: Path) -> None:
     """`evo reset --yes` in pool mode removes `.evo/run_NNNN/` (graph,
-    config, experiments, pool_state.json) but leaves slot directories
+    config, experiments, keyed pool state) but leaves slot directories
     untouched. After reset, `evo status` errors with 'workspace not
     initialized'."""
     main, slot1, slot2 = _build_pool_setup(workdir)
@@ -364,7 +364,7 @@ def test_reset_wipes_run_dir_keeps_slots(workdir: Path) -> None:
     try:
         run_dir = main / ".evo" / "run_0000"
         assert run_dir.exists()
-        assert (run_dir / "pool_state.json").exists()
+        assert list((run_dir / "backend_state").glob("pool-*.json"))
         slot1_marker = slot1 / ".build-cache-stamp"
         slot2_marker = slot2 / ".build-cache-stamp"
         assert slot1_marker.exists() and slot2_marker.exists()
@@ -405,7 +405,7 @@ def test_orphaned_lease_reconciled_on_next_allocate(workdir: Path) -> None:
 
         # By now both slots are free. Hand-edit pool_state to forge a stale
         # lease pointing at the committed exp_0000.
-        state_path = main / ".evo" / "run_0000" / "pool_state.json"
+        state_path = next((main / ".evo" / "run_0000" / "backend_state").glob("pool-*.json"))
         state = json.loads(state_path.read_text())
         state["slots"][0]["leased_by"] = {
             "exp_id": "exp_0000", "pid": 99999,
@@ -473,11 +473,58 @@ def test_pool_override_works_from_worktree_default(workdir: Path) -> None:
         assert node["backend"] == "pool", node
         assert node["backend_config"]["slots"] == [str(slot1), str(slot2)], node
 
-        pool_state_path = main / ".evo" / "run_0000" / "pool_state.json"
+        pool_state_path = next((main / ".evo" / "run_0000" / "backend_state").glob("pool-*.json"))
         assert pool_state_path.exists(), pool_state_path
 
         out = _evo(["run", "exp_0000"], cwd=main).stdout
         assert "COMMITTED exp_0000" in out, out
+    finally:
+        _shutdown_dashboard(main)
+
+
+def test_distinct_pool_configs_can_be_live_in_one_run(workdir: Path) -> None:
+    """Two concurrent pool experiments with different slot sets must not
+    share state. Each config gets its own keyed state file."""
+    main, slot1, slot2 = _build_pool_setup(workdir)
+    _init_evo_workspace(main)
+    try:
+        _evo(
+            [
+                "new",
+                "--parent", "root",
+                "-m", "pool A",
+                "--backend", "pool",
+                "--workspaces", str(slot1),
+            ],
+            cwd=main,
+        )
+        _evo(
+            [
+                "new",
+                "--parent", "root",
+                "-m", "pool B",
+                "--backend", "pool",
+                "--workspaces", str(slot2),
+            ],
+            cwd=main,
+        )
+
+        graph = json.loads(
+            (main / ".evo" / "run_0000" / "graph.json").read_text(encoding="utf-8")
+        )
+        assert graph["nodes"]["exp_0000"]["worktree"] == str(slot1), graph
+        assert graph["nodes"]["exp_0001"]["worktree"] == str(slot2), graph
+
+        state_files = sorted((main / ".evo" / "run_0000" / "backend_state").glob("pool-*.json"))
+        assert len(state_files) == 2, state_files
+        states = [json.loads(path.read_text(encoding="utf-8")) for path in state_files]
+        leased = sorted(
+            slot["leased_by"]["exp_id"]
+            for state in states
+            for slot in state["slots"]
+            if slot.get("leased_by")
+        )
+        assert leased == ["exp_0000", "exp_0001"], leased
     finally:
         _shutdown_dashboard(main)
 
@@ -726,6 +773,7 @@ def main() -> None:
             test_discard_releases_lease_keeps_branch,
             test_cross_slot_commit_fetch,
             test_pool_override_works_from_worktree_default,
+            test_distinct_pool_configs_can_be_live_in_one_run,
             test_dispatch_accepted_in_pool_mode_config,
             test_reset_wipes_run_dir_keeps_slots,
             test_orphaned_lease_reconciled_on_next_allocate,

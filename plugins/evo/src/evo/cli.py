@@ -425,7 +425,12 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 def cmd_config_backend(args: argparse.Namespace) -> int:
-    from .backends import backend_spec_for_node, backend_spec_from_config, load_backend
+    from .backends import (
+        backend_spec_for_node,
+        backend_spec_from_config,
+        backend_state_key,
+        load_backend,
+    )
 
     root = repo_root()
     _require_workspace(root)
@@ -484,7 +489,11 @@ def cmd_config_backend(args: argparse.Namespace) -> int:
         if backend_name == "pool":
             from .backends import pool_state
 
-            pool_state.init_state(root, list(backend_config.get("slots", [])))
+            pool_state.init_state(
+                root,
+                list(backend_config.get("slots", [])),
+                backend_state_key(backend_name, backend_config),
+            )
 
     if backend_name == "pool":
         summary = f"backend set to pool ({len(backend_config.get('slots', []))} slots)"
@@ -515,9 +524,10 @@ def cmd_workspace_status(args: argparse.Namespace) -> int:
         )
         return 1
 
-    from .backends import pool_state
+    from .backends import backend_state_key, pool_state
 
-    state = pool_state.read_state(root)
+    backend_config = dict(config.get("execution_backend_config", {}) or {})
+    state = pool_state.read_state(root, backend_state_key("pool", backend_config))
     commit_strategy = config.get("commit_strategy", "all")
     if args.json:
         print(json.dumps({**state, "commit_strategy": commit_strategy}, indent=2))
@@ -553,10 +563,11 @@ def cmd_workspace_release(args: argparse.Namespace) -> int:
     if config.get("execution_backend") != "pool":
         print("ERROR: workspace subcommand only applies in pool mode.", file=sys.stderr)
         return 1
-    from .backends import pool_state
+    from .backends import backend_state_key, pool_state
 
     target = args.slot_id
-    with pool_state.locked_state(root) as state:
+    backend_config = dict(config.get("execution_backend_config", {}) or {})
+    with pool_state.locked_state(root, backend_state_key("pool", backend_config)) as state:
         slot = next((s for s in state["slots"] if s["id"] == target), None)
         if slot is None:
             print(f"ERROR: slot {target} not in pool", file=sys.stderr)
@@ -1536,7 +1547,7 @@ def _cmd_run_impl(
                     from .git_bundle import fetch_commit_from_sandbox
                     from .backends import remote_state as _rs
                     sandbox_record = next(
-                        (s for s in _rs.read_state(root)["sandboxes"]
+                        (s for s in _rs.read_state(root, backend.state_key)["sandboxes"]
                          if (s.get("leased_by") or {}).get("exp_id") == args.exp_id),
                         None,
                     )

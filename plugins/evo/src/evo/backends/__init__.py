@@ -28,6 +28,7 @@ from .protocol import (
     SandboxSpec,
 )
 from .remote import RemoteSandboxBackend
+from .state_keys import backend_state_key
 from .worktree import WorktreeBackend
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "backend_spec_for_node",
     "backend_spec_from_config",
     "load_backend",
+    "backend_state_key",
 ]
 
 
@@ -78,6 +80,7 @@ def backend_spec_for_node(
 
     config = workspace_config if workspace_config is not None else load_config(root)
     return backend_spec_from_config(config)
+
 
 
 def _construct_backend(name: str, config: dict[str, Any]) -> Backend:

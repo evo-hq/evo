@@ -37,6 +37,7 @@ from evo.backends import (  # noqa: E402
     PoolExhausted,
     RemoteBackendUnavailable,
     RemoteSandboxBackend,
+    backend_state_key,
     load_backend,
 )
 from evo.backends.sandbox_providers import known_providers, load_provider  # noqa: E402
@@ -428,6 +429,57 @@ def test_workspace_ops_cli_subcommands(workdir: Path) -> None:
             _shutdown_dashboard(repo)
 
 
+def test_distinct_remote_configs_can_be_live_in_one_run(workdir: Path) -> None:
+    """Two concurrent remote experiments with different provider configs
+    must not share one remote_state file."""
+    repo = _build_repo(workdir)
+
+    with localhost_sandbox_agent() as (base_url_a, token_a), localhost_sandbox_agent() as (base_url_b, token_b):
+        sandbox_workspace_a = workdir / "sandbox-a"
+        sandbox_workspace_b = workdir / "sandbox-b"
+        sandbox_bundles_a = workdir / "bundles-a"
+        sandbox_bundles_b = workdir / "bundles-b"
+        provider_config_a = (
+            f"base_url={base_url_a},bearer_token={token_a},"
+            f"workspace_root={sandbox_workspace_a},bundle_dir={sandbox_bundles_a}"
+        )
+        provider_config_b = (
+            f"base_url={base_url_b},bearer_token={token_b},"
+            f"workspace_root={sandbox_workspace_b},bundle_dir={sandbox_bundles_b}"
+        )
+        _evo(
+            ["init", "--target", "agent.py",
+             "--benchmark", "python eval.py",
+             "--metric", "max", "--host", "generic"],
+            cwd=repo,
+        )
+        try:
+            _evo(
+                ["new", "--parent", "root", "-m", "remote A",
+                 "--remote", "manual",
+                 "--provider-config", provider_config_a],
+                cwd=repo,
+            )
+            _evo(
+                ["new", "--parent", "root", "-m", "remote B",
+                 "--remote", "manual",
+                 "--provider-config", provider_config_b],
+                cwd=repo,
+            )
+
+            graph = json.loads((repo / ".evo" / "run_0000" / "graph.json").read_text(encoding="utf-8"))
+            cfg_a = graph["nodes"]["exp_0000"]["backend_config"]
+            cfg_b = graph["nodes"]["exp_0001"]["backend_config"]
+            state_a = remote_state.read_state(repo, backend_state_key("remote", cfg_a))
+            state_b = remote_state.read_state(repo, backend_state_key("remote", cfg_b))
+            assert state_a["provider_config"]["base_url"] == base_url_a, state_a
+            assert state_b["provider_config"]["base_url"] == base_url_b, state_b
+            assert state_a["sandboxes"][0]["leased_by"]["exp_id"] == "exp_0000", state_a
+            assert state_b["sandboxes"][0]["leased_by"]["exp_id"] == "exp_0001", state_b
+        finally:
+            _shutdown_dashboard(repo)
+
+
 def main() -> None:
     workdir = Path(tempfile.mkdtemp(prefix="evo-remote-integ-"))
     try:
@@ -450,6 +502,7 @@ def main() -> None:
             test_git_bundle_round_trip,
             test_remote_backend_full_lifecycle,
             test_workspace_ops_cli_subcommands,
+            test_distinct_remote_configs_can_be_live_in_one_run,
         ):
             sub = workdir / fn.__name__
             sub.mkdir()
