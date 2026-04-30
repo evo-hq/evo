@@ -1,6 +1,6 @@
 """RemoteSandboxBackend: workspace lifecycle backed by a remote sandbox.
 
-The provider (Modal, E2B, SSH, Cloudflare, ...) provisions the
+The provider (Modal, E2B, SSH, ...) provisions the
 container and owns the corresponding process/filesystem client object
 for file ops, process exec, git ops, and teardown.
 

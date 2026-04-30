@@ -159,7 +159,7 @@ class TestDashboardFrontierStrategy(unittest.TestCase):
             data["default_backend"]["config"]["provider_config"]["api_key"],
             "<redacted>",
         )
-        for provider in ("modal", "e2b", "cloudflare", "daytona", "aws", "hetzner", "ssh", "manual"):
+        for provider in ("modal", "e2b", "daytona", "aws", "hetzner", "ssh", "manual"):
             self.assertIn(provider, data["provider_readiness"], provider)
 
         by_name = {
@@ -200,26 +200,6 @@ class TestDashboardFrontierStrategy(unittest.TestCase):
         self.assertEqual(cfg["execution_backend_config"]["provider_config"]["gpu"], "L40S")
         self.assertEqual(cfg["execution_backend_config"]["provider_config"]["pool_size"], 2)
         self.assertEqual(res.get_json()["default_backend"]["config"]["provider_config"]["gpu"], "L40S")
-
-    def test_execution_settings_post_accepts_cloudflare_bridge_config(self):
-        res = self.client.post(
-            "/api/workspace/execution",
-            json={
-                "backend": "remote",
-                "provider": "cloudflare",
-                "provider_config": {
-                    "api_url": "https://bridge.example.workers.dev",
-                    "api_key": "cf-secret",
-                },
-            },
-        )
-        self.assertEqual(res.status_code, 200, res.get_json())
-        cfg = load_config(self.root)
-        self.assertEqual(cfg["execution_backend"], "remote")
-        self.assertEqual(cfg["execution_backend_config"]["provider"], "cloudflare")
-        self.assertEqual(cfg["execution_backend_config"]["provider_config"]["api_url"], "https://bridge.example.workers.dev")
-        self.assertEqual(cfg["execution_backend_config"]["provider_config"]["api_key"], "cf-secret")
-        self.assertEqual(res.get_json()["default_backend"]["config"]["provider_config"]["api_url"], "https://bridge.example.workers.dev")
 
     def test_graph_and_node_endpoints_redact_backend_secrets_and_resolve_backend(self):
         graph = load_graph(self.root)

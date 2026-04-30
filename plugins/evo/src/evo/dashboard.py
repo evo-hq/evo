@@ -180,8 +180,6 @@ def _provider_readiness(config: dict[str, Any]) -> dict[str, Any]:
         or os.environ.get("AWS_SESSION_TOKEN")
         or os.environ.get("AWS_SECRET_ACCESS_KEY")
     )
-    cloudflare_auth_present = bool(os.environ.get("SANDBOX_API_KEY")) or bool(provider_config.get("api_key"))
-    cloudflare_url_present = bool(os.environ.get("SANDBOX_API_URL")) or bool(provider_config.get("api_url"))
     hetzner_auth_present = bool(os.environ.get("HCLOUD_TOKEN")) or bool(provider_config.get("token"))
     e2b_source = (
         "workspace-config"
@@ -217,15 +215,6 @@ def _provider_readiness(config: dict[str, Any]) -> dict[str, Any]:
                 "env/profile"
                 if aws_auth_present
                 else "missing"
-            ),
-        },
-        "cloudflare": {
-            "bridge_configured": cloudflare_url_present,
-            "auth_present": cloudflare_auth_present,
-            "auth_source": (
-                "workspace-config"
-                if provider == "remote" and provider_config.get("api_key")
-                else ("env" if os.environ.get("SANDBOX_API_KEY") else "missing")
             ),
         },
         "hetzner": {

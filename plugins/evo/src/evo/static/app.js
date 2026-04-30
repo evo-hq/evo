@@ -54,13 +54,6 @@ const REMOTE_PROVIDER_FIELDS = {
     {key: 'allow_internet_access', label: 'Allow internet access', type: 'bool', advanced: true},
     {key: 'secure', label: 'Secure sandbox', type: 'bool', advanced: true},
   ],
-  cloudflare: [
-    {key: 'api_url', label: 'API URL', type: 'text'},
-    {key: 'api_key', label: 'API key', type: 'secret'},
-    {key: 'workspace_root', label: 'Workspace root', type: 'text', advanced: true},
-    {key: 'timeout_seconds', label: 'Timeout seconds', type: 'int', advanced: true},
-    {key: 'health_timeout_seconds', label: 'Health timeout', type: 'float', advanced: true},
-  ],
   ssh: [
     {key: 'host', label: 'Host', type: 'text'},
     {key: 'port', label: 'SSH port', type: 'int'},
@@ -1237,7 +1230,7 @@ function renderExecutionSettings(panel, ws) {
           <div class="settings-block">
             <div class="settings-block-label">Remote provider</div>
             <select id="settings-provider-choice" class="settings-select">
-            ${['modal', 'e2b', 'cloudflare', 'ssh', 'daytona', 'aws', 'hetzner', 'manual'].map(provider => `<option value="${provider}" ${draft.providerChoice === provider ? 'selected' : ''}>${provider}</option>`).join('')}
+            ${['modal', 'e2b', 'ssh', 'daytona', 'aws', 'hetzner', 'manual'].map(provider => `<option value="${provider}" ${draft.providerChoice === provider ? 'selected' : ''}>${provider}</option>`).join('')}
             <option value="__custom__" ${draft.providerChoice === '__custom__' ? 'selected' : ''}>custom</option>
           </select>
           <div class="settings-help">Pick the provider to use for new remote experiments.</div>
