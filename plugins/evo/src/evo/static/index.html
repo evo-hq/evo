@@ -28,8 +28,7 @@
     </div>
     <div class="spacer"></div>
     <div id="run-switcher" class="run-switcher"></div>
-    <button id="strategy-btn" class="btn-ghost" onclick="openStrategy()" title="Frontier selection strategy">strategy</button>
-    <span id="meta-info" class="meta"></span>
+    <button id="settings-btn" class="btn-ghost" onclick="openSettings()" title="Workspace and execution settings">settings</button>
   </header>
 
   <!-- Hero metrics -->
@@ -64,6 +63,11 @@
         <span class="hero-sub">running now</span>
       </div>
     </div>
+  </section>
+
+  <!-- Overview strip -->
+  <section id="overview-strip">
+    <div id="overview-body" class="overview-body"></div>
   </section>
 
   <!-- Charts row -->
@@ -112,15 +116,16 @@
   <!-- Info popover (shared) -->
   <div id="tip-popover" class="tip-popover hidden"></div>
 
-  <!-- Frontier strategy modal -->
-  <div id="strategy-overlay" class="modal-overlay hidden" onclick="closeStrategy()">
+  <!-- Settings modal -->
+  <div id="settings-overlay" class="modal-overlay hidden" onclick="closeSettings()">
     <div class="modal" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <span class="modal-title">Frontier selection strategy</span>
+        <span class="modal-title">Settings</span>
+        <span class="modal-sub">project, execution, frontier</span>
         <div class="spacer"></div>
-        <span class="close-btn" onclick="closeStrategy()">&times;</span>
+        <span class="close-btn" onclick="closeSettings()">&times;</span>
       </div>
-      <div id="strategy-body" class="modal-body"></div>
+      <div id="settings-body" class="modal-body settings-body"></div>
     </div>
   </div>
 
