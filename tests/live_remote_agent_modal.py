@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +37,14 @@ sys.path.insert(0, str(PLUGIN_SRC))
 
 
 CLAUDE_BIN = os.environ.get("EVO_CLAUDE_BIN", "claude")
+
+
+@dataclass
+class ClaudeRun:
+    exp_id: str
+    brief: str
+    proc: subprocess.Popen[str]
+    started_at: float
 
 
 def _gate() -> None:
@@ -234,6 +243,51 @@ def _spawn_claude(brief: str, repo: Path) -> dict:
     return final_payload
 
 
+def _launch_claude(exp_id: str, brief: str, repo: Path) -> ClaudeRun:
+    skill_content = SUBAGENT_SKILL.read_text(encoding="utf-8")
+    cmd = [
+        CLAUDE_BIN, "-p", brief,
+        "--append-system-prompt", skill_content,
+        "--output-format", "stream-json", "--verbose",
+        "--permission-mode", "bypassPermissions",
+    ]
+    print(f"--- spawning claude for {exp_id} (parallel path) ---")
+    return ClaudeRun(
+        exp_id=exp_id,
+        brief=brief,
+        proc=subprocess.Popen(
+            cmd,
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        ),
+        started_at=time.monotonic(),
+    )
+
+
+def _collect_claude(run: ClaudeRun, timeout: int = 900) -> dict:
+    stdout, stderr = run.proc.communicate(timeout=timeout)
+    elapsed = time.monotonic() - run.started_at
+    print(f"    claude[{run.exp_id}] returned in {elapsed:.1f}s (exit={run.proc.returncode})")
+    if run.proc.returncode != 0:
+        raise RuntimeError(
+            f"claude for {run.exp_id} exited {run.proc.returncode}\n"
+            f"STDERR:\n{stderr[-4000:]}"
+        )
+    events: list[dict] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return {"messages": events, "events": events}
+
+
 def _extract_tool_calls(payload: dict) -> list[dict]:
     """Pull the agent's tool_use blocks from the claude -p JSON output."""
     calls: list[dict] = []
@@ -284,6 +338,61 @@ def _summarize_tool_calls(calls: list[dict]) -> None:
             print(f"  [{i:02d}] {name}: {json.dumps(inp)[:80]}")
 
 
+def _verify_agent_payload(
+    *,
+    payload: dict,
+    repo: Path,
+    exp_id: str,
+    parent_score: float,
+) -> None:
+    tool_calls = _extract_tool_calls(payload)
+    _summarize_tool_calls(tool_calls)
+
+    bash_calls = [c for c in tool_calls if c["name"] == "Bash"]
+    bash_commands = [c["input"].get("command", "") for c in bash_calls]
+    evo_write_or_edit = [
+        cmd for cmd in bash_commands
+        if " evo write " in f" {cmd} " or " evo edit " in f" {cmd} "
+    ]
+    evo_run = [cmd for cmd in bash_commands if " evo run " in f" {cmd} "]
+
+    print(f"\n--- verification for {exp_id} ---")
+    print(f"    evo write/edit calls: {len(evo_write_or_edit)}")
+    print(f"    evo run calls:        {len(evo_run)}")
+
+    assert evo_write_or_edit, (
+        f"agent did not use evo write or evo edit; bash commands were:\n"
+        + "\n".join(f"  {c}" for c in bash_commands)
+    )
+
+    for cmd in evo_write_or_edit:
+        assert "--exp-id" in cmd, f"agent omitted --exp-id from evo command: {cmd}"
+        assert exp_id in cmd, f"agent passed wrong --exp-id (expected {exp_id} in: {cmd})"
+
+    for c in tool_calls:
+        if c["name"] in ("Write", "Edit", "MultiEdit"):
+            path = c["input"].get("file_path", "")
+            assert "/workspace/" not in path, (
+                f"agent used native {c['name']} on sandbox path "
+                f"{path}; should have used evo write/edit"
+            )
+
+    assert evo_run, "agent didn't call evo run"
+    run_cmd = next(c for c in evo_run)
+    assert exp_id in run_cmd, f"evo run with wrong exp_id: {run_cmd}"
+
+    graph = json.loads(
+        (repo / ".evo" / "run_0000" / "graph.json").read_text(encoding="utf-8")
+    )
+    node = graph["nodes"][exp_id]
+    assert node["status"] == "committed", f"experiment did not commit: {node}"
+    assert node["score"] > parent_score, (
+        f"score {node['score']} did not beat parent {parent_score}"
+    )
+    print(f"    committed: {node['commit'][:12]} score={node['score']} "
+          f"(parent={parent_score})")
+
+
 def test_real_subagent_against_modal() -> None:
     workdir = Path(tempfile.mkdtemp(prefix="evo-modal-agent-"))
     repo = _build_repo(workdir)
@@ -311,65 +420,69 @@ def test_real_subagent_against_modal() -> None:
         print(f"--- end brief ---\n")
 
         payload = _spawn_claude(brief, repo)
-        tool_calls = _extract_tool_calls(payload)
-        _summarize_tool_calls(tool_calls)
+        _verify_agent_payload(
+            payload=payload,
+            repo=repo,
+            exp_id=exp_id,
+            parent_score=parent_score,
+        )
 
-        # ---- Verifications ----
-        bash_calls = [c for c in tool_calls if c["name"] == "Bash"]
-        bash_commands = [c["input"].get("command", "") for c in bash_calls]
-        evo_write_or_edit = [
-            cmd for cmd in bash_commands
-            if " evo write " in f" {cmd} " or " evo edit " in f" {cmd} "
+    finally:
+        print("\n--- backstop cleanup ---")
+        _evo(["reset", "--yes"], cwd=repo, check=False)
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def test_parallel_real_subagents_against_modal() -> None:
+    workdir = Path(tempfile.mkdtemp(prefix="evo-modal-agent-par-"))
+    repo = _build_repo(workdir)
+
+    try:
+        provider_config = (
+            "app_name=evo-live-agent-parallel,"
+            "timeout_seconds=300,"
+            "health_timeout_seconds=90.0,"
+            "pool_size=2"
+        )
+        _evo(
+            ["init", "--target", "agent.py",
+             "--benchmark", "python eval.py",
+             "--gate", "python gate.py",
+             "--metric", "max", "--host", "claude-code"],
+            cwd=repo,
+        )
+
+        parent_id, parent_score = _bootstrap_parent(repo, provider_config)
+        exp_ids = [
+            _allocate_test_experiment(repo, parent_id, provider_config),
+            _allocate_test_experiment(repo, parent_id, provider_config),
         ]
-        evo_run = [cmd for cmd in bash_commands if " evo run " in f" {cmd} "]
 
-        print(f"\n--- verification ---")
-        print(f"    evo write/edit calls: {len(evo_write_or_edit)}")
-        print(f"    evo run calls:        {len(evo_run)}")
+        from evo.backends import remote_state as _rs
 
-        # 1. Agent must have used evo write or edit (not native Write/Edit).
-        assert evo_write_or_edit, (
-            f"agent did not use evo write or evo edit; bash commands were:\n"
-            + "\n".join(f"  {c}" for c in bash_commands)
-        )
+        state = _rs.read_state(repo)
+        assert len(state["sandboxes"]) == 2, state
+        leased = sorted(s["leased_by"]["exp_id"] for s in state["sandboxes"])
+        assert leased == sorted(exp_ids), leased
+        print(f"--- two live sandboxes allocated for {exp_ids[0]} and {exp_ids[1]} ---")
 
-        # 2. Every evo write/edit must include --exp-id <our_exp_id>.
-        for cmd in evo_write_or_edit:
-            assert "--exp-id" in cmd, (
-                f"agent omitted --exp-id from evo command: {cmd}"
+        runs = []
+        for exp_id in exp_ids:
+            brief = _build_brief(exp_id, parent_id, parent_score)
+            print(f"\n--- BRIEF ({exp_id}) ---")
+            print(brief)
+            print(f"--- end brief ({exp_id}) ---\n")
+            runs.append(_launch_claude(exp_id, brief, repo))
+
+        payloads = {run.exp_id: _collect_claude(run) for run in runs}
+
+        for exp_id in exp_ids:
+            _verify_agent_payload(
+                payload=payloads[exp_id],
+                repo=repo,
+                exp_id=exp_id,
+                parent_score=parent_score,
             )
-            assert exp_id in cmd, (
-                f"agent passed wrong --exp-id (expected {exp_id} in: {cmd})"
-            )
-
-        # 3. Native Write/Edit on the sandbox path = bug. Native ops on
-        # local files are fine (e.g., the agent could Read a local note).
-        for c in tool_calls:
-            if c["name"] in ("Write", "Edit", "MultiEdit"):
-                path = c["input"].get("file_path", "")
-                assert "/workspace/" not in path, (
-                    f"agent used native {c['name']} on sandbox path "
-                    f"{path}; should have used evo write/edit"
-                )
-
-        # 4. evo run was called with the right exp_id.
-        assert evo_run, "agent didn't call evo run"
-        run_cmd = next(c for c in evo_run)
-        assert exp_id in run_cmd, f"evo run with wrong exp_id: {run_cmd}"
-
-        # 5. The experiment committed with score > parent.
-        graph = json.loads(
-            (repo / ".evo" / "run_0000" / "graph.json").read_text(encoding="utf-8")
-        )
-        node = graph["nodes"][exp_id]
-        assert node["status"] == "committed", (
-            f"experiment did not commit: {node}"
-        )
-        assert node["score"] > parent_score, (
-            f"score {node['score']} did not beat parent {parent_score}"
-        )
-        print(f"    committed: {node['commit'][:12]} score={node['score']} "
-              f"(parent={parent_score})")
 
     finally:
         print("\n--- backstop cleanup ---")
@@ -381,6 +494,8 @@ def main() -> None:
     _gate()
     print("=== Live: real claude subagent + Modal sandbox ===\n")
     test_real_subagent_against_modal()
+    print("\n=== Live: parallel real claude subagents + Modal sandbox ===\n")
+    test_parallel_real_subagents_against_modal()
     print("\nLIVE REMOTE AGENT MODAL OK")
 
 
