@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -30,6 +31,7 @@ sys.path.insert(0, str(PLUGIN_SRC))
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 from _sandbox_agent_fixture import localhost_sandbox_agent  # noqa: E402
+from _sshd_fixture import localhost_sshd  # noqa: E402
 
 from evo.backends import (  # noqa: E402
     AllocateCtx,
@@ -102,10 +104,11 @@ def _shutdown_dashboard(root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_known_providers_lists_modal_and_manual() -> None:
+def test_known_providers_lists_modal_manual_and_ssh() -> None:
     providers = known_providers()
     assert "modal" in providers, providers
     assert "manual" in providers, providers
+    assert "ssh" in providers, providers
 
 
 def test_unknown_provider_raises_clear_error() -> None:
@@ -137,6 +140,14 @@ def test_manual_provider_requires_base_url() -> None:
     finally:
         if saved is not None:
             os.environ["EVO_SANDBOX_BASE_URL"] = saved
+
+
+def test_ssh_provider_requires_host() -> None:
+    try:
+        load_provider("ssh", {})
+        raise AssertionError("expected RemoteBackendUnavailable")
+    except RemoteBackendUnavailable as exc:
+        assert "requires host" in str(exc), str(exc)
 
 
 def test_health_and_auth(workdir: Path) -> None:
@@ -480,15 +491,129 @@ def test_distinct_remote_configs_can_be_live_in_one_run(workdir: Path) -> None:
             _shutdown_dashboard(repo)
 
 
+def test_ssh_provider_full_lifecycle(workdir: Path) -> None:
+    repo = _build_repo(workdir)
+
+    with localhost_sshd() as ssh_info:
+        env = {"HOME": str(ssh_info["local_home"])}
+        _evo(
+            ["init", "--target", "agent.py",
+             "--benchmark", "python eval.py",
+             "--metric", "max", "--host", "generic"],
+            cwd=repo,
+            env=env,
+        )
+        try:
+            new_result = _evo(
+                [
+                    "new",
+                    "--parent", "root",
+                    "-m", "ssh test",
+                    "--remote", f"ssh:{ssh_info['host']}:{ssh_info['port']}",
+                    "--provider-config", f"key={ssh_info['key']}",
+                ],
+                cwd=repo,
+                env=env,
+                check=False,
+            )
+            assert new_result.returncode == 0, (
+                f"evo new failed:\nSTDOUT: {new_result.stdout}\n"
+                f"STDERR: {new_result.stderr}"
+            )
+
+            graph = json.loads(
+                (repo / ".evo" / "run_0000" / "graph.json").read_text(encoding="utf-8")
+            )
+            node = graph["nodes"]["exp_0000"]
+            assert node["backend"] == "remote", node
+            assert node["backend_config"]["provider"] == "ssh", node
+
+            state_key = backend_state_key("remote", node["backend_config"])
+            state = remote_state.read_state(repo, state_key)
+            sandbox = state["sandboxes"][0]
+            metadata = sandbox["metadata"]
+
+            ssh_check = subprocess.run(
+                [
+                    "ssh",
+                    "-o", "BatchMode=yes",
+                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-p", str(ssh_info["port"]),
+                    "-i", str(ssh_info["key"]),
+                    str(ssh_info["host"]),
+                    (
+                        "sh -lc "
+                        + shlex.quote(
+                            f"test -x {shlex.quote(metadata['agent_bin'])} && "
+                            f"test -s {shlex.quote(metadata['pid_path'])} && "
+                            f"kill -0 \"$(cat {shlex.quote(metadata['pid_path'])})\""
+                        )
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={**os.environ, "HOME": str(ssh_info["local_home"])},
+            )
+            assert ssh_check.returncode == 0, ssh_check.stderr
+
+            with SandboxAgentClient(
+                sandbox["base_url"], bearer_token=sandbox["bearer_token"]
+            ) as client:
+                head = client.process_run(
+                    "git",
+                    args=["rev-parse", "HEAD"],
+                    cwd=metadata["workspace_root"],
+                )
+                assert head.exit_code == 0, head.stderr
+
+            discard = _evo(
+                ["discard", "exp_0000", "--reason", "ssh test cleanup"],
+                cwd=repo,
+                env=env,
+                check=False,
+            )
+            assert discard.returncode == 0, (
+                f"evo discard failed:\nSTDOUT: {discard.stdout}\n"
+                f"STDERR: {discard.stderr}"
+            )
+
+            cleaned = subprocess.run(
+                [
+                    "ssh",
+                    "-o", "BatchMode=yes",
+                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-p", str(ssh_info["port"]),
+                    "-i", str(ssh_info["key"]),
+                    str(ssh_info["host"]),
+                    (
+                        "sh -lc "
+                        + shlex.quote(
+                            f"test ! -e {shlex.quote(metadata['pid_path'])} && "
+                            f"test ! -d {shlex.quote(metadata['remote_root'])}"
+                        )
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={**os.environ, "HOME": str(ssh_info["local_home"])},
+            )
+            assert cleaned.returncode == 0, cleaned.stderr
+        finally:
+            _shutdown_dashboard(repo)
+
+
 def main() -> None:
     workdir = Path(tempfile.mkdtemp(prefix="evo-remote-integ-"))
     try:
         # Tests with no fixture
         for fn in (
-            test_known_providers_lists_modal_and_manual,
+            test_known_providers_lists_modal_manual_and_ssh,
             test_unknown_provider_raises_clear_error,
             test_dotted_path_provider_loads,
             test_manual_provider_requires_base_url,
+            test_ssh_provider_requires_host,
         ):
             print(f"--- {fn.__name__} ---")
             fn()
@@ -503,6 +628,7 @@ def main() -> None:
             test_remote_backend_full_lifecycle,
             test_workspace_ops_cli_subcommands,
             test_distinct_remote_configs_can_be_live_in_one_run,
+            test_ssh_provider_full_lifecycle,
         ):
             sub = workdir / fn.__name__
             sub.mkdir()

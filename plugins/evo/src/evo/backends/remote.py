@@ -146,7 +146,7 @@ class RemoteSandboxBackend:
         slot_id = self._slot_for_exp(ctx.root, node["id"])
         if slot_id is None:
             return  # nothing to do
-        handle = self._handles.get(slot_id)
+        handle = self._handle_for_slot(ctx.root, slot_id)
         if handle is not None:
             try:
                 self.provider.tear_down(handle)
@@ -187,7 +187,7 @@ class RemoteSandboxBackend:
             keep: list[dict[str, Any]] = []
             for sandbox in state["sandboxes"]:
                 if sandbox.get("leased_by") is None:
-                    handle = self._handles.get(sandbox["id"])
+                    handle = self._handle_from_record(sandbox)
                     if handle is not None:
                         try:
                             self.provider.tear_down(handle)
@@ -210,11 +210,8 @@ class RemoteSandboxBackend:
         except FileNotFoundError:
             state = {"sandboxes": []}
         for sandbox in state.get("sandboxes", []):
-            handle = self._handles.get(sandbox["id"])
+            handle = self._handle_from_record(sandbox)
             if handle is None:
-                # Reconstitute a minimal handle so tear_down has something
-                # to work with. Provider-specific tear_down should be
-                # idempotent; we don't have the metadata dict on cold start.
                 continue
             try:
                 self.provider.tear_down(handle)
@@ -341,31 +338,20 @@ class RemoteSandboxBackend:
                 f"No sandbox leased by {node.get('id')!r}; "
                 f"call backend.allocate() first."
             )
-        handle = self._handles.get(slot_id)
+        handle = self._handle_for_slot(root, slot_id)
         if handle is None:
-            # Cold-start: re-hydrate from remote_state.json. Bearer token
-            # IS persisted (POC tradeoff; see SPEC roadmap for the
-            # encrypted-keyfile work).
-            state = remote_state.read_state(root, self.state_key)
-            sandbox_record = next(
-                (s for s in state["sandboxes"] if s["id"] == slot_id), None
+            raise RuntimeError(
+                f"Sandbox slot {slot_id} for {node.get('id')!r} is missing "
+                f"its provisioned handle in remote_state. Re-allocate via "
+                f"`evo discard {node['id']} --reason ...` + "
+                f"`evo new --parent ...`."
             )
-            if sandbox_record is None or not sandbox_record.get("base_url"):
-                raise RuntimeError(
-                    f"Sandbox slot {slot_id} for {node.get('id')!r} has no "
-                    f"base_url in remote_state. Re-allocate via "
-                    f"`evo discard {node['id']} --reason ...` + "
-                    f"`evo new --parent ...`."
-                )
-            handle = SandboxHandle(
-                provider=state["provider"],
-                base_url=sandbox_record["base_url"],
-                bearer_token=sandbox_record.get("bearer_token", ""),
-                native_id=sandbox_record.get("native_id") or f"slot-{slot_id}",
-                metadata=sandbox_record.get("metadata") or {},
+        if not self.provider.is_alive(handle):
+            raise RuntimeError(
+                f"Sandbox for {node.get('id')!r} is no longer reachable. "
+                f"Re-allocate via `evo discard {node['id']} --reason ...` + "
+                f"`evo new --parent ...`."
             )
-            self._handles[slot_id] = handle
-            self._tokens[slot_id] = handle.bearer_token
         token = self._tokens.get(slot_id, handle.bearer_token)
         return SandboxAgentClient(handle.base_url, bearer_token=token)
 
@@ -483,6 +469,34 @@ class RemoteSandboxBackend:
                     if lease and lease.get("exp_id") == exp_id:
                         sandbox["leased_by"] = None
                     break
+
+    def _handle_for_slot(self, root: Path, slot_id: int) -> SandboxHandle | None:
+        handle = self._handles.get(slot_id)
+        if handle is not None:
+            return handle
+        try:
+            state = remote_state.read_state(root, self.state_key)
+        except FileNotFoundError:
+            return None
+        sandbox = next((s for s in state["sandboxes"] if s["id"] == slot_id), None)
+        return self._handle_from_record(sandbox)
+
+    def _handle_from_record(
+        self, sandbox_record: dict[str, Any] | None
+    ) -> SandboxHandle | None:
+        if sandbox_record is None or not sandbox_record.get("base_url"):
+            return None
+        slot_id = sandbox_record["id"]
+        handle = SandboxHandle(
+            provider=self.provider_name,
+            base_url=sandbox_record["base_url"],
+            bearer_token=sandbox_record.get("bearer_token", ""),
+            native_id=sandbox_record.get("native_id") or f"slot-{slot_id}",
+            metadata=sandbox_record.get("metadata") or {},
+        )
+        self._handles[slot_id] = handle
+        self._tokens[slot_id] = handle.bearer_token
+        return handle
 
     def _reconcile_orphaned(self, root: Path) -> None:
         """Clear leases whose owning experiments are now in a terminal state.

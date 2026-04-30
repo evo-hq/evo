@@ -46,9 +46,15 @@ def _load_manual(config: dict[str, Any]) -> SandboxProvider:
     return _manual_module.ManualProvider(config)
 
 
+def _load_ssh(config: dict[str, Any]) -> SandboxProvider:
+    from . import ssh as _ssh_module
+    return _ssh_module.SSHProvider(config)
+
+
 _LOADERS: dict[str, Callable[[dict[str, Any]], SandboxProvider]] = {
     "modal": _load_modal,
     "manual": _load_manual,
+    "ssh": _load_ssh,
 }
 
 

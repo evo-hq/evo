@@ -1,0 +1,5 @@
+- Modal import fails: install the `modal` package into the same environment that provides `evo`.
+- Modal auth fails: rerun `modal token new` and confirm the token file exists for the same user running `evo`.
+- SSH tunnel fails immediately: the local forwarded port is busy, or the remote host rejected the key.
+- SSH health never comes up: evo connected over SSH, but sandbox-agent did not start cleanly on the remote machine.
+- Remote git commands fail: confirm the remote host has `git` installed and writable disk under `/tmp`.
