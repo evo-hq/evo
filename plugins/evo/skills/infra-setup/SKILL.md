@@ -19,10 +19,11 @@ Use this when the user wants to change where experiments run: local worktrees, p
 
 1. Identify the target:
    - `worktree` or `pool` means local backends.
-   - `modal`, `ssh:...`, or another remote spec means `backend=remote`.
+   - `modal`, `e2b`, `ssh:...`, or another remote spec means `backend=remote`.
 2. If the target is remote, parse the provider choice the same way evo CLI does:
-   - `modal`
-   - `ssh:user@host[:port]`
+- `modal`
+- `e2b`
+- `ssh:user@host[:port]`
    - built-in provider name
    - dotted import path
 3. Check whether evo itself appears to be installed via `pipx`, `uv tool`, or a venv by calling `python -c "from evo.providers import detect_install_method; print(detect_install_method())"`.
@@ -47,6 +48,7 @@ evo config backend pool --workspaces /abs/slot-a,/abs/slot-b
 ## Provider notes
 
 - `modal`: requires the `modal` Python package and a Modal token. Use `references/modal-auth-prompt.md`.
+- `e2b`: requires the `e2b` Python package and an `E2B_API_KEY`. Use `references/e2b-auth-prompt.md`.
 - `ssh`: requires local `ssh`, remote SSH access, and a reachable `host`. No Python SDK. Use `references/ssh-auth-prompt.md`.
 - `manual`: no provisioning. Only ask for the sandbox-agent URL/token if the user explicitly wants manual mode.
 

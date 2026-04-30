@@ -51,10 +51,24 @@ def _load_ssh(config: dict[str, Any]) -> SandboxProvider:
     return _ssh_module.SSHProvider(config)
 
 
+def _load_e2b(config: dict[str, Any]) -> SandboxProvider:
+    try:
+        from . import e2b as _e2b_module
+    except ImportError as exc:
+        raise RemoteBackendUnavailable(
+            "E2B provider requested but the 'e2b' Python SDK is not "
+            "installed. Install it with: pip install e2b "
+            "(or pipx install --pip-args=--pre --force 'evo-hq-cli[e2b]' "
+            "once the optional dep group is published)."
+        ) from exc
+    return _e2b_module.E2BProvider(config)
+
+
 _LOADERS: dict[str, Callable[[dict[str, Any]], SandboxProvider]] = {
     "modal": _load_modal,
     "manual": _load_manual,
     "ssh": _load_ssh,
+    "e2b": _load_e2b,
 }
 
 

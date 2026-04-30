@@ -8,7 +8,6 @@ Modal SDK reference: https://modal.com/docs/reference/modal.Sandbox
 from __future__ import annotations
 
 import os
-import time
 from typing import Any
 
 # Lazy-import the modal SDK at module-import-time, but raise our typed
@@ -22,16 +21,11 @@ from ..protocol import (
     SandboxProvider,
     SandboxSpec,
 )
-
-
-# Pin the sandbox-agent release we install into the image. Rivet ships
-# binaries from releases.rivet.dev (NOT GitHub releases — those have no
-# attached assets). The 0.4.x channel auto-tracks the latest 0.4.* patch.
-SANDBOX_AGENT_VERSION = "0.4.x"
-SANDBOX_AGENT_URL = (
-    f"https://releases.rivet.dev/sandbox-agent/{SANDBOX_AGENT_VERSION}/"
-    f"binaries/sandbox-agent-x86_64-unknown-linux-musl"
+from ._common import (
+    SANDBOX_AGENT_BINARY_URL,
+    wait_for_sandbox_agent,
 )
+
 
 # Provider-side defaults. Overridable via provider_config at init time.
 DEFAULT_APP_NAME = "evo-sandbox"
@@ -153,7 +147,12 @@ class ModalProvider:
         # container's running, but we also need sandbox-agent to be
         # listening. Poll /v1/health.
         try:
-            self._wait_for_agent_ready(handle, timeout_s=self._health_timeout)
+            wait_for_sandbox_agent(
+                handle.base_url,
+                handle.bearer_token,
+                timeout_s=self._health_timeout,
+                label=f"Modal sandbox at {handle.base_url}",
+            )
         except Exception:
             try:
                 sandbox.terminate()
@@ -200,7 +199,7 @@ class ModalProvider:
             "git", "ripgrep", "curl", "ca-certificates", "tar",
             *self._image_extra_apt,
         ).run_commands(
-            f"curl -fsSL {SANDBOX_AGENT_URL} > /usr/local/bin/sandbox-agent",
+            f"curl -fsSL {SANDBOX_AGENT_BINARY_URL} > /usr/local/bin/sandbox-agent",
             "chmod +x /usr/local/bin/sandbox-agent",
         )
         if self._image_extra_pip:
@@ -212,30 +211,6 @@ class ModalProvider:
 
         self._app = app
         self._image = image
-
-    def _wait_for_agent_ready(
-        self, handle: SandboxHandle, timeout_s: float
-    ) -> None:
-        """Poll /v1/health on the sandbox URL until 200, up to timeout_s."""
-        # Late-import to avoid circular imports at module load.
-        from ...sandbox_client import SandboxAgentClient
-
-        deadline = time.monotonic() + timeout_s
-        last_exc: Exception | None = None
-        while time.monotonic() < deadline:
-            try:
-                with SandboxAgentClient(handle.base_url, handle.bearer_token) as c:
-                    c.health()
-                return
-            except Exception as exc:
-                last_exc = exc
-                time.sleep(1.0)
-        raise RemoteBackendUnavailable(
-            f"Modal sandbox at {handle.base_url} did not become healthy "
-            f"within {timeout_s}s. sandbox-agent may have failed to start. "
-            f"Last error: {last_exc}"
-        )
-
     @staticmethod
     def _parse_list(value: Any) -> list[str]:
         """Allow apt_install / pip_install to be passed as either a list

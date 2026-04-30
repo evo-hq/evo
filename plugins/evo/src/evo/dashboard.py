@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from pathlib import Path
+from typing import Any
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
@@ -14,7 +17,9 @@ from .core import (
     evo_dir,
     experiments_dir_for,
     frontier_nodes,
+    graph_path,
     infra_path,
+    lock_file_for,
     list_runs,
     load_annotations,
     load_config,
@@ -33,6 +38,379 @@ from .frontier_strategies import (
 from .scratchpad import write_scratchpad
 
 STATIC_DIR = Path(__file__).parent / "static"
+_SECRET_SUBSTRINGS = ("token", "secret", "password", "api_key")
+
+
+def _redact_value(value: Any, *, key: str | None = None) -> Any:
+    if key is not None and any(part in key.lower() for part in _SECRET_SUBSTRINGS):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {k: _redact_value(v, key=k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(v) for v in value]
+    return value
+
+
+def _public_node(
+    root: Path,
+    node: dict[str, Any],
+    *,
+    workspace_config: dict[str, Any],
+) -> dict[str, Any]:
+    from .backends import backend_spec_for_node, backend_state_key
+
+    public = dict(node)
+    if "backend_config" in public:
+        public["backend_config"] = _redact_value(public.get("backend_config") or {})
+    backend_name, backend_config = backend_spec_for_node(
+        root,
+        node,
+        workspace_config=workspace_config,
+    )
+    resolved = {
+        "name": backend_name,
+        "config": _redact_value(backend_config),
+        "source": "override" if node.get("backend") else "workspace-default",
+        "state_key": (
+            backend_state_key(backend_name, backend_config)
+            if backend_name in {"pool", "remote"}
+            else None
+        ),
+    }
+    if backend_name == "remote":
+        resolved["provider"] = backend_config.get("provider")
+    public["resolved_backend"] = resolved
+    return public
+
+
+def _pool_runtime_summary(root: Path, config: dict[str, Any]) -> dict[str, Any]:
+    from .backends import backend_state_key
+    from .backends import pool_state
+
+    state_key = backend_state_key("pool", config)
+    try:
+        state = pool_state.read_state(root, state_key)
+    except FileNotFoundError:
+        return {
+            "kind": "pool",
+            "state_key": state_key,
+            "initialized": False,
+            "slot_count": len(config.get("slots", []) or []),
+            "leased_count": 0,
+            "free_count": len(config.get("slots", []) or []),
+            "slots": [],
+        }
+    slots = [dict(slot) for slot in state.get("slots", [])]
+    leased_count = sum(1 for slot in slots if slot.get("leased_by"))
+    return {
+        "kind": "pool",
+        "state_key": state_key,
+        "initialized": True,
+        "state_file": f"pool-{state_key}.json",
+        "slot_count": len(slots),
+        "leased_count": leased_count,
+        "free_count": len(slots) - leased_count,
+        "slots": slots,
+    }
+
+
+def _remote_runtime_summary(root: Path, config: dict[str, Any]) -> dict[str, Any]:
+    from .backends import backend_state_key
+    from .backends import remote_state
+
+    state_key = backend_state_key("remote", config)
+    provider_config = dict(config.get("provider_config", {}) or {})
+    try:
+        state = remote_state.read_state(root, state_key)
+    except FileNotFoundError:
+        pool_size = provider_config.get("pool_size")
+        return {
+            "kind": "remote",
+            "state_key": state_key,
+            "initialized": False,
+            "provider": config.get("provider"),
+            "pool_size": None if pool_size in (None, "", "unbounded") else pool_size,
+            "sandbox_count": 0,
+            "leased_count": 0,
+            "free_count": 0,
+            "sandboxes": [],
+        }
+    sandboxes = [_redact_value(dict(sandbox)) for sandbox in state.get("sandboxes", [])]
+    leased_count = sum(1 for sandbox in sandboxes if sandbox.get("leased_by"))
+    pool_size = provider_config.get("pool_size")
+    return {
+        "kind": "remote",
+        "state_key": state_key,
+        "initialized": True,
+        "state_file": f"remote-{state_key}.json",
+        "provider": state.get("provider", config.get("provider")),
+        "pool_size": None if pool_size in (None, "", "unbounded") else pool_size,
+        "sandbox_count": len(sandboxes),
+        "leased_count": leased_count,
+        "free_count": len(sandboxes) - leased_count,
+        "sandboxes": sandboxes,
+    }
+
+
+def _backend_runtime_summary(root: Path, name: str, config: dict[str, Any]) -> dict[str, Any]:
+    if name == "pool":
+        return _pool_runtime_summary(root, config)
+    if name == "remote":
+        return _remote_runtime_summary(root, config)
+    return {"kind": "worktree", "state_key": None, "initialized": True}
+
+
+def _module_available(name: str) -> bool:
+    try:
+        __import__(name)
+        return True
+    except Exception:
+        return False
+
+
+def _provider_readiness(config: dict[str, Any]) -> dict[str, Any]:
+    remote_cfg = dict(config.get("execution_backend_config", {}) or {})
+    provider = remote_cfg.get("provider")
+    provider_config = dict(remote_cfg.get("provider_config", {}) or {})
+    modal_auth_present = bool(os.environ.get("MODAL_TOKEN_ID")) or (Path.home() / ".modal.toml").exists()
+    e2b_source = (
+        "workspace-config"
+        if provider == "e2b" and provider_config.get("api_key")
+        else ("env" if os.environ.get("E2B_API_KEY") else "missing")
+    )
+    manual_cfg = provider_config if provider == "manual" else {}
+    ssh_cfg = provider_config if provider == "ssh" else {}
+    return {
+        "modal": {
+            "sdk_installed": _module_available("modal"),
+            "auth_present": modal_auth_present,
+            "auth_source": (
+                "env"
+                if os.environ.get("MODAL_TOKEN_ID")
+                else ("modal.toml" if (Path.home() / ".modal.toml").exists() else "missing")
+            ),
+        },
+        "e2b": {
+            "sdk_installed": _module_available("e2b"),
+            "auth_present": e2b_source != "missing",
+            "auth_source": e2b_source,
+        },
+        "ssh": {
+            "ssh_binary": shutil.which("ssh") is not None,
+            "curl_binary": shutil.which("curl") is not None,
+            "configured_host": ssh_cfg.get("host") if ssh_cfg else None,
+            "configured_key": bool(ssh_cfg.get("key")) if ssh_cfg else False,
+        },
+        "manual": {
+            "configured_base_url": manual_cfg.get("base_url") if manual_cfg else None,
+            "configured_token": bool(manual_cfg.get("bearer_token")) if manual_cfg else False,
+        },
+    }
+
+
+def _clean_provider_config(data: dict[str, Any]) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {}
+    for key, value in (data or {}).items():
+        if isinstance(value, str):
+            value = value.strip()
+        if value in ("", None):
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
+def _preserve_secret_fields(
+    new_config: dict[str, Any],
+    old_config: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(new_config)
+    for key, value in (old_config or {}).items():
+        if key in merged:
+            continue
+        if any(part in key.lower() for part in _SECRET_SUBSTRINGS) and value not in ("", None):
+            merged[key] = value
+    return merged
+
+
+def _normalize_workspaces(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, list):
+        items = [str(item).strip() for item in value]
+    else:
+        raise ValueError("workspaces must be a comma-separated string or array")
+    workspaces = [item for item in items if item]
+    for item in workspaces:
+        if not Path(item).is_absolute():
+            raise ValueError(f"pool workspace must be an absolute path: {item}")
+    return workspaces
+
+
+def _validate_and_save_execution_settings(root: Path, body: dict[str, Any]) -> dict[str, Any]:
+    from .backends import (
+        backend_spec_for_node,
+        backend_spec_from_config,
+        backend_state_key,
+        load_backend,
+    )
+    from .backends import pool_state
+    from .locking import advisory_lock
+
+    backend_name = str(body.get("backend", "")).strip()
+    if backend_name not in {"worktree", "pool", "remote"}:
+        raise ValueError("backend must be one of: worktree, pool, remote")
+
+    config = load_config(root)
+    old_name, old_config = backend_spec_from_config(config)
+
+    if backend_name == "worktree":
+        backend_config: dict[str, Any] = {}
+    elif backend_name == "pool":
+        workspaces = _normalize_workspaces(body.get("workspaces"))
+        if not workspaces:
+            raise ValueError("pool backend requires at least one absolute workspace path")
+        backend_config = {"slots": workspaces}
+    else:
+        provider = str(body.get("provider", "")).strip()
+        if not provider:
+            raise ValueError("remote backend requires a provider")
+        provider_config = _clean_provider_config(body.get("provider_config") or {})
+        if old_name == "remote" and old_config.get("provider") == provider:
+            provider_config = _preserve_secret_fields(
+                provider_config,
+                dict(old_config.get("provider_config", {}) or {}),
+            )
+        backend_config = {"provider": provider, "provider_config": provider_config}
+
+    with advisory_lock(lock_file_for(graph_path(root))):
+        config = load_config(root)
+        graph = load_graph(root)
+        old_name, old_config = backend_spec_from_config(config)
+
+        load_backend(
+            root,
+            explicit_name=backend_name,
+            explicit_config=backend_config,
+        )
+
+        if (backend_name, backend_config) != (old_name, old_config):
+            blocking: list[str] = []
+            for node_id, node in graph["nodes"].items():
+                if node_id == "root":
+                    continue
+                if node.get("status") not in {"pending", "active", "evaluated", "failed"}:
+                    continue
+                node_name, node_config = backend_spec_for_node(
+                    root,
+                    node,
+                    workspace_config=config,
+                )
+                if (node_name, node_config) == (old_name, old_config):
+                    blocking.append(node_id)
+            if blocking:
+                raise RuntimeError(
+                    "cannot change workspace default backend while experiments "
+                    f"with the old backend are still in flight: {', '.join(blocking)}"
+                )
+
+        config["execution_backend"] = backend_name
+        if backend_config:
+            config["execution_backend_config"] = backend_config
+        else:
+            config.pop("execution_backend_config", None)
+        save_config(root, config)
+
+        if backend_name == "pool":
+            pool_state.init_state(
+                root,
+                list(backend_config.get("slots", [])),
+                backend_state_key(backend_name, backend_config),
+            )
+    return _workspace_summary(root)
+
+
+def _workspace_summary(root: Path) -> dict[str, Any]:
+    from .backends import backend_spec_for_node, backend_spec_from_config
+
+    config = load_config(root)
+    graph = load_graph(root)
+    host = _load_meta(root).get("host")
+    default_name, default_config = backend_spec_from_config(config)
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for node in graph["nodes"].values():
+        if node["id"] == "root":
+            continue
+        backend_name, backend_config = backend_spec_for_node(
+            root,
+            node,
+            workspace_config=config,
+        )
+        key = (backend_name, json.dumps(backend_config or {}, sort_keys=True))
+        entry = grouped.setdefault(
+            key,
+            {
+                "name": backend_name,
+                "config": dict(backend_config or {}),
+                "node_ids": [],
+                "active_node_ids": [],
+            },
+        )
+        entry["node_ids"].append(node["id"])
+        if node.get("status") == "active":
+            entry["active_node_ids"].append(node["id"])
+    default_key = (default_name, json.dumps(default_config or {}, sort_keys=True))
+    grouped.setdefault(
+        default_key,
+        {
+            "name": default_name,
+            "config": dict(default_config or {}),
+            "node_ids": [],
+            "active_node_ids": [],
+        },
+    )
+
+    backend_configs: list[dict[str, Any]] = []
+    for (name, _), entry in grouped.items():
+        cfg = entry["config"]
+        backend_configs.append(
+            {
+                "name": name,
+                "provider": cfg.get("provider") if name == "remote" else None,
+                "config": _redact_value(cfg),
+                "is_default": (name, cfg) == (default_name, default_config),
+                "node_ids": sorted(entry["node_ids"]),
+                "active_node_ids": sorted(entry["active_node_ids"]),
+                "runtime": _backend_runtime_summary(root, name, cfg),
+            }
+        )
+    backend_configs.sort(
+        key=lambda item: (
+            not item["is_default"],
+            item["name"],
+            item.get("provider") or "",
+            json.dumps(item["config"], sort_keys=True),
+        )
+    )
+
+    return {
+        "target": config.get("target", ""),
+        "benchmark": config.get("benchmark", ""),
+        "gate": config.get("gate"),
+        "metric": config.get("metric", "max"),
+        "host": host,
+        "commit_strategy": config.get("commit_strategy", "all"),
+        "frontier_strategy": config.get("frontier_strategy"),
+        "keyfile_present": (root / ".evo" / "keyfile").exists(),
+        "provider_readiness": _provider_readiness(config),
+        "default_backend": {
+            "name": default_name,
+            "provider": default_config.get("provider") if default_name == "remote" else None,
+            "config": _redact_value(default_config),
+        },
+        "backend_configs": backend_configs,
+    }
 
 
 def create_app(root: Path | None = None) -> Flask:
@@ -76,7 +454,15 @@ def create_app(root: Path | None = None) -> Flask:
 
     @app.get("/api/graph")
     def graph():
-        return jsonify(load_graph(_root()))
+        root = _root()
+        config = load_config(root)
+        graph = load_graph(root)
+        public_graph = dict(graph)
+        public_graph["nodes"] = {
+            node_id: _public_node(root, node, workspace_config=config)
+            for node_id, node in graph["nodes"].items()
+        }
+        return jsonify(public_graph)
 
     @app.get("/api/tree")
     def tree():
@@ -102,7 +488,22 @@ def create_app(root: Path | None = None) -> Flask:
 
     @app.get("/api/node/<exp_id>")
     def node(exp_id: str):
-        return jsonify(load_graph(_root())["nodes"][exp_id])
+        root = _root()
+        config = load_config(root)
+        return jsonify(_public_node(root, load_graph(root)["nodes"][exp_id], workspace_config=config))
+
+    @app.get("/api/workspace")
+    def workspace():
+        return jsonify(_workspace_summary(_root()))
+
+    @app.post("/api/workspace/execution")
+    def workspace_execution():
+        body = request.get_json(silent=True) or {}
+        try:
+            summary = _validate_and_save_execution_settings(_root(), body)
+        except (ValueError, RuntimeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(summary)
 
     def _latest_attempt_n(root: Path, exp_id: str) -> int | None:
         """Return the highest attempt number on disk for an experiment, or
