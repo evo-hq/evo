@@ -27,9 +27,10 @@ def _load_modal(config: dict[str, Any]) -> SandboxProvider:
     except ImportError as exc:
         raise RemoteBackendUnavailable(
             "Modal provider requested but the 'modal' Python SDK is not "
-            "installed. Install it with: pip install modal "
-            "(or pipx install --pip-args=--pre --force 'evo-hq-cli[modal]' "
-            "once the optional dep group is published)."
+            "installed. Install it with: python -m pip install "
+            "'evo-hq-cli[modal]' "
+            "(or `pipx inject evo-hq-cli modal` if evo itself was installed "
+            "with pipx)."
         ) from exc
     return _modal_module.ModalProvider(config)
 
@@ -57,9 +58,10 @@ def _load_e2b(config: dict[str, Any]) -> SandboxProvider:
     except ImportError as exc:
         raise RemoteBackendUnavailable(
             "E2B provider requested but the 'e2b' Python SDK is not "
-            "installed. Install it with: pip install e2b "
-            "(or pipx install --pip-args=--pre --force 'evo-hq-cli[e2b]' "
-            "once the optional dep group is published)."
+            "installed. Install it with: python -m pip install "
+            "'evo-hq-cli[e2b]' "
+            "(or `pipx inject evo-hq-cli e2b` if evo itself was installed "
+            "with pipx)."
         ) from exc
     return _e2b_module.E2BProvider(config)
 
@@ -70,8 +72,10 @@ def _load_daytona(config: dict[str, Any]) -> SandboxProvider:
     except ImportError as exc:
         raise RemoteBackendUnavailable(
             "Daytona provider requested but the 'daytona' Python SDK is not "
-            "installed. Install it with: pip install daytona "
-            "(or pipx inject evo-hq-cli daytona once the optional dep group is published)."
+            "installed. Install it with: python -m pip install "
+            "'evo-hq-cli[daytona]' "
+            "(or `pipx inject evo-hq-cli daytona` if evo itself was installed "
+            "with pipx)."
         ) from exc
     return _daytona_module.DaytonaProvider(config)
 
@@ -82,8 +86,9 @@ def _load_aws(config: dict[str, Any]) -> SandboxProvider:
     except ImportError as exc:
         raise RemoteBackendUnavailable(
             "AWS provider requested but the 'boto3' Python SDK is not installed. "
-            "Install it with: pip install boto3 "
-            "(or pipx inject evo-hq-cli boto3 once the optional dep group is published)."
+            "Install it with: python -m pip install 'evo-hq-cli[aws]' "
+            "(or `pipx inject evo-hq-cli boto3` if evo itself was installed "
+            "with pipx)."
         ) from exc
     return _aws_module.AWSProvider(config)
 
@@ -94,8 +99,9 @@ def _load_hetzner(config: dict[str, Any]) -> SandboxProvider:
     except ImportError as exc:
         raise RemoteBackendUnavailable(
             "Hetzner provider requested but the 'hcloud' Python SDK is not installed. "
-            "Install it with: pip install hcloud "
-            "(or pipx inject evo-hq-cli hcloud once the optional dep group is published)."
+            "Install it with: python -m pip install 'evo-hq-cli[hetzner]' "
+            "(or `pipx inject evo-hq-cli hcloud` if evo itself was installed "
+            "with pipx)."
         ) from exc
     return _hetzner_module.HetznerProvider(config)
 

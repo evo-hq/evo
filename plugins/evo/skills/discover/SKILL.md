@@ -42,6 +42,7 @@ Do not try to auto-install. Host sandbox + network policy may block it; leaving 
 - **Baseline is a worktree, not a main commit.** `evo init` creates `.evo/` but nothing in main changes. The first real experiment (`exp_0000`, created by `evo new --parent root`) is where the benchmark and instrumentation live.
 - **Ask the user as little as possible.** Every question is a beat of friction. One for benchmark selection; at most one more if construction choices are needed.
 - **Relay the dashboard URL verbatim when it prints.** This is the user's window into the run.
+- **Infra setup is not user-invocable.** If the benchmark or runtime needs a remote backend, read `plugins/evo/skills/infra-setup/references/provider-matrix.md` for the provider summary and setup/auth steps.
 
 ## 1. Explore the repo
 
