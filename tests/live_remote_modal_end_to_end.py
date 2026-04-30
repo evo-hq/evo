@@ -383,6 +383,107 @@ def test_two_live_modal_allocations_same_config() -> None:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def test_modal_streaming_salvages_partial_artifacts() -> None:
+    """Kill a real Modal sandbox mid-run and verify partial logs/traces survive."""
+    workdir = Path(tempfile.mkdtemp(prefix="evo-modal-salvage-"))
+    repo = workdir / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "agent.py").write_text("STATE = 'baseline'\n", encoding="utf-8")
+    (repo / "eval.py").write_text(
+        "import json, os, sys, time\n"
+        "from pathlib import Path\n"
+        "traces = Path(os.environ['EVO_TRACES_DIR'])\n"
+        "traces.mkdir(parents=True, exist_ok=True)\n"
+        "for i in range(6):\n"
+        "    payload = {'task_id': i, 'score': float(i + 1), 'summary': f'task-{i}'}\n"
+        "    (traces / f'task_{i}.json').write_text(json.dumps(payload))\n"
+        "    print(f'tick-{i}', flush=True)\n"
+        "    print(f'err-{i}', file=sys.stderr, flush=True)\n"
+        "    time.sleep(1.0)\n"
+        "Path(os.environ['EVO_RESULT_PATH']).write_text(json.dumps({'score': 6.0, 'tasks': {'0': 6.0}}))\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "stream fixture"], cwd=repo, check=True)
+
+    try:
+        provider_config = (
+            "app_name=evo-live-salvage,"
+            "timeout_seconds=300,"
+            "health_timeout_seconds=90.0"
+        )
+        _evo(
+            ["init", "--target", "agent.py",
+             "--benchmark", "python eval.py",
+             "--metric", "max", "--host", "generic"],
+            cwd=repo,
+        )
+        print("--- evo init OK ---")
+
+        _new_remote_modal(
+            repo,
+            parent="root",
+            hypothesis="modal salvage",
+            provider_config=provider_config,
+            timeout=300,
+        )
+        print("--- exp_0000 allocated ---")
+
+        from evo.backends import remote_state as _rs
+        import modal
+
+        state = _rs.read_state(repo)
+        sandbox = next(
+            s for s in state["sandboxes"]
+            if (s.get("leased_by") or {}).get("exp_id") == "exp_0000"
+        )
+        native_id = sandbox["native_id"]
+
+        proc = subprocess.Popen(
+            ["uv", "run", "--project", str(PLUGIN_ROOT), "evo", "run", "exp_0000"],
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(3.5)
+        print(f"--- terminating Modal sandbox {native_id} mid-run ---")
+        modal.Sandbox.from_id(native_id).terminate()
+        stdout, stderr = proc.communicate(timeout=180)
+        assert proc.returncode != 0, (stdout, stderr)
+
+        attempt_dir = (
+            repo / ".evo" / "run_0000" / "experiments" / "exp_0000" / "attempts" / "001"
+        )
+        benchmark_log = (attempt_dir / "benchmark.log").read_text(encoding="utf-8")
+        benchmark_err = (attempt_dir / "benchmark_err.log").read_text(encoding="utf-8")
+        traces_dir = attempt_dir / "traces"
+        trace_files = sorted(traces_dir.glob("task_*.json"))
+
+        assert "tick-0" in benchmark_log, benchmark_log
+        assert "err-0" in benchmark_err, benchmark_err
+        assert trace_files, list(traces_dir.glob("*"))
+
+        graph = json.loads(
+            (repo / ".evo" / "run_0000" / "graph.json").read_text(encoding="utf-8")
+        )
+        node = graph["nodes"]["exp_0000"]
+        assert node["status"] == "failed", node
+        assert node.get("score") is not None, node
+        assert node["score"] >= 1.0, node
+        print(
+            f"--- salvage OK: {len(trace_files)} traces, "
+            f"score={node['score']}, stdout bytes={len(benchmark_log)} ---"
+        )
+    finally:
+        print("--- backstop cleanup ---")
+        _evo(["reset", "--yes"], cwd=repo, check=False)
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def test_branched_tree_modal() -> None:
     """Multi-branch realistic experiment tree on Modal.
 
@@ -598,6 +699,9 @@ def main() -> None:
     print()
     print("=== Modal multi-allocation same config ===")
     test_two_live_modal_allocations_same_config()
+    print()
+    print("=== Modal mid-run salvage ===")
+    test_modal_streaming_salvages_partial_artifacts()
     print()
     print("=== Modal multi-branch experiment tree ===")
     test_branched_tree_modal()
