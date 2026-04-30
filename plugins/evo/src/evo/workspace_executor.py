@@ -1,13 +1,14 @@
-"""Abstraction over local-subprocess vs. remote-sandbox-agent execution.
+"""Abstraction over local-subprocess vs. provider-owned remote execution.
 
 `evo run` (and a few other CLI commands) need to run shell commands and
 read/write files in the experiment's workspace. In `worktree` and `pool`
 modes the workspace is a local directory; in `remote` mode it lives
-inside a sandbox container reachable via sandbox-agent's HTTP API.
+inside a sandbox container reachable via the backend's provider-owned
+client object.
 
 `WorkspaceExecutor` is the seam. Two implementations:
   - `LocalExecutor`: subprocess + Path operations (existing behavior)
-  - `RemoteExecutor`: routed through a `SandboxAgentClient`
+  - `RemoteExecutor`: routed through a provider-owned sandbox client
 
 Stream semantics (run vs. stream):
   - `run()` is one-shot: blocks until the process exits, returns
@@ -29,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from .sandbox_client import SandboxAgentClient
+from .backends.protocol import SandboxClient
 
 
 @dataclass
@@ -218,20 +219,18 @@ class LocalExecutor(WorkspaceExecutor):
 
 
 # ---------------------------------------------------------------------------
-# Remote executor -- routes everything through SandboxAgentClient
+# Remote executor -- routes everything through the provider sandbox client
 # ---------------------------------------------------------------------------
 
 
 class RemoteExecutor(WorkspaceExecutor):
-    """Talks to one sandbox-agent instance. Holds the HTTP session for the
+    """Talks to one remote sandbox client. Holds the client session for the
     duration of `evo run`; closed at the end."""
 
     is_remote = True
 
-    def __init__(self, client: SandboxAgentClient) -> None:
+    def __init__(self, client: SandboxClient) -> None:
         self.client = client
-        self._base_url = client.base_url
-        self._bearer_token = client.bearer_token
 
     def run(
         self,
@@ -292,12 +291,10 @@ class RemoteExecutor(WorkspaceExecutor):
         started = time.monotonic()
         stop_event = threading.Event()
         log_errors: list[tuple[str, Exception]] = []
-        log_clients: list[SandboxAgentClient] = []
         mirrored_sizes: dict[str, int | None] = {}
 
         def _consume_logs(stream_name: str, path: Path) -> None:
-            log_client = SandboxAgentClient(self._base_url, self._bearer_token)
-            log_clients.append(log_client)
+            log_client = self.client.clone()
             try:
                 with path.open("ab") as handle:
                     for entry in log_client.process_logs(
@@ -312,7 +309,7 @@ class RemoteExecutor(WorkspaceExecutor):
             finally:
                 log_client.close()
 
-        def _mirror_once(client: SandboxAgentClient) -> None:
+        def _mirror_once(client: SandboxClient) -> None:
             if mirror_remote_dir is None or mirror_local_dir is None:
                 return
             mirror_local_dir.mkdir(parents=True, exist_ok=True)
@@ -335,9 +332,10 @@ class RemoteExecutor(WorkspaceExecutor):
         def _mirror_loop() -> None:
             if mirror_remote_dir is None or mirror_local_dir is None:
                 return
-            mirror_client = SandboxAgentClient(self._base_url, self._bearer_token)
+            mirror_client = self.client.clone()
             try:
-                while not stop_event.wait(0.5):
+                _mirror_once(mirror_client)
+                while not stop_event.wait(0.25):
                     _mirror_once(mirror_client)
                 _mirror_once(mirror_client)
             finally:
@@ -363,6 +361,8 @@ class RemoteExecutor(WorkspaceExecutor):
         stdout_thread.start()
         stderr_thread.start()
         mirror_thread.start()
+        if mirror_remote_dir is not None and mirror_local_dir is not None:
+            _mirror_once(self.client)
 
         timed_out = False
         status: dict[str, Any] | None = None
@@ -391,13 +391,13 @@ class RemoteExecutor(WorkspaceExecutor):
             except Exception as exc:  # noqa: BLE001
                 status_error = exc
                 break
+            if mirror_remote_dir is not None and mirror_local_dir is not None:
+                _mirror_once(self.client)
             if status.get("status") != "running":
                 break
             time.sleep(0.25)
 
         stop_event.set()
-        for log_client in log_clients:
-            log_client.close()
         stdout_thread.join(timeout=2.0)
         stderr_thread.join(timeout=2.0)
         mirror_thread.join(timeout=2.0)

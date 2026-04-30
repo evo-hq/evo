@@ -22,6 +22,7 @@ from ..protocol import (
     SandboxProvider,
     SandboxSpec,
 )
+from ._common import SandboxAgentProviderMixin
 
 
 SANDBOX_AGENT_VERSION = "0.4.x"
@@ -34,7 +35,7 @@ REMOTE_SHARED_ROOT = "/tmp/evo-ssh-shared"
 REMOTE_SANDBOX_ROOT = "/tmp/evo-ssh-sandboxes"
 
 
-class SSHProvider:
+class SSHProvider(SandboxAgentProviderMixin):
     name = "ssh"
 
     def __init__(self, config: dict[str, Any]) -> None:

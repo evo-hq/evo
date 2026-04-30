@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 
 from ...sandbox_client import SandboxAgentClient
-from ..protocol import RemoteBackendUnavailable
+from ..protocol import RemoteBackendUnavailable, SandboxHandle
 
 
 SANDBOX_AGENT_VERSION = "0.4.x"
@@ -12,6 +12,13 @@ SANDBOX_AGENT_BINARY_URL = (
     f"https://releases.rivet.dev/sandbox-agent/{SANDBOX_AGENT_VERSION}/"
     "binaries/sandbox-agent-x86_64-unknown-linux-musl"
 )
+
+
+class SandboxAgentProviderMixin:
+    """Default client factory for providers that speak sandbox-agent."""
+
+    def build_client(self, handle: SandboxHandle) -> SandboxAgentClient:
+        return SandboxAgentClient(handle.base_url, handle.bearer_token)
 
 
 def install_sandbox_agent_script(bin_path: str) -> str:

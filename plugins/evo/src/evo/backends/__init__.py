@@ -4,7 +4,7 @@ Backends abstract workspace allocation and lifecycle:
 - WorktreeBackend (default): fresh `git worktree` per experiment
 - PoolBackend (alpha.1+): leases user-provided pre-built directories
 - RemoteSandboxBackend (alpha.3+): provisions a remote container and runs
-  experiments inside it via sandbox-agent's HTTP API
+  experiments inside it via a provider-owned sandbox client
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from .protocol import (
     PoolSlotInvalid,
     PoolSlotMissingCommit,
     RemoteBackendUnavailable,
+    SandboxClient,
     SandboxHandle,
     SandboxProvider,
     SandboxSpec,
@@ -44,6 +45,7 @@ __all__ = [
     "PoolSlotMissingCommit",
     "RemoteBackendUnavailable",
     "RemoteSandboxBackend",
+    "SandboxClient",
     "SandboxHandle",
     "SandboxProvider",
     "SandboxSpec",

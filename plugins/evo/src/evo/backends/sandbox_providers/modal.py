@@ -23,6 +23,7 @@ from ..protocol import (
 )
 from ._common import (
     SANDBOX_AGENT_BINARY_URL,
+    SandboxAgentProviderMixin,
     wait_for_sandbox_agent,
 )
 
@@ -33,7 +34,7 @@ DEFAULT_TIMEOUT_SECONDS = 3600          # Modal hard-caps to 24h; we cap lower
 DEFAULT_HEALTH_TIMEOUT = 60.0           # post-provision health-check budget
 
 
-class ModalProvider:
+class ModalProvider(SandboxAgentProviderMixin):
     """SandboxProvider implementation backed by Modal's Sandbox API.
 
     One ModalProvider instance is created per workspace at backend-load

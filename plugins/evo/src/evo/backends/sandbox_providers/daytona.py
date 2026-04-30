@@ -14,6 +14,7 @@ from ..protocol import (
     SandboxHandle,
     SandboxSpec,
 )
+from ._common import SandboxAgentProviderMixin
 from .ssh import SSHProvider
 
 
@@ -26,7 +27,7 @@ DEFAULT_SSH_PORT = 22
 DEFAULT_SSH_TOKEN_TTL_MINUTES = 60
 
 
-class DaytonaProvider:
+class DaytonaProvider(SandboxAgentProviderMixin):
     name = "daytona"
 
     def __init__(self, config: dict[str, Any]) -> None:

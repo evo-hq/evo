@@ -1,7 +1,7 @@
 """Remote sandbox provider registry.
 
 Each provider lives in this package as a single module (`modal.py`, `e2b.py`,
-`ssh.py`, ...) implementing the `SandboxProvider` protocol from
+`ssh.py`, `cloudflare.py`, ...) implementing the `SandboxProvider` protocol from
 `..protocol`. Loaders below lazy-import each provider module so a user who
 only wants Modal doesn't carry E2B's SDK as a hard dependency.
 
@@ -106,6 +106,11 @@ def _load_hetzner(config: dict[str, Any]) -> SandboxProvider:
     return _hetzner_module.HetznerProvider(config)
 
 
+def _load_cloudflare(config: dict[str, Any]) -> SandboxProvider:
+    from . import cloudflare as _cloudflare_module
+    return _cloudflare_module.CloudflareProvider(config)
+
+
 _LOADERS: dict[str, Callable[[dict[str, Any]], SandboxProvider]] = {
     "modal": _load_modal,
     "manual": _load_manual,
@@ -114,6 +119,7 @@ _LOADERS: dict[str, Callable[[dict[str, Any]], SandboxProvider]] = {
     "daytona": _load_daytona,
     "aws": _load_aws,
     "hetzner": _load_hetzner,
+    "cloudflare": _load_cloudflare,
 }
 
 

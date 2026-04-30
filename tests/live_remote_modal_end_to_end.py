@@ -449,6 +449,21 @@ def test_modal_streaming_salvages_partial_artifacts() -> None:
             stderr=subprocess.PIPE,
             text=True,
         )
+        attempt_dir = (
+            repo / ".evo" / "run_0000" / "experiments" / "exp_0000" / "attempts" / "001"
+        )
+        benchmark_log_path = attempt_dir / "benchmark.log"
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            if benchmark_log_path.exists():
+                break
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate(timeout=5)
+                raise AssertionError(
+                    f"evo run exited before salvage test could terminate the sandbox:\n"
+                    f"stdout:\n{stdout}\n\nstderr:\n{stderr}"
+                )
+            time.sleep(0.25)
         # Give the benchmark enough time to emit multiple trace files and
         # log lines before termination. Killing too early makes the test
         # probe process-startup timing instead of salvage behavior.
@@ -458,12 +473,18 @@ def test_modal_streaming_salvages_partial_artifacts() -> None:
         stdout, stderr = proc.communicate(timeout=180)
         assert proc.returncode != 0, (stdout, stderr)
 
-        attempt_dir = (
-            repo / ".evo" / "run_0000" / "experiments" / "exp_0000" / "attempts" / "001"
-        )
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if (attempt_dir / "benchmark.log").exists():
+                break
+            time.sleep(0.25)
         benchmark_log = (attempt_dir / "benchmark.log").read_text(encoding="utf-8")
         benchmark_err = (attempt_dir / "benchmark_err.log").read_text(encoding="utf-8")
         traces_dir = attempt_dir / "traces"
+        while time.monotonic() < deadline:
+            if list(traces_dir.glob("task_*.json")):
+                break
+            time.sleep(0.25)
         trace_files = sorted(traces_dir.glob("task_*.json"))
 
         assert "tick-0" in benchmark_log, benchmark_log

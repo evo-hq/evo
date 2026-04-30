@@ -44,10 +44,12 @@ from evo.backends import (  # noqa: E402
     PoolExhausted,
     RemoteBackendUnavailable,
     RemoteSandboxBackend,
+    SandboxHandle,
     backend_state_key,
     load_backend,
 )
 from evo.backends.sandbox_providers import known_providers, load_provider  # noqa: E402
+from evo.backends.sandbox_providers.cloudflare import CloudflareProvider  # noqa: E402
 from evo.backends.sandbox_providers.manual import ManualProvider  # noqa: E402
 from evo.backends import remote_state  # noqa: E402
 from evo.sandbox_client import SandboxAgentClient, SandboxAgentError  # noqa: E402
@@ -142,13 +144,16 @@ class FixturePoolProvider:
         except Exception:
             return False
 
+    def build_client(self, handle):  # type: ignore[no-untyped-def]
+        return SandboxAgentClient(handle.base_url, bearer_token=handle.bearer_token)
+
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
-def test_known_providers_lists_modal_manual_ssh_e2b_and_daytona() -> None:
+def test_known_providers_lists_modal_manual_ssh_e2b_daytona_aws_and_cloudflare() -> None:
     providers = known_providers()
     assert "modal" in providers, providers
     assert "manual" in providers, providers
@@ -156,6 +161,7 @@ def test_known_providers_lists_modal_manual_ssh_e2b_and_daytona() -> None:
     assert "e2b" in providers, providers
     assert "daytona" in providers, providers
     assert "aws" in providers, providers
+    assert "cloudflare" in providers, providers
 
 
 def test_unknown_provider_raises_clear_error() -> None:
@@ -172,6 +178,31 @@ def test_dotted_path_provider_loads() -> None:
         {"base_url": "http://127.0.0.1:9999", "bearer_token": "t"},
     )
     assert isinstance(provider, ManualProvider), provider
+
+
+def test_cloudflare_provider_loads() -> None:
+    provider = load_provider(
+        "cloudflare",
+        {"api_url": "https://bridge.example.workers.dev", "api_key": "t"},
+    )
+    assert isinstance(provider, CloudflareProvider), provider
+
+
+def test_cloudflare_provider_builds_client() -> None:
+    provider = CloudflareProvider(
+        {"api_url": "https://bridge.example.workers.dev", "api_key": "t"}
+    )
+    client = provider.build_client(
+        SandboxHandle(
+            provider="cloudflare",
+            base_url="https://bridge.example.workers.dev",
+            bearer_token="t",
+            native_id="sb-123",
+            metadata={"workspace_root": "/workspace/repo"},
+        )
+    )
+    assert client.base_url == "https://bridge.example.workers.dev", client.base_url
+    assert client.sandbox_id == "sb-123", client.sandbox_id
 
 
 def test_manual_provider_requires_base_url() -> None:
@@ -592,6 +623,12 @@ def test_multiple_remote_leases_same_config_and_pool_size(workdir: Path) -> None
             )
         )
         assert first.worktree != second.worktree, (first, second)
+        client = backend.client_for_node(repo, {"id": "exp_0000"})
+        try:
+            health = client.health()
+        finally:
+            client.close()
+        assert health == {"status": "ok"}, health
 
         state = remote_state.read_state(repo, backend.state_key)
         assert len(state["sandboxes"]) == 2, state
@@ -843,7 +880,7 @@ def main() -> None:
     try:
         # Tests with no fixture
         for fn in (
-            test_known_providers_lists_modal_manual_ssh_e2b_and_daytona,
+            test_known_providers_lists_modal_manual_ssh_e2b_daytona_aws_and_cloudflare,
             test_unknown_provider_raises_clear_error,
             test_dotted_path_provider_loads,
             test_manual_provider_requires_base_url,

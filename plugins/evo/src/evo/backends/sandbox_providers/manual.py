@@ -29,9 +29,10 @@ from ..protocol import (
     SandboxProvider,
     SandboxSpec,
 )
+from ._common import SandboxAgentProviderMixin
 
 
-class ManualProvider:
+class ManualProvider(SandboxAgentProviderMixin):
     name = "manual"
 
     def __init__(self, config: dict[str, Any]) -> None:

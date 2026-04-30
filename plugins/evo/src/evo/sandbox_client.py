@@ -82,6 +82,10 @@ class SandboxAgentClient:
             self._session.headers["Authorization"] = f"Bearer {bearer_token}"
         self._session.headers["User-Agent"] = "evo-sandbox-client/1"
 
+    def clone(self) -> "SandboxAgentClient":
+        """Return a fresh client with the same base URL and token."""
+        return SandboxAgentClient(self.base_url, self.bearer_token or None)
+
     # ---------------------------------------------------------------- helpers
 
     def _url(self, path: str) -> str:

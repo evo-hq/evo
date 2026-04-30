@@ -17,6 +17,7 @@ from ..protocol import (
 )
 from ._common import (
     install_sandbox_agent_script,
+    SandboxAgentProviderMixin,
     shell_quote,
     wait_for_sandbox_agent,
 )
@@ -28,7 +29,7 @@ DEFAULT_HEALTH_TIMEOUT = 60.0
 DEFAULT_ROOT = "/tmp/evo-e2b"
 
 
-class E2BProvider:
+class E2BProvider(SandboxAgentProviderMixin):
     name = "e2b"
 
     def __init__(self, config: dict[str, Any]) -> None:

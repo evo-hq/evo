@@ -1,14 +1,12 @@
 """RemoteSandboxBackend: workspace lifecycle backed by a remote sandbox.
 
-The provider (Modal, E2B, SSH, ...) provisions a container; sandbox-agent
-runs inside it on a known port; this backend talks to sandbox-agent over
-HTTP for everything else (file ops, process exec, git ops).
+The provider (Modal, E2B, SSH, Cloudflare, ...) provisions the
+container and owns the corresponding process/filesystem client object
+for file ops, process exec, git ops, and teardown.
 
 This module is lifecycle-only -- it owns provisioning, leasing, and
-tear-down. The HTTP client lives in `evo.sandbox_client` (commit 2/5);
-artifact streaming and `cmd_run` integration live in commit 4/5.
-
-State persists in `<run>/remote_state.json` (see `remote_state.py`).
+tear-down. State persists in `<run>/remote_state.json` (see
+`remote_state.py`).
 """
 from __future__ import annotations
 
@@ -325,15 +323,13 @@ class RemoteSandboxBackend:
         return handle
 
     def client_for_node(self, root: Path, node: dict[str, Any]):
-        """Return a SandboxAgentClient pointed at the sandbox leased by `node`.
+        """Return the provider-specific client for the sandbox leased by `node`.
 
-        Used by cmd_run to route shell + fs ops through the backend's
-        HTTP client. Re-hydrates the SandboxHandle from on-disk state if
+        Used by cmd_run to route shell + fs ops through the provider's
+        sandbox client. Re-hydrates the SandboxHandle from on-disk state if
         not in memory (different process; common because `evo new` and
         `evo run` are separate subprocess invocations from the agent).
         """
-        from ..sandbox_client import SandboxAgentClient
-
         slot_id = self._slot_for_exp(root, node["id"])
         if slot_id is None:
             raise RuntimeError(
@@ -354,8 +350,7 @@ class RemoteSandboxBackend:
                 f"Re-allocate via `evo discard {node['id']} --reason ...` + "
                 f"`evo new --parent ...`."
             )
-        token = self._tokens.get(slot_id, handle.bearer_token)
-        return SandboxAgentClient(handle.base_url, bearer_token=token)
+        return self.provider.build_client(handle)
 
     def _setup_workspace(
         self, ctx: AllocateCtx, handle: SandboxHandle | None, slot_id: int
@@ -374,7 +369,6 @@ class RemoteSandboxBackend:
         separate `git worktree`; the experiment's branch is checked out
         in place in the cloned repo.
         """
-        from ..sandbox_client import SandboxAgentClient
         from ..git_bundle import (
             SANDBOX_REPO_ROOT, SANDBOX_BUNDLE_DIR,
             ship_commit_to_sandbox,
@@ -388,8 +382,8 @@ class RemoteSandboxBackend:
         meta = handle.metadata or {}
         workspace_root = meta.get("workspace_root", SANDBOX_REPO_ROOT)
         bundle_dir = meta.get("bundle_dir", SANDBOX_BUNDLE_DIR)
-        token = self._tokens.get(slot_id, handle.bearer_token)
-        with SandboxAgentClient(handle.base_url, bearer_token=token) as client:
+        client = self.provider.build_client(handle)
+        with client:
             # 1. Ensure the in-sandbox repo dir exists and is a git repo.
             client.fs_mkdir(workspace_root, recursive=True)
             init_check = client.process_run(
