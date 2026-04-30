@@ -6,7 +6,7 @@ argument-hint: <provider or backend to switch to>
 
 # Infra Setup
 
-Use this when the user wants to change where experiments run: local worktrees, pool slots, Modal, SSH, or later providers.
+Use this when the user wants to change where experiments run: local worktrees, pool slots, Modal, Daytona, AWS, Hetzner, SSH, or later providers.
 
 ## Goals
 
@@ -23,6 +23,9 @@ Use this when the user wants to change where experiments run: local worktrees, p
 2. If the target is remote, parse the provider choice the same way evo CLI does:
 - `modal`
 - `e2b`
+- `daytona`
+- `aws`
+- `hetzner`
 - `ssh:user@host[:port]`
    - built-in provider name
    - dotted import path
@@ -49,6 +52,9 @@ evo config backend pool --workspaces /abs/slot-a,/abs/slot-b
 
 - `modal`: requires the `modal` Python package and a Modal token. Use `references/modal-auth-prompt.md`.
 - `e2b`: requires the `e2b` Python package and an `E2B_API_KEY`. Use `references/e2b-auth-prompt.md`.
+- `daytona`: requires the `daytona` Python package and a Daytona API key. Use `references/daytona-auth-prompt.md`.
+- `aws`: requires `boto3`, AWS credentials, and an EC2 key pair/private key. Use `references/aws-auth-prompt.md`.
+- `hetzner`: requires `hcloud`, a Hetzner token, and an SSH key. Use `references/hetzner-auth-prompt.md`.
 - `ssh`: requires local `ssh`, remote SSH access, and a reachable `host`. No Python SDK. Use `references/ssh-auth-prompt.md`.
 - `manual`: no provisioning. Only ask for the sandbox-agent URL/token if the user explicitly wants manual mode.
 

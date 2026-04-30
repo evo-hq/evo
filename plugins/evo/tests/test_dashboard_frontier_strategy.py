@@ -159,6 +159,8 @@ class TestDashboardFrontierStrategy(unittest.TestCase):
             data["default_backend"]["config"]["provider_config"]["api_key"],
             "<redacted>",
         )
+        for provider in ("modal", "e2b", "daytona", "aws", "hetzner", "ssh", "manual"):
+            self.assertIn(provider, data["provider_readiness"], provider)
 
         by_name = {
             (item["name"], item.get("provider")): item
@@ -177,6 +179,27 @@ class TestDashboardFrontierStrategy(unittest.TestCase):
         self.assertEqual(pool_entry["runtime"]["slot_count"], 2)
         self.assertEqual(pool_entry["runtime"]["leased_count"], 1)
         self.assertEqual(pool_entry["node_ids"], ["exp_0001"])
+
+    def test_execution_settings_post_accepts_modal_gpu_and_pool_size(self):
+        res = self.client.post(
+            "/api/workspace/execution",
+            json={
+                "backend": "remote",
+                "provider": "modal",
+                "provider_config": {
+                    "app_name": "evo-test",
+                    "gpu": "L40S",
+                    "pool_size": 2,
+                },
+            },
+        )
+        self.assertEqual(res.status_code, 200, res.get_json())
+        cfg = load_config(self.root)
+        self.assertEqual(cfg["execution_backend"], "remote")
+        self.assertEqual(cfg["execution_backend_config"]["provider"], "modal")
+        self.assertEqual(cfg["execution_backend_config"]["provider_config"]["gpu"], "L40S")
+        self.assertEqual(cfg["execution_backend_config"]["provider_config"]["pool_size"], 2)
+        self.assertEqual(res.get_json()["default_backend"]["config"]["provider_config"]["gpu"], "L40S")
 
     def test_graph_and_node_endpoints_redact_backend_secrets_and_resolve_backend(self):
         graph = load_graph(self.root)

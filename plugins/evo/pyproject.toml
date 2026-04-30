@@ -24,9 +24,21 @@ modal = [
 e2b = [
     "e2b>=2.20.0",
 ]
+daytona = [
+    "daytona>=0.170.0",
+]
+aws = [
+    "boto3>=1.42.66",
+]
+hetzner = [
+    "hcloud>=2.17.1",
+]
 all = [
     "modal>=0.62.0",
     "e2b>=2.20.0",
+    "daytona>=0.170.0",
+    "boto3>=1.42.66",
+    "hcloud>=2.17.1",
 ]
 mcp = [
     "mcp>=1.0.0",

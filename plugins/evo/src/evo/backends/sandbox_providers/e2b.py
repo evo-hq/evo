@@ -90,7 +90,7 @@ class E2BProvider:
             "fi",
             (
                 f"nohup {shell_quote(bin_path)} server "
-                f"--token {shell_quote(spec.bearer_token)} "
+                f"--token={shell_quote(spec.bearer_token)} "
                 f"--host 0.0.0.0 --port {spec.exposed_port} "
                 f">{shell_quote(log_path)} 2>&1 & echo $! > {shell_quote(pid_path)}"
             ),

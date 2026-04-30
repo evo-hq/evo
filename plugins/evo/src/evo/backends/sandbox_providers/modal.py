@@ -52,6 +52,7 @@ class ModalProvider:
         self._health_timeout = float(
             config.get("health_timeout_seconds", DEFAULT_HEALTH_TIMEOUT)
         )
+        self._gpu = str(config.get("gpu", "")).strip() or None
         self._image_extra_apt = self._parse_list(config.get("apt_install", ""))
         self._image_extra_pip = self._parse_list(config.get("pip_install", ""))
         self._region = config.get("region")  # optional
@@ -101,6 +102,8 @@ class ModalProvider:
         }
         if self._region:
             sb_kwargs["region"] = self._region
+        if self._gpu:
+            sb_kwargs["gpu"] = self._gpu
 
         # Enable build-log output so a failed Image build prints the
         # actual reason instead of just "Image build failed". Idempotent.
@@ -110,7 +113,7 @@ class ModalProvider:
             sandbox = modal.Sandbox.create(
                 "/usr/local/bin/sandbox-agent",
                 "server",
-                "--token", spec.bearer_token,
+                f"--token={spec.bearer_token}",
                 "--host", "0.0.0.0",
                 "--port", str(spec.exposed_port),
                 env=env,

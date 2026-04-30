@@ -449,7 +449,10 @@ def test_modal_streaming_salvages_partial_artifacts() -> None:
             stderr=subprocess.PIPE,
             text=True,
         )
-        time.sleep(3.5)
+        # Give the benchmark enough time to emit multiple trace files and
+        # log lines before termination. Killing too early makes the test
+        # probe process-startup timing instead of salvage behavior.
+        time.sleep(5.0)
         print(f"--- terminating Modal sandbox {native_id} mid-run ---")
         modal.Sandbox.from_id(native_id).terminate()
         stdout, stderr = proc.communicate(timeout=180)

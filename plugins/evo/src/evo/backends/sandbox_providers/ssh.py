@@ -284,7 +284,7 @@ exit 1
             f"rm -f {shlex.quote(pid_path)}",
             (
                 f"nohup {env_cmd}{shlex.quote(agent_bin)} server "
-                f"--token {shlex.quote(token)} "
+                f"--token={shlex.quote(token)} "
                 f"--host 127.0.0.1 "
                 f"--port {exposed_port} "
                 f"> {shlex.quote(log_path)} 2>&1 < /dev/null &"

@@ -173,6 +173,14 @@ def _provider_readiness(config: dict[str, Any]) -> dict[str, Any]:
     provider = remote_cfg.get("provider")
     provider_config = dict(remote_cfg.get("provider_config", {}) or {})
     modal_auth_present = bool(os.environ.get("MODAL_TOKEN_ID")) or (Path.home() / ".modal.toml").exists()
+    daytona_auth_present = bool(os.environ.get("DAYTONA_API_KEY"))
+    aws_auth_present = bool(
+        os.environ.get("AWS_ACCESS_KEY_ID")
+        or os.environ.get("AWS_PROFILE")
+        or os.environ.get("AWS_SESSION_TOKEN")
+        or os.environ.get("AWS_SECRET_ACCESS_KEY")
+    )
+    hetzner_auth_present = bool(os.environ.get("HCLOUD_TOKEN")) or bool(provider_config.get("token"))
     e2b_source = (
         "workspace-config"
         if provider == "e2b" and provider_config.get("api_key")
@@ -194,6 +202,29 @@ def _provider_readiness(config: dict[str, Any]) -> dict[str, Any]:
             "sdk_installed": _module_available("e2b"),
             "auth_present": e2b_source != "missing",
             "auth_source": e2b_source,
+        },
+        "daytona": {
+            "sdk_installed": _module_available("daytona"),
+            "auth_present": daytona_auth_present,
+            "auth_source": "env" if daytona_auth_present else "missing",
+        },
+        "aws": {
+            "sdk_installed": _module_available("boto3"),
+            "auth_present": aws_auth_present,
+            "auth_source": (
+                "env/profile"
+                if aws_auth_present
+                else "missing"
+            ),
+        },
+        "hetzner": {
+            "sdk_installed": _module_available("hcloud"),
+            "auth_present": hetzner_auth_present,
+            "auth_source": (
+                "env"
+                if os.environ.get("HCLOUD_TOKEN")
+                else ("workspace-config" if provider_config.get("token") else "missing")
+            ),
         },
         "ssh": {
             "ssh_binary": shutil.which("ssh") is not None,

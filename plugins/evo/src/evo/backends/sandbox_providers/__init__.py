@@ -64,11 +64,50 @@ def _load_e2b(config: dict[str, Any]) -> SandboxProvider:
     return _e2b_module.E2BProvider(config)
 
 
+def _load_daytona(config: dict[str, Any]) -> SandboxProvider:
+    try:
+        from . import daytona as _daytona_module
+    except ImportError as exc:
+        raise RemoteBackendUnavailable(
+            "Daytona provider requested but the 'daytona' Python SDK is not "
+            "installed. Install it with: pip install daytona "
+            "(or pipx inject evo-hq-cli daytona once the optional dep group is published)."
+        ) from exc
+    return _daytona_module.DaytonaProvider(config)
+
+
+def _load_aws(config: dict[str, Any]) -> SandboxProvider:
+    try:
+        from . import aws as _aws_module
+    except ImportError as exc:
+        raise RemoteBackendUnavailable(
+            "AWS provider requested but the 'boto3' Python SDK is not installed. "
+            "Install it with: pip install boto3 "
+            "(or pipx inject evo-hq-cli boto3 once the optional dep group is published)."
+        ) from exc
+    return _aws_module.AWSProvider(config)
+
+
+def _load_hetzner(config: dict[str, Any]) -> SandboxProvider:
+    try:
+        from . import hetzner as _hetzner_module
+    except ImportError as exc:
+        raise RemoteBackendUnavailable(
+            "Hetzner provider requested but the 'hcloud' Python SDK is not installed. "
+            "Install it with: pip install hcloud "
+            "(or pipx inject evo-hq-cli hcloud once the optional dep group is published)."
+        ) from exc
+    return _hetzner_module.HetznerProvider(config)
+
+
 _LOADERS: dict[str, Callable[[dict[str, Any]], SandboxProvider]] = {
     "modal": _load_modal,
     "manual": _load_manual,
     "ssh": _load_ssh,
     "e2b": _load_e2b,
+    "daytona": _load_daytona,
+    "aws": _load_aws,
+    "hetzner": _load_hetzner,
 }
 
 

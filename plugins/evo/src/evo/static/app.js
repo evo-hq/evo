@@ -37,10 +37,10 @@ const STATUS_COLORS = {
 const REMOTE_PROVIDER_FIELDS = {
   modal: [
     {key: 'app_name', label: 'App name', type: 'text'},
+    {key: 'gpu', label: 'GPU', type: 'text', help: 'e.g. L4, A100, H100:2'},
     {key: 'region', label: 'Region', type: 'text'},
     {key: 'timeout_seconds', label: 'Timeout seconds', type: 'int', advanced: true},
     {key: 'health_timeout_seconds', label: 'Health timeout', type: 'float', advanced: true},
-    {key: 'pool_size', label: 'Pool size', type: 'int', advanced: true},
     {key: 'apt_install', label: 'Extra apt packages', type: 'text', help: 'comma-separated', advanced: true},
     {key: 'pip_install', label: 'Extra pip packages', type: 'text', help: 'comma-separated', advanced: true},
   ],
@@ -61,14 +61,50 @@ const REMOTE_PROVIDER_FIELDS = {
     {key: 'tunnel_port', label: 'Tunnel port', type: 'int', advanced: true},
     {key: 'keep_warm', label: 'Keep warm', type: 'bool', advanced: true},
     {key: 'health_timeout_seconds', label: 'Health timeout', type: 'float', advanced: true},
-    {key: 'pool_size', label: 'Pool size', type: 'int', advanced: true},
+  ],
+  daytona: [
+    {key: 'api_key', label: 'API key', type: 'secret'},
+    {key: 'api_url', label: 'API URL', type: 'text'},
+    {key: 'target', label: 'Target', type: 'text'},
+    {key: 'ssh_host', label: 'SSH host', type: 'text'},
+    {key: 'ssh_port', label: 'SSH port', type: 'int'},
+    {key: 'timeout_seconds', label: 'Timeout seconds', type: 'int', advanced: true},
+    {key: 'health_timeout_seconds', label: 'Health timeout', type: 'float', advanced: true},
+    {key: 'ssh_token_ttl_minutes', label: 'SSH token TTL minutes', type: 'int', advanced: true},
+    {key: 'sandbox_timeout_seconds', label: 'Sandbox timeout', type: 'int', advanced: true},
+  ],
+  aws: [
+    {key: 'region', label: 'Region', type: 'text'},
+    {key: 'image_id', label: 'Image ID', type: 'text'},
+    {key: 'key_name', label: 'Key name', type: 'text'},
+    {key: 'instance_type', label: 'Instance type', type: 'text'},
+    {key: 'ssh_user', label: 'SSH user', type: 'text'},
+    {key: 'key', label: 'SSH private key', type: 'secret'},
+    {key: 'subnet_id', label: 'Subnet ID', type: 'text', advanced: true},
+    {key: 'security_group_ids', label: 'Security groups', type: 'text', help: 'comma-separated', advanced: true},
+    {key: 'ssh_port', label: 'SSH port', type: 'int', advanced: true},
+    {key: 'timeout_seconds', label: 'Timeout seconds', type: 'int', advanced: true},
+    {key: 'health_timeout_seconds', label: 'Health timeout', type: 'float', advanced: true},
+    {key: 'keep_warm', label: 'Keep warm', type: 'bool', advanced: true},
+  ],
+  hetzner: [
+    {key: 'token', label: 'API token', type: 'secret'},
+    {key: 'server_type', label: 'Server type', type: 'text'},
+    {key: 'image', label: 'Image', type: 'text'},
+    {key: 'location', label: 'Location', type: 'text'},
+    {key: 'ssh_key_name', label: 'SSH key name', type: 'text'},
+    {key: 'ssh_user', label: 'SSH user', type: 'text'},
+    {key: 'key', label: 'SSH private key', type: 'secret'},
+    {key: 'ssh_port', label: 'SSH port', type: 'int', advanced: true},
+    {key: 'timeout_seconds', label: 'Timeout seconds', type: 'int', advanced: true},
+    {key: 'health_timeout_seconds', label: 'Health timeout', type: 'float', advanced: true},
+    {key: 'keep_warm', label: 'Keep warm', type: 'bool', advanced: true},
   ],
   manual: [
     {key: 'base_url', label: 'Base URL', type: 'text'},
     {key: 'bearer_token', label: 'Bearer token', type: 'secret'},
     {key: 'workspace_root', label: 'Workspace root', type: 'text', advanced: true},
     {key: 'bundle_dir', label: 'Bundle dir', type: 'text', advanced: true},
-    {key: 'pool_size', label: 'Pool size', type: 'int', advanced: true},
   ],
 };
 
@@ -1120,12 +1156,14 @@ function renderExecutionSettings(panel, ws) {
   if (defaultSpec.name === 'remote') {
     const known = new Set(providerFields(providerName).map(field => field.key));
     Object.entries(remoteConfig).forEach(([key, value]) => {
+      if (key === 'pool_size') return;
       if (!known.has(key)) extraEntries[key] = value;
     });
   }
   const draft = {
     backend: defaultSpec.name || 'remote',
     workspaces: defaultSpec.name === 'pool' ? (config.slots || []).join(',') : '',
+    poolSize: defaultSpec.name === 'remote' ? ((config.provider_config || {}).pool_size ?? '') : '',
     providerChoice: initialProvider,
     providerName: providerName,
     providerConfig: {...remoteConfig},
@@ -1182,9 +1220,17 @@ function renderExecutionSettings(panel, ws) {
     } else if (draft.backend === 'remote') {
       detail.innerHTML = `
         <div class="settings-block">
+          <div class="settings-block-label">Remote capacity</div>
+          <label class="settings-field">
+            <span>Pool size</span>
+            <input id="settings-pool-size" class="settings-input" type="number" step="1" min="1" value="${esc(String(draft.poolSize ?? ''))}" placeholder="unbounded">
+            <small>Leave blank for unbounded concurrent sandboxes.</small>
+          </label>
+        </div>
+        <div class="settings-block">
           <div class="settings-block-label">Remote provider</div>
           <select id="settings-provider-choice" class="settings-select">
-            ${['modal', 'e2b', 'ssh', 'manual'].map(provider => `<option value="${provider}" ${draft.providerChoice === provider ? 'selected' : ''}>${provider}</option>`).join('')}
+            ${['modal', 'e2b', 'ssh', 'daytona', 'aws', 'hetzner', 'manual'].map(provider => `<option value="${provider}" ${draft.providerChoice === provider ? 'selected' : ''}>${provider}</option>`).join('')}
             <option value="__custom__" ${draft.providerChoice === '__custom__' ? 'selected' : ''}>custom</option>
           </select>
           <div class="settings-help">Pick the provider to use for new remote experiments.</div>
@@ -1255,6 +1301,8 @@ function renderExecutionSettings(panel, ws) {
   function collectDraft() {
     const poolInput = formHost.querySelector('#settings-pool-workspaces');
     if (poolInput) draft.workspaces = poolInput.value;
+    const poolSizeInput = formHost.querySelector('#settings-pool-size');
+    if (poolSizeInput) draft.poolSize = poolSizeInput.value;
     const providerNameInput = formHost.querySelector('#settings-provider-name');
     if (providerNameInput) draft.providerName = providerNameInput.value.trim();
     const extraInput = formHost.querySelector('#settings-extra-config');
@@ -1338,6 +1386,11 @@ async function saveExecutionSettings(draft, statusEl, panel) {
       }
       payload.provider = resolvedProvider;
       payload.provider_config = {...extra, ...draft.providerConfig};
+      if (draft.poolSize !== '' && draft.poolSize != null) {
+        payload.provider_config.pool_size = normalizeFormValue(draft.poolSize, 'int');
+      } else {
+        delete payload.provider_config.pool_size;
+      }
     }
   } catch (e) {
     statusEl.textContent = 'invalid JSON in additional provider config';

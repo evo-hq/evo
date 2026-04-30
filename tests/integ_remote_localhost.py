@@ -148,12 +148,14 @@ class FixturePoolProvider:
 # ---------------------------------------------------------------------------
 
 
-def test_known_providers_lists_modal_manual_ssh_and_e2b() -> None:
+def test_known_providers_lists_modal_manual_ssh_e2b_and_daytona() -> None:
     providers = known_providers()
     assert "modal" in providers, providers
     assert "manual" in providers, providers
     assert "ssh" in providers, providers
     assert "e2b" in providers, providers
+    assert "daytona" in providers, providers
+    assert "aws" in providers, providers
 
 
 def test_unknown_provider_raises_clear_error() -> None:
@@ -841,7 +843,7 @@ def main() -> None:
     try:
         # Tests with no fixture
         for fn in (
-            test_known_providers_lists_modal_manual_ssh_and_e2b,
+            test_known_providers_lists_modal_manual_ssh_e2b_and_daytona,
             test_unknown_provider_raises_clear_error,
             test_dotted_path_provider_loads,
             test_manual_provider_requires_base_url,

@@ -2,6 +2,12 @@
 - Modal auth fails: rerun `modal token new` and confirm the token file exists for the same user running `evo`.
 - E2B import fails: install the `e2b` package into the same environment that provides `evo`.
 - E2B auth fails: export a valid `E2B_API_KEY` in the same shell that launches `evo`.
+- Daytona import fails: install the `daytona` package into the same environment that provides `evo`.
+- Daytona auth fails: export a valid `DAYTONA_API_KEY` in the same shell that launches `evo`.
+- AWS import fails: install the `boto3` package into the same environment that provides `evo`.
+- AWS auth fails: make sure AWS credentials and the correct region are available to the process that launches `evo`.
+- Hetzner import fails: install the `hcloud` package into the same environment that provides `evo`.
+- Hetzner auth fails: export a valid `HCLOUD_TOKEN` in the same shell that launches `evo`.
 - SSH tunnel fails immediately: the local forwarded port is busy, or the remote host rejected the key.
 - SSH health never comes up: evo connected over SSH, but sandbox-agent did not start cleanly on the remote machine.
 - Remote git commands fail: confirm the remote host has `git` installed and writable disk under `/tmp`.

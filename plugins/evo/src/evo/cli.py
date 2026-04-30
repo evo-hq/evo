@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -1007,10 +1008,15 @@ def _fetch_remote_artifacts(
             pass  # best-effort
     # traces dir
     local_traces_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        executor.fetch_dir(sandbox_traces_dir, local_traces_dir)
-    except Exception:
-        pass  # best-effort; salvage may still find what was already pulled
+    for attempt in range(5):
+        try:
+            executor.fetch_dir(sandbox_traces_dir, local_traces_dir)
+        except Exception:
+            pass  # best-effort; salvage may still find what was already pulled
+        if any(local_traces_dir.glob("*.json")):
+            break
+        if attempt < 4:
+            time.sleep(0.25)
 
 
 def _run_command(command: str, cwd: Path, env: dict[str, str], stdout_path: Path, stderr_path: Path, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
