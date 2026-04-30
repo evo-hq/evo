@@ -24,6 +24,7 @@ import requests
 from pathlib import Path
 from typing import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 
 # Match the version pinned in the Modal provider so localhost tests
@@ -33,6 +34,13 @@ RELEASES_BASE = f"https://releases.rivet.dev/sandbox-agent/{SANDBOX_AGENT_VERSIO
 
 CACHE_DIR = Path(os.environ.get("EVO_TEST_CACHE", str(Path.home() / ".cache" / "evo-tests")))
 BINARY_PATH = CACHE_DIR / "sandbox-agent"
+
+
+@dataclass
+class ManagedLocalhostSandbox:
+    base_url: str
+    bearer_token: str
+    process: subprocess.Popen[bytes]
 
 
 def _platform_triple() -> str:
@@ -85,9 +93,11 @@ def _free_port() -> int:
 
 
 @contextmanager
-def localhost_sandbox_agent(token: str | None = None) -> Iterator[tuple[str, str]]:
+def managed_localhost_sandbox_agent(
+    token: str | None = None,
+) -> Iterator[ManagedLocalhostSandbox]:
     """Spawn a real sandbox-agent on a free localhost port for the duration
-    of the with-block. Yields `(base_url, bearer_token)`.
+    of the with-block.
 
     The agent runs in a clean working dir and binds to 127.0.0.1 only.
     On exit, the process is sent SIGTERM, then SIGKILL after 2s if needed.
@@ -99,7 +109,7 @@ def localhost_sandbox_agent(token: str | None = None) -> Iterator[tuple[str, str
 
     argv = [
         str(binary), "server",
-        "--token", token,
+        f"--token={token}",
         "--host", "127.0.0.1",
         "--port", str(port),
     ]
@@ -134,7 +144,11 @@ def localhost_sandbox_agent(token: str | None = None) -> Iterator[tuple[str, str
         )
 
     try:
-        yield base_url, token
+        yield ManagedLocalhostSandbox(
+            base_url=base_url,
+            bearer_token=token,
+            process=proc,
+        )
     except BaseException:
         # On test failure, surface the daemon's stderr so the diagnostic
         # is in the same output stream as the assertion that fired.
@@ -154,3 +168,9 @@ def localhost_sandbox_agent(token: str | None = None) -> Iterator[tuple[str, str
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+
+
+@contextmanager
+def localhost_sandbox_agent(token: str | None = None) -> Iterator[tuple[str, str]]:
+    with managed_localhost_sandbox_agent(token) as sandbox:
+        yield sandbox.base_url, sandbox.bearer_token

@@ -9,6 +9,8 @@ Endpoint reference: https://github.com/rivet-dev/sandbox-agent/blob/main/docs/op
 """
 from __future__ import annotations
 
+import base64
+import json
 import time
 from dataclasses import dataclass
 from typing import Any, Iterator
@@ -46,6 +48,14 @@ class FsEntry:
     size: int | None = None
 
 
+@dataclass
+class ProcessLogEntry:
+    sequence: int
+    stream: str
+    timestamp_ms: int
+    data: bytes
+
+
 class SandboxAgentError(Exception):
     """Raised on non-2xx responses from sandbox-agent. Carries the
     HTTP status and response body for diagnostics."""
@@ -66,6 +76,7 @@ class SandboxAgentClient:
     def __init__(self, base_url: str, bearer_token: str | None = None) -> None:
         # Strip trailing slash so we can compose paths cleanly.
         self.base_url = base_url.rstrip("/")
+        self.bearer_token = bearer_token or ""
         self._session = requests.Session()
         if bearer_token:
             self._session.headers["Authorization"] = f"Bearer {bearer_token}"
@@ -205,24 +216,37 @@ class SandboxAgentClient:
         process_id: str,
         follow: bool = False,
         stream: str = "combined",
-    ) -> Iterator[bytes]:
-        """Yield raw byte chunks of process logs.
-
-        With `follow=True`, the connection stays open until the process
-        terminates and the daemon closes the stream. Yields whatever the
-        server emits; callers tee to disk.
-        """
+    ) -> Iterator[ProcessLogEntry]:
+        """Yield parsed process log entries."""
         params = {"follow": "true" if follow else "false", "stream": stream}
         resp = self._session.get(
             self._url(f"/v1/processes/{process_id}/logs?{urlencode(params)}"),
-            stream=True,
+            stream=follow,
             timeout=None if follow else DEFAULT_REQUEST_TIMEOUT,
         )
         self._check(resp)
         try:
-            for chunk in resp.iter_content(chunk_size=4096):
-                if chunk:
-                    yield chunk
+            if not follow:
+                payload = resp.json()
+                for entry in payload.get("entries", []) or []:
+                    yield _decode_log_entry(entry, default_stream=stream)
+                return
+
+            event_lines: list[str] = []
+            for raw_line in resp.iter_lines(decode_unicode=True):
+                if raw_line is None:
+                    continue
+                line = raw_line.strip()
+                if not line:
+                    for data_line in event_lines:
+                        yield _decode_log_entry(
+                            json.loads(data_line),
+                            default_stream=stream,
+                        )
+                    event_lines = []
+                    continue
+                if line.startswith("data:"):
+                    event_lines.append(line[len("data:"):].strip())
         finally:
             resp.close()
 
@@ -335,3 +359,19 @@ class SandboxAgentClient:
 
     def __exit__(self, *exc_info: Any) -> None:
         self.close()
+
+
+def _decode_log_entry(payload: dict[str, Any], *, default_stream: str) -> ProcessLogEntry:
+    data = payload.get("data", "")
+    if payload.get("encoding") == "base64":
+        blob = base64.b64decode(data)
+    elif isinstance(data, str):
+        blob = data.encode("utf-8")
+    else:
+        blob = bytes(data or b"")
+    return ProcessLogEntry(
+        sequence=int(payload.get("sequence", 0)),
+        stream=str(payload.get("stream") or default_stream),
+        timestamp_ms=int(payload.get("timestampMs", 0)),
+        data=blob,
+    )

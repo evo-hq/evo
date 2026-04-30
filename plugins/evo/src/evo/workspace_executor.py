@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -67,6 +68,8 @@ class WorkspaceExecutor:
         timeout: float | None = None,
         stdout_path: Path,
         stderr_path: Path,
+        mirror_remote_dir: Path | str | None = None,
+        mirror_local_dir: Path | None = None,
     ) -> ExecResult:
         raise NotImplementedError
 
@@ -148,9 +151,12 @@ class LocalExecutor(WorkspaceExecutor):
         timeout: float | None = None,
         stdout_path: Path,
         stderr_path: Path,
+        mirror_remote_dir: Path | str | None = None,
+        mirror_local_dir: Path | None = None,
     ) -> ExecResult:
         """Spawn the process and tee stdout/stderr to local files in real
         time. Returns when the process exits or `timeout` elapses."""
+        del mirror_remote_dir, mirror_local_dir
         t0 = time.monotonic()
         with stdout_path.open("wb") as out_f, stderr_path.open("wb") as err_f:
             proc = subprocess.Popen(
@@ -224,6 +230,8 @@ class RemoteExecutor(WorkspaceExecutor):
 
     def __init__(self, client: SandboxAgentClient) -> None:
         self.client = client
+        self._base_url = client.base_url
+        self._bearer_token = client.bearer_token
 
     def run(
         self,
@@ -263,26 +271,158 @@ class RemoteExecutor(WorkspaceExecutor):
         timeout: float | None = None,
         stdout_path: Path,
         stderr_path: Path,
+        mirror_remote_dir: Path | str | None = None,
+        mirror_local_dir: Path | None = None,
     ) -> ExecResult:
-        """Long-running process + streamed logs.
+        """Long-running process + streamed logs + best-effort trace mirroring."""
+        if not cmd:
+            raise ValueError("cmd must be a non-empty list")
 
-        Implementation note: for POC simplicity we use the one-shot
-        `process_run` endpoint, write stdout/stderr to the local files
-        once at the end, and bound by the orchestrator-side timeout.
-        Salvage-on-death (incremental log fetch via the streaming
-        endpoint) is a refinement -- tracked for alpha.4. The contract
-        here matches the local streamer's: when this returns, the local
-        files contain whatever the process wrote.
-        """
-        # Pre-create the files so callers reading them mid-run don't get
-        # FileNotFoundError on the local-file paths set in env.
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
-        stdout_path.write_text("", encoding="utf-8")
-        stderr_path.write_text("", encoding="utf-8")
-        result = self.run(cmd, cwd=cwd, env=env, timeout=timeout)
-        stdout_path.write_text(result.stdout or "", encoding="utf-8")
-        stderr_path.write_text(result.stderr or "", encoding="utf-8")
-        return result
+        stderr_path.parent.mkdir(parents=True, exist_ok=True)
+        stdout_path.write_bytes(b"")
+        stderr_path.write_bytes(b"")
+
+        process_id = self.client.process_start(
+            command=cmd[0],
+            args=list(cmd[1:]),
+            cwd=str(cwd),
+            env=env or None,
+        )
+        started = time.monotonic()
+        stop_event = threading.Event()
+        log_errors: list[tuple[str, Exception]] = []
+        log_clients: list[SandboxAgentClient] = []
+        mirrored_sizes: dict[str, int | None] = {}
+
+        def _consume_logs(stream_name: str, path: Path) -> None:
+            log_client = SandboxAgentClient(self._base_url, self._bearer_token)
+            log_clients.append(log_client)
+            try:
+                with path.open("ab") as handle:
+                    for entry in log_client.process_logs(
+                        process_id,
+                        follow=True,
+                        stream=stream_name,
+                    ):
+                        handle.write(entry.data)
+                        handle.flush()
+            except Exception as exc:  # noqa: BLE001
+                log_errors.append((stream_name, exc))
+            finally:
+                log_client.close()
+
+        def _mirror_once(client: SandboxAgentClient) -> None:
+            if mirror_remote_dir is None or mirror_local_dir is None:
+                return
+            mirror_local_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                entries = client.fs_entries(str(mirror_remote_dir))
+            except Exception:
+                return
+            for entry in entries:
+                if entry.is_dir:
+                    continue
+                if mirrored_sizes.get(entry.path) == entry.size:
+                    continue
+                try:
+                    blob = client.fs_read(entry.path)
+                except Exception:
+                    continue
+                (mirror_local_dir / entry.name).write_bytes(blob)
+                mirrored_sizes[entry.path] = entry.size
+
+        def _mirror_loop() -> None:
+            if mirror_remote_dir is None or mirror_local_dir is None:
+                return
+            mirror_client = SandboxAgentClient(self._base_url, self._bearer_token)
+            try:
+                while not stop_event.wait(0.5):
+                    _mirror_once(mirror_client)
+                _mirror_once(mirror_client)
+            finally:
+                mirror_client.close()
+
+        stdout_thread = threading.Thread(
+            target=_consume_logs,
+            args=("stdout", stdout_path),
+            daemon=True,
+            name="evo-remote-stdout",
+        )
+        stderr_thread = threading.Thread(
+            target=_consume_logs,
+            args=("stderr", stderr_path),
+            daemon=True,
+            name="evo-remote-stderr",
+        )
+        mirror_thread = threading.Thread(
+            target=_mirror_loop,
+            daemon=True,
+            name="evo-remote-traces",
+        )
+        stdout_thread.start()
+        stderr_thread.start()
+        mirror_thread.start()
+
+        timed_out = False
+        status: dict[str, Any] | None = None
+        status_error: Exception | None = None
+        deadline = (started + timeout) if timeout is not None else None
+        while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                timed_out = True
+                try:
+                    self.client.process_stop(process_id)
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                try:
+                    status = self.client.process_status(process_id)
+                except Exception:
+                    status = None
+                if status is None or status.get("status") == "running":
+                    try:
+                        self.client.process_kill(process_id)
+                    except Exception:
+                        pass
+                break
+            try:
+                status = self.client.process_status(process_id)
+            except Exception as exc:  # noqa: BLE001
+                status_error = exc
+                break
+            if status.get("status") != "running":
+                break
+            time.sleep(0.25)
+
+        stop_event.set()
+        for log_client in log_clients:
+            log_client.close()
+        stdout_thread.join(timeout=2.0)
+        stderr_thread.join(timeout=2.0)
+        mirror_thread.join(timeout=2.0)
+
+        stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
+        stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
+        if status_error is not None and status is None:
+            if stderr and not stderr.endswith("\n"):
+                stderr += "\n"
+            stderr += f"[remote stream disconnected] {status_error}"
+        if log_errors and status is None:
+            if stderr and not stderr.endswith("\n"):
+                stderr += "\n"
+            stderr += "[remote log follow failed] " + "; ".join(
+                f"{name}: {exc}" for name, exc in log_errors
+            )
+        stderr_path.write_text(stderr, encoding="utf-8")
+
+        return ExecResult(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=None if timed_out else ((status or {}).get("exitCode") if status else 1),
+            timed_out=timed_out,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
 
     def read_text(self, path: Path | str) -> str:
         return self.client.fs_read(str(path)).decode("utf-8", errors="replace")

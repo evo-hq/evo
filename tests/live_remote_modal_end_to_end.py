@@ -330,6 +330,59 @@ def test_multi_experiment_tree_modal() -> None:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def test_two_live_modal_allocations_same_config() -> None:
+    """Two unrun experiments with the same Modal config should both allocate."""
+    workdir = Path(tempfile.mkdtemp(prefix="evo-modal-concurrency-"))
+    repo = _build_repo(workdir)
+
+    try:
+        provider_config = (
+            "app_name=evo-live-concurrency,"
+            "timeout_seconds=300,"
+            "health_timeout_seconds=90.0,"
+            "pool_size=2"
+        )
+        _evo(
+            ["init", "--target", "agent.py",
+             "--benchmark", "python eval.py",
+             "--metric", "max", "--host", "generic"],
+            cwd=repo,
+        )
+        print("--- evo init OK ---")
+
+        t0 = time.monotonic()
+        _new_remote_modal(
+            repo,
+            parent="root",
+            hypothesis="modal concurrency A",
+            provider_config=provider_config,
+            timeout=300,
+        )
+        print(f"--- exp_0000 allocated in {time.monotonic() - t0:.1f}s ---")
+
+        t0 = time.monotonic()
+        _new_remote_modal(
+            repo,
+            parent="root",
+            hypothesis="modal concurrency B",
+            provider_config=provider_config,
+            timeout=300,
+        )
+        print(f"--- exp_0001 allocated in {time.monotonic() - t0:.1f}s ---")
+
+        from evo.backends import remote_state as _rs
+
+        state = _rs.read_state(repo)
+        assert len(state["sandboxes"]) == 2, state
+        leased = sorted(s["leased_by"]["exp_id"] for s in state["sandboxes"])
+        assert leased == ["exp_0000", "exp_0001"], leased
+        print("--- two live Modal sandboxes allocated under one config ---")
+    finally:
+        print("--- backstop cleanup ---")
+        _evo(["reset", "--yes"], cwd=repo, check=False)
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def test_branched_tree_modal() -> None:
     """Multi-branch realistic experiment tree on Modal.
 
@@ -542,6 +595,9 @@ def main() -> None:
     print()
     print("=== Modal multi-experiment linear tree ===")
     test_multi_experiment_tree_modal()
+    print()
+    print("=== Modal multi-allocation same config ===")
+    test_two_live_modal_allocations_same_config()
     print()
     print("=== Modal multi-branch experiment tree ===")
     test_branched_tree_modal()

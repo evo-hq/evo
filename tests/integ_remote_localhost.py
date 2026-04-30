@@ -23,14 +23,19 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_SRC = REPO_ROOT / "plugins" / "evo" / "src"
 sys.path.insert(0, str(PLUGIN_SRC))
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
-from _sandbox_agent_fixture import localhost_sandbox_agent  # noqa: E402
+from _sandbox_agent_fixture import (  # noqa: E402
+    localhost_sandbox_agent,
+    managed_localhost_sandbox_agent,
+)
 from _sshd_fixture import localhost_sshd  # noqa: E402
 
 from evo.backends import (  # noqa: E402
@@ -97,6 +102,45 @@ def _shutdown_dashboard(root: Path) -> None:
         os.kill(int(pid_file.read_text().strip()), 15)
     except (OSError, ValueError):
         pass
+
+
+class FixturePoolProvider:
+    """Real sandbox-provider shim over a fixed list of localhost daemons."""
+
+    name = "fixture-pool"
+
+    def __init__(self, endpoints: list[tuple[str, str]]) -> None:
+        self._endpoints = list(endpoints)
+        self._next = 0
+
+    def provision(self, spec) -> Any:  # type: ignore[no-untyped-def]
+        from evo.backends.protocol import SandboxHandle
+
+        if self._next >= len(self._endpoints):
+            raise RuntimeError("fixture pool exhausted")
+        base_url, token = self._endpoints[self._next]
+        self._next += 1
+        return SandboxHandle(
+            provider=self.name,
+            base_url=base_url,
+            bearer_token=token,
+            native_id=f"fixture-{self._next}",
+            metadata={
+                "workspace_root": f"/tmp/evo-fixture-pool-{self._next}/repo",
+                "bundle_dir": f"/tmp/evo-fixture-pool-{self._next}/bundles",
+            },
+        )
+
+    def tear_down(self, handle) -> None:  # type: ignore[no-untyped-def]
+        return
+
+    def is_alive(self, handle) -> bool:  # type: ignore[no-untyped-def]
+        try:
+            with SandboxAgentClient(handle.base_url, bearer_token=handle.bearer_token) as client:
+                client.health()
+            return True
+        except Exception:
+            return False
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +312,7 @@ def test_remote_backend_full_lifecycle(workdir: Path) -> None:
         )
         _evo(
             ["init", "--target", "agent.py",
-             "--benchmark", "python eval.py",
+             "--benchmark", "python3 eval.py",
              "--metric", "max", "--host", "generic"],
             cwd=repo,
         )
@@ -278,6 +322,9 @@ def test_remote_backend_full_lifecycle(workdir: Path) -> None:
             assert cfg["execution_backend"] == "worktree", cfg
             assert "execution_backend_config" not in cfg, cfg
             assert cfg["commit_strategy"] == "all", cfg
+            keyfile = repo / ".evo" / "keyfile"
+            assert keyfile.exists(), keyfile
+            assert oct(keyfile.stat().st_mode & 0o777) == "0o600", oct(keyfile.stat().st_mode & 0o777)
 
             # `evo new` should drive RemoteSandboxBackend.allocate, which
             # provisions (a no-op for manual; just returns the URL), ships
@@ -303,6 +350,10 @@ def test_remote_backend_full_lifecycle(workdir: Path) -> None:
             assert len(state["sandboxes"]) == 1, state
             sandbox = state["sandboxes"][0]
             assert sandbox["leased_by"]["exp_id"] == "exp_0000", sandbox
+            raw_state = (repo / ".evo" / "run_0000" / "backend_state" / "remote-"
+                         f"{backend_state_key('remote', node['backend_config'])}.json").read_text(encoding="utf-8")
+            assert token not in raw_state, raw_state
+            assert "bearer_token_enc" in raw_state, raw_state
 
             # Verify the in-sandbox repo got the parent commit + branch.
             # workspace_root was overridden to a tmp path via provider_config;
@@ -359,7 +410,7 @@ def test_workspace_ops_cli_subcommands(workdir: Path) -> None:
         )
         _evo(
             ["init", "--target", "agent.py",
-             "--benchmark", "python eval.py",
+             "--benchmark", "python3 eval.py",
              "--metric", "max", "--host", "generic"],
             cwd=repo,
         )
@@ -487,6 +538,186 @@ def test_distinct_remote_configs_can_be_live_in_one_run(workdir: Path) -> None:
             assert state_b["provider_config"]["base_url"] == base_url_b, state_b
             assert state_a["sandboxes"][0]["leased_by"]["exp_id"] == "exp_0000", state_a
             assert state_b["sandboxes"][0]["leased_by"]["exp_id"] == "exp_0001", state_b
+        finally:
+            _shutdown_dashboard(repo)
+
+
+def test_multiple_remote_leases_same_config_and_pool_size(workdir: Path) -> None:
+    repo = _build_repo(workdir)
+    with (
+        managed_localhost_sandbox_agent() as sandbox_a,
+        managed_localhost_sandbox_agent() as sandbox_b,
+    ):
+        provider = FixturePoolProvider([
+            (sandbox_a.base_url, sandbox_a.bearer_token),
+            (sandbox_b.base_url, sandbox_b.bearer_token),
+        ])
+        backend = RemoteSandboxBackend(
+            provider,
+            provider_name="fixture-pool",
+            provider_config={"pool_size": "2"},
+        )
+
+        root_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        first = backend.allocate(
+            AllocateCtx(
+                root=repo,
+                exp_id="exp_0000",
+                parent_node=None,
+                parent_commit=root_commit,
+                parent_ref="main",
+                branch="evo/run_0000/exp_0000",
+                hypothesis="first",
+            )
+        )
+        second = backend.allocate(
+            AllocateCtx(
+                root=repo,
+                exp_id="exp_0001",
+                parent_node=None,
+                parent_commit=root_commit,
+                parent_ref="main",
+                branch="evo/run_0000/exp_0001",
+                hypothesis="second",
+            )
+        )
+        assert first.worktree != second.worktree, (first, second)
+
+        state = remote_state.read_state(repo, backend.state_key)
+        assert len(state["sandboxes"]) == 2, state
+        leased = sorted(s["leased_by"]["exp_id"] for s in state["sandboxes"])
+        assert leased == ["exp_0000", "exp_0001"], leased
+
+        try:
+            backend.allocate(
+                AllocateCtx(
+                    root=repo,
+                    exp_id="exp_0002",
+                    parent_node=None,
+                    parent_commit=root_commit,
+                    parent_ref="main",
+                    branch="evo/run_0000/exp_0002",
+                    hypothesis="third",
+                )
+            )
+            raise AssertionError("expected PoolExhausted")
+        except PoolExhausted:
+            pass
+
+
+def test_plaintext_remote_token_migrates_on_read(workdir: Path) -> None:
+    repo = _build_repo(workdir)
+    _evo(
+        ["init", "--target", "agent.py",
+         "--benchmark", "python eval.py",
+         "--metric", "max", "--host", "generic"],
+        cwd=repo,
+    )
+    state_key = backend_state_key(
+        "remote",
+        {"provider": "manual", "provider_config": {"base_url": "http://127.0.0.1:9999"}},
+    )
+    state_path = repo / ".evo" / "run_0000" / "backend_state" / f"remote-{state_key}.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = {
+        "provider": "manual",
+        "provider_config": {"base_url": "http://127.0.0.1:9999"},
+        "sandboxes": [
+            {
+                "id": 0,
+                "native_id": "legacy",
+                "base_url": "http://127.0.0.1:9999",
+                "bearer_token": "plain-secret",
+                "leased_by": None,
+                "last_branch": None,
+                "provisioned_at": None,
+            }
+        ],
+    }
+    state_path.write_text(json.dumps(legacy, indent=2), encoding="utf-8")
+
+    state = remote_state.read_state(repo, state_key)
+    assert state["sandboxes"][0]["bearer_token"] == "plain-secret", state
+    rewritten = state_path.read_text(encoding="utf-8")
+    assert "plain-secret" not in rewritten, rewritten
+    assert "bearer_token_enc" in rewritten, rewritten
+
+
+def test_remote_streaming_salvages_partial_logs_and_traces(workdir: Path) -> None:
+    repo = workdir / "repo-stream"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "agent.py").write_text("STATE='baseline'\n", encoding="utf-8")
+    (repo / "eval.py").write_text(
+        "import json, os, sys, time\n"
+        "from pathlib import Path\n"
+        "traces = Path(os.environ['EVO_TRACES_DIR'])\n"
+        "traces.mkdir(parents=True, exist_ok=True)\n"
+        "for i in range(3):\n"
+        "    (traces / f'task_{i}.json').write_text(json.dumps({'task_id': i, 'score': 1.0, 'summary': f'task-{i}'}))\n"
+        "    print(f'tick-{i}', flush=True)\n"
+        "    print(f'err-{i}', file=sys.stderr, flush=True)\n"
+        "    time.sleep(1.0)\n"
+        "Path(os.environ['EVO_RESULT_PATH']).write_text(json.dumps({'score': 1.0, 'tasks': {'0': 1.0}}))\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "stream fixture"], cwd=repo, check=True)
+
+    with managed_localhost_sandbox_agent() as sandbox:
+        sandbox_workspace = workdir / "stream-sandbox-workspace"
+        sandbox_bundles = workdir / "stream-sandbox-bundles"
+        provider_config = (
+            f"base_url={sandbox.base_url},bearer_token={sandbox.bearer_token},"
+            f"workspace_root={sandbox_workspace},bundle_dir={sandbox_bundles}"
+        )
+        _evo(
+            ["init", "--target", "agent.py",
+             "--benchmark", "python eval.py",
+             "--metric", "max", "--host", "generic"],
+            cwd=repo,
+        )
+        try:
+            _evo(
+                ["new", "--parent", "root", "-m", "stream test",
+                 "--remote", "manual",
+                 "--provider-config", provider_config],
+                cwd=repo,
+            )
+            proc = subprocess.Popen(
+                ["uv", "run", "--project", str(PLUGIN_ROOT), "evo", "run", "exp_0000"],
+                cwd=repo,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            time.sleep(1.6)
+            sandbox.process.terminate()
+            stdout, stderr = proc.communicate(timeout=30)
+            assert proc.returncode != 0, (stdout, stderr)
+
+            attempt_dir = repo / ".evo" / "run_0000" / "experiments" / "exp_0000" / "attempts" / "001"
+            benchmark_log = (attempt_dir / "benchmark.log").read_text(encoding="utf-8")
+            benchmark_err = (attempt_dir / "benchmark_err.log").read_text(encoding="utf-8")
+            traces_dir = attempt_dir / "traces"
+
+            assert "tick-0" in benchmark_log, benchmark_log
+            assert "err-0" in benchmark_err, benchmark_err
+            assert any(traces_dir.glob("task_*.json")), list(traces_dir.glob("*"))
+
+            graph = json.loads((repo / ".evo" / "run_0000" / "graph.json").read_text(encoding="utf-8"))
+            node = graph["nodes"]["exp_0000"]
+            assert node["status"] == "failed", node
+            assert node.get("score") is not None, node
         finally:
             _shutdown_dashboard(repo)
 
@@ -628,6 +859,9 @@ def main() -> None:
             test_remote_backend_full_lifecycle,
             test_workspace_ops_cli_subcommands,
             test_distinct_remote_configs_can_be_live_in_one_run,
+            test_multiple_remote_leases_same_config_and_pool_size,
+            test_plaintext_remote_token_migrates_on_read,
+            test_remote_streaming_salvages_partial_logs_and_traces,
             test_ssh_provider_full_lifecycle,
         ):
             sub = workdir / fn.__name__

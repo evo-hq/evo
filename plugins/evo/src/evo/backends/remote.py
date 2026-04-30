@@ -8,10 +8,7 @@ This module is lifecycle-only -- it owns provisioning, leasing, and
 tear-down. The HTTP client lives in `evo.sandbox_client` (commit 2/5);
 artifact streaming and `cmd_run` integration live in commit 4/5.
 
-State persists in `<run>/remote_state.json` (see `remote_state.py`). The
-on-disk schema deliberately omits bearer tokens; tokens live only in this
-process's memory and are regenerated on workspace re-init or when a
-sandbox is re-provisioned.
+State persists in `<run>/remote_state.json` (see `remote_state.py`).
 """
 from __future__ import annotations
 
@@ -61,6 +58,19 @@ class RemoteSandboxBackend:
         self.provider = provider
         self.provider_name = provider_name or provider.name
         self.provider_config = dict(provider_config or {})
+        pool_size = self.provider_config.get("pool_size")
+        if pool_size in (None, "", "unbounded"):
+            self.pool_size: int | None = None
+        else:
+            try:
+                parsed = int(pool_size)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"remote provider_config.pool_size must be an integer, got {pool_size!r}"
+                ) from exc
+            if parsed <= 0:
+                raise RuntimeError("remote provider_config.pool_size must be > 0")
+            self.pool_size = parsed
         self.state_key = backend_state_key(
             self.name,
             {
@@ -68,7 +78,6 @@ class RemoteSandboxBackend:
                 "provider_config": self.provider_config,
             },
         )
-        # Tokens live in memory only; never persisted to remote_state.json.
         # Keyed by sandbox `id` (the local index, not the provider native_id).
         self._tokens: dict[int, str] = {}
         # SandboxHandle objects live in memory too -- the provider needs them
@@ -106,17 +115,10 @@ class RemoteSandboxBackend:
             if needs_provision:
                 handle = self._provision_sandbox(slot_id)
                 self._handles[slot_id] = handle
-                # Persist enough state to reconstruct the handle in a
-                # different process (evo new and evo run run in separate
-                # processes invoked by the agent). The bearer token IS
-                # written to disk -- the cleanest POC tradeoff. SPEC
-                # roadmap section "Open: secrets redaction policy"
-                # tracks the encrypted-keyfile / in-memory-only path
-                # for alpha.4. Until then, .evo/run_*/remote_state.json
-                # should be treated as workspace-private (gitignored
-                # via .evo/ already).
                 with remote_state.locked_state(ctx.root, self.state_key) as state:
-                    sandbox = state["sandboxes"][slot_id]
+                    sandbox = next(
+                        s for s in state["sandboxes"] if s["id"] == slot_id
+                    )
                     sandbox["native_id"] = handle.native_id
                     sandbox["base_url"] = handle.base_url
                     sandbox["bearer_token"] = handle.bearer_token
@@ -168,7 +170,7 @@ class RemoteSandboxBackend:
     def release_lease(self, ctx: DiscardCtx) -> None:
         """Clear the lease without tearing down the sandbox.
 
-        POC behavior: ALSO tears down (concurrency=1, no warm-reuse). When
+        POC behavior: ALSO tears down (no warm-reuse yet). When
         we add `keep_warm` config in alpha.4, this becomes the path that
         retains the sandbox.
         """
@@ -228,8 +230,8 @@ class RemoteSandboxBackend:
     ) -> tuple[int, bool, SandboxHandle | None]:
         """Atomically claim or create a sandbox slot.
 
-        POC concurrency=1: first allocate provisions slot 0; subsequent
-        allocates either re-use slot 0 (if free) or raise PoolExhausted.
+        Claims a free slot if one exists; otherwise provisions a new
+        sandbox unless `pool_size` has been reached.
 
         Returns (slot_id, needs_provision, existing_handle_or_None). If
         needs_provision is True, the caller must call _provision_sandbox
@@ -251,20 +253,20 @@ class RemoteSandboxBackend:
                 handle = self._handles.get(slot_id)
                 return slot_id, handle is None, handle
 
-            # No free slot. POC concurrency=1: only one slot total.
-            if len(state["sandboxes"]) >= 1:
+            if self.pool_size is not None and len(state["sandboxes"]) >= self.pool_size:
                 raise PoolExhausted(
-                    "remote backend has no free sandbox; concurrency=1 in "
-                    "POC. Wait for the active experiment to finish, or run "
-                    "evo workspace status to inspect lease state."
+                    "remote backend has no free sandbox; pool_size="
+                    f"{self.pool_size} reached. Wait for an active experiment "
+                    "to finish, or increase provider_config.pool_size."
                 )
 
-            # Reserve a new slot id.
-            slot_id = len(state["sandboxes"])
+            slot_id = int(state.get("next_id", 0))
+            state["next_id"] = slot_id + 1
             state["sandboxes"].append({
                 "id": slot_id,
                 "native_id": None,           # filled in after provision
                 "base_url": None,
+                "bearer_token": "",
                 "leased_by": {
                     "exp_id": ctx.exp_id,
                     "pid": os.getpid(),

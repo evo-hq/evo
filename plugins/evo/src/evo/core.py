@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ META_FILE = "meta.json"
 PROJECT_FILE = "project.md"
 SCRATCHPAD_FILE = "scratchpad.md"
 NOTES_FILE = "notes.md"
+KEYFILE_NAME = "keyfile"
 
 SUPPORTED_HOSTS = frozenset({
     "claude-code",
@@ -139,6 +141,10 @@ def notes_path(root: Path) -> Path:
     return workspace_path(root) / NOTES_FILE
 
 
+def keyfile_path(root: Path) -> Path:
+    return evo_dir(root) / KEYFILE_NAME
+
+
 def lock_file_for(path: Path) -> Path:
     return path.with_suffix(path.suffix + ".lock")
 
@@ -162,11 +168,37 @@ def atomic_write_json(path: Path, data: Any) -> None:
     atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
+def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        tmp_path = Path(tmp_name)
+        if mode is not None:
+            os.chmod(tmp_path, mode)
+        tmp_path.replace(path)
+        if mode is not None:
+            os.chmod(path, mode)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+
+
 def load_json(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def ensure_workspace_keyfile(root: Path) -> Path:
+    path = keyfile_path(root)
+    if not path.exists():
+        atomic_write_bytes(path, secrets.token_bytes(32), mode=0o600)
+    else:
+        os.chmod(path, 0o600)
+    return path
 
 
 DEFAULT_MAX_ATTEMPTS = 3
@@ -289,6 +321,7 @@ def init_workspace(
     atomic_write_json(graph_path(root), default_graph())
     atomic_write_json(annotations_path(root), {"annotations": []})
     atomic_write_json(infra_path(root), {"events": []})
+    ensure_workspace_keyfile(root)
     if not project_path(root).exists():
         atomic_write_text(project_path(root), "# Project Understanding\n\n")
     if not notes_path(root).exists():

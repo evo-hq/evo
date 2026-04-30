@@ -1392,11 +1392,12 @@ def _cmd_run_impl(
     # disk afterwards. In local mode these are all the same paths.
     remote = executor.is_remote
     if remote:
-        # Sandbox-internal paths. /workspace/repo is the experiment's
-        # checkout (set up by RemoteSandboxBackend._setup_workspace).
-        sandbox_traces_dir = "/workspace/repo/.evo/traces"
-        sandbox_result_path = "/workspace/repo/.evo/result.json"
-        run_cwd: Path | str = worktree   # /workspace/repo
+        # Sandbox-internal paths anchored under the backend-provided
+        # workspace root. Modal uses /workspace/repo; manual and SSH may
+        # resolve elsewhere.
+        sandbox_traces_dir = f"{worktree}/.evo/traces"
+        sandbox_result_path = f"{worktree}/.evo/result.json"
+        run_cwd: Path | str = worktree
         env_traces_dir = sandbox_traces_dir
         env_result_path = sandbox_result_path
         # Pre-create the traces dir inside the sandbox so the benchmark
@@ -1451,6 +1452,8 @@ def _cmd_run_impl(
             ["sh", "-c", benchmark_cmd],
             cwd=run_cwd, env=env, timeout=args.timeout,
             stdout_path=benchmark_log, stderr_path=benchmark_err,
+            mirror_remote_dir=sandbox_traces_dir if remote else None,
+            mirror_local_dir=traces_dir if remote else None,
         )
         if bench.timed_out:
             raise RuntimeError("benchmark_timeout")
