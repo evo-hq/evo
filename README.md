@@ -163,6 +163,16 @@ uv tool install --force evo-hq-cli && evo update --force
 
 `--force` wipes the host plugin cache and reinstalls, working around [anthropics/claude-code#14061](https://github.com/anthropics/claude-code/issues/14061): `/plugin update` returns success but does not replace cached plugin files.
 
+### Codex hooks failing with exit 127
+
+Fixed in 0.4.5. If Codex reports `SessionStart` / `UserPromptSubmit` / `PostToolUse` hooks failing with exit 127, the hook binary was staged under a marketplace name Codex does not load from. A plain `evo update` does not repair it — the broken install reports unhealthy and gets skipped — so reinstall the Codex host explicitly:
+
+```bash
+uv tool install --force evo-hq-cli && evo install codex --force
+```
+
+This stages `evo-hook-drain` into the cache directory Codex resolves and clears the stale registration. Verify with `evo doctor codex`, which now checks the binary directly.
+
 ### Testing a pre-release (alpha)
 
 `uv` and `pip` skip pre-releases by default. To install an alpha, pin both the CLI version and the host plugin tag:
