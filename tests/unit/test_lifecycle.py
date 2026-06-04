@@ -347,6 +347,60 @@ class TestDiscardGuards(unittest.TestCase):
                 self.assertNotIn("committed", str(exc).lower())
                 self.assertNotIn("active", str(exc).lower())
 
+    def test_discard_preserves_declared_worktree_artifacts(self):
+        """Registered result/trace artifacts should survive worktree cleanup."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            _init_git_repo(root)
+
+            worktree = root / ".evo" / "run_0000" / "worktrees" / "exp_0001"
+            (worktree / "final_model").mkdir(parents=True)
+            (worktree / "final_model" / "adapter.bin").write_text("weights")
+            (worktree / "logs").mkdir()
+            (worktree / "logs" / "train.log").write_text("loss=0.1")
+
+            _build_graph_workspace(root, {
+                "exp_0001": _make_node(
+                    "exp_0001", "root", "evaluated",
+                    worktree=str(worktree), current_attempt=1, score=0.1,
+                ),
+            })
+            exp_dir = root / ".evo" / "run_0000" / "experiments" / "exp_0001"
+            attempt = exp_dir / "attempts" / "001"
+            traces = attempt / "traces"
+            traces.mkdir(parents=True)
+            (attempt / "result.json").write_text(json.dumps({
+                "score": 0.1,
+                "artifacts": {"training-log": "logs/train.log"},
+            }))
+            (traces / "task_main.json").write_text(json.dumps({
+                "task_id": "main",
+                "score": 0.1,
+                "artifacts": {"checkpoint": "final_model"},
+            }))
+
+            rc = self._run_discard(root, "exp_0001", reason="eval config mismatch")
+            self.assertEqual(rc, 0)
+            self.assertFalse(worktree.exists())
+
+            result = json.loads((exp_dir / "result.json").read_text())
+            self.assertEqual(result["status"], "discarded")
+            self.assertEqual(
+                result["artifact_manifest"],
+                "artifacts/discarded/manifest.json",
+            )
+            preserved = result["preserved_artifacts"]
+            self.assertEqual({item["label"] for item in preserved}, {"checkpoint", "training-log"})
+
+            stored = {item["label"]: exp_dir / item["stored_path"] for item in preserved}
+            self.assertEqual((stored["checkpoint"] / "adapter.bin").read_text(), "weights")
+            self.assertEqual(stored["training-log"].read_text(), "loss=0.1")
+
+            manifest = json.loads(
+                (exp_dir / "artifacts" / "discarded" / "manifest.json").read_text()
+            )
+            self.assertEqual(len(manifest["artifacts"]), 2)
+
 
 class TestPruneAcceptsEvaluated(unittest.TestCase):
     """Stage 3b: prune loosened to accept evaluated nodes too."""

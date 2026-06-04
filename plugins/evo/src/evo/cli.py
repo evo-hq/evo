@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -1593,6 +1594,161 @@ def _finalize_result(root: Path, exp_id: str, node: dict, score: float | None, s
     atomic_write_json(experiment_result_path(root, exp_id), payload)
 
 
+def _safe_artifact_name(label: str, source: Path) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", label.strip()).strip("-._")
+    if not cleaned:
+        cleaned = source.stem or source.name or "artifact"
+    digest = hashlib.sha1(
+        str(source.resolve(strict=False)).encode("utf-8")
+    ).hexdigest()[:10]
+    suffix = source.suffix if source.is_file() else ""
+    return f"{cleaned}-{digest}{suffix}"
+
+
+def _artifact_path_within(path: Path, base: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(base.resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+def _iter_declared_artifacts(payload: Any, source: str) -> list[dict[str, str]]:
+    if not isinstance(payload, dict):
+        return []
+    artifacts = payload.get("artifacts")
+    records: list[dict[str, str]] = []
+    if isinstance(artifacts, dict):
+        for label, path in artifacts.items():
+            if path is None:
+                continue
+            records.append({
+                "label": str(label),
+                "path": str(path),
+                "source": source,
+            })
+    elif isinstance(artifacts, list):
+        for index, item in enumerate(artifacts):
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path") or item.get("uri")
+            if path is None:
+                continue
+            label = item.get("name") or item.get("kind") or f"artifact-{index + 1}"
+            records.append({
+                "label": str(label),
+                "path": str(path),
+                "source": source,
+            })
+    return records
+
+
+def _declared_discard_artifacts(root: Path, exp_id: str, node: dict) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    benchmark_result = node.get("benchmark_result")
+    records.extend(_iter_declared_artifacts(benchmark_result, "node.benchmark_result"))
+
+    exp_dir = experiments_dir_for(root, exp_id)
+    attempts_dir = exp_dir / "attempts"
+    if not attempts_dir.exists():
+        return records
+
+    result_paths = list(attempts_dir.glob("*/result.json"))
+    result_paths.extend(attempts_dir.glob("*/outcome.json"))
+    for result_path in sorted(result_paths):
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        attempt_name = result_path.parent.name
+        benchmark = result.get("benchmark") if isinstance(result, dict) else None
+        if isinstance(benchmark, dict):
+            records.extend(_iter_declared_artifacts(
+                benchmark.get("result"),
+                f"attempts/{attempt_name}/{result_path.name}",
+            ))
+        records.extend(_iter_declared_artifacts(
+            result,
+            f"attempts/{attempt_name}/{result_path.name}",
+        ))
+
+    for trace_path in sorted(attempts_dir.glob("*/traces/*.json")):
+        try:
+            trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        try:
+            source = str(trace_path.relative_to(exp_dir))
+        except ValueError:
+            source = str(trace_path)
+        records.extend(_iter_declared_artifacts(trace, source))
+
+    return records
+
+
+def _preserve_discard_artifacts(root: Path, node: dict) -> dict[str, Any]:
+    """Copy declared result/trace artifacts before discard removes the worktree."""
+    exp_id = node["id"]
+    raw_worktree = node.get("worktree")
+    if not raw_worktree:
+        return {"artifacts": [], "skipped": []}
+    worktree = Path(raw_worktree)
+    if not worktree.exists():
+        return {"artifacts": [], "skipped": []}
+
+    exp_dir = experiments_dir_for(root, exp_id)
+    dest_root = exp_dir / "artifacts" / "discarded"
+    copied: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    seen: dict[str, dict[str, str]] = {}
+
+    for record in _declared_discard_artifacts(root, exp_id, node):
+        raw_path = record["path"].strip()
+        if not raw_path:
+            continue
+        src = Path(raw_path)
+        if not src.is_absolute():
+            src = worktree / src
+        src_resolved = src.resolve(strict=False)
+        key = str(src_resolved)
+        if key in seen:
+            copied.append({**record, **seen[key]})
+            continue
+        if _artifact_path_within(src_resolved, exp_dir):
+            skipped.append({**record, "reason": "already_persistent"})
+            continue
+        if not src.exists():
+            skipped.append({**record, "reason": "missing"})
+            continue
+
+        dest = dest_root / _safe_artifact_name(record["label"], src)
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dest, symlinks=True)
+            else:
+                shutil.copy2(src, dest)
+        except OSError as exc:
+            skipped.append({**record, "reason": f"copy_failed:{exc}"})
+            continue
+
+        stored = str(dest.relative_to(exp_dir))
+        saved = {"stored_path": stored, "source_path": raw_path}
+        seen[key] = saved
+        copied.append({**record, **saved})
+
+    if copied or skipped:
+        dest_root.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(dest_root / "manifest.json", {
+            "experiment_id": exp_id,
+            "timestamp": utc_now(),
+            "artifacts": copied,
+            "skipped": skipped,
+        })
+
+    return {"artifacts": copied, "skipped": skipped}
+
+
 def _remote_stream_journals(root: Path, exp_id: str, attempt: int) -> list[dict]:
     """Return remote stream journals written beside attempt log files.
 
@@ -3079,7 +3235,12 @@ def cmd_discard(args: argparse.Namespace) -> int:
         current_node["discard_reason"] = args.reason
 
     update_node(root, args.exp_id, _mark)
-    _finalize_result(root, args.exp_id, node, node.get("score"), "discarded", {"reason": args.reason})
+    preservation = _preserve_discard_artifacts(root, node)
+    result_extra: dict[str, Any] = {"reason": args.reason}
+    if preservation["artifacts"]:
+        result_extra["preserved_artifacts"] = preservation["artifacts"]
+        result_extra["artifact_manifest"] = "artifacts/discarded/manifest.json"
+    _finalize_result(root, args.exp_id, node, node.get("score"), "discarded", result_extra)
     delete_discarded_experiment(root, node)
     print(f"DISCARDED {args.exp_id}: {args.reason}")
     return 0
