@@ -21,7 +21,7 @@ from .core import (
     infra_path,
     load_json,
     lock_file_for,
-    utc_now,
+    make_infra_event,
 )
 from .locking import advisory_lock
 
@@ -444,15 +444,17 @@ def append_frontier_log(root: Path, strategy: dict[str, Any],
     """Append a frontier-selection event to .evo/infra_log.json."""
     path = infra_path(root)
     seed_str = f" seed={seed}" if seed is not None else ""
-    event = {
-        "kind": "frontier",
-        "timestamp": utc_now(),
-        "message": f"frontier({strategy.get('kind', '?')}) -> {len(returned_ids)} id(s){seed_str}",
+    fields: dict[str, Any] = {
         "strategy": strategy,
         "returned_ids": returned_ids,
     }
     if seed is not None:
-        event["seed"] = seed
+        fields["seed"] = seed
+    event = make_infra_event(
+        "frontier",
+        f"frontier({strategy.get('kind', '?')}) -> {len(returned_ids)} id(s){seed_str}",
+        **fields,
+    )
     with advisory_lock(lock_file_for(path)):
         data = load_json(path, {"events": []})
         data.setdefault("events", []).append(event)
