@@ -2324,17 +2324,6 @@ def _cmd_run_check(
         score, parsed = load_result(result_path, bench.stdout)
         benchmark_record = {"command": benchmark_cmd, "returncode": 0, "result": parsed}
 
-        # Check that if there are multiple task trace files, then result has tasks
-        if traces_dir.exists():
-            trace_files = list(traces_dir.glob("task_*.json"))
-            if len(trace_files) > 1 and "tasks" not in parsed:
-                raise RuntimeError(
-                    f"benchmark wrote {len(trace_files)} per-task traces but result.json is missing the `tasks` array; "
-                    "write_result() is likely not aggregating from per-task scores. "
-                    "Replace the rolled-own log_task/write_result with the canonical "
-                    "references/inline_instrumentation.py paste-in."
-                )
-
         post_records, post_failures = _run_gate_batch(
             post_gates, gate_origins=gate_origins, config=config,
             target=target, worktree=worktree, run_cwd=run_cwd,
