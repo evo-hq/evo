@@ -2193,14 +2193,14 @@ async function openDrawer(expId, opts) {
     const tasks = node.benchmark_result?.tasks;
     const isActive = node.status === 'active';
 
-    // Build unified task map: completed results take priority, live traces fill in during active runs
+    // Build unified task map: completed results take priority, traces fill in when result tasks missing
     const taskMap = {};
     if (tasks) {
     for (const [tid, score] of Object.entries(tasks)) {
       taskMap[tid] = score;
     }
-    } else if (isActive && Object.keys(traces).length > 0) {
-    // Active experiment with no result yet -- build task map from live traces
+    } else if (Object.keys(traces).length > 0) {
+    // Experiment with no tasks in result -- build task map from available traces
     for (const [filename, trace] of Object.entries(traces)) {
       taskMap[trace.task_id] = trace.score;
     }
