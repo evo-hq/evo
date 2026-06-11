@@ -1,0 +1,28 @@
+workspace: gh-evo-hq-evo
+goal:
+  metric: latency_ms
+  direction: min
+baseline: auto
+rules:
+  win_threshold: 0
+  harm_threshold: 0
+  min_n: 20
+  max_n: 400
+profile:
+  blast_radius: sandbox
+direction_source: inferred
+triggers:
+  - metric: latency_ms
+    comparator: >
+    baseline: auto
+    source:
+      kind: harness
+    interval_minutes: 60
+    action: optimize
+notes:
+  - 'harness INFERRED from tests/fixtures/auto_harness_demo/benchmark.py:1 (benchmark-named script); verify it emits JSON lines'
+  - 'goal INFERRED: benchmark script found, guessing latency_ms/min; rename to what the harness emits'
+  - 'optimize.on_accept: once this config is accepted, evo calibrates the harness, resolves baselines, and starts the first optimization run automatically (needs an optimize.proposer; set on_accept: false to disable)'
+harness: python tests/fixtures/auto_harness_demo/benchmark.py
+optimize:
+  on_accept: true
