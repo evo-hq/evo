@@ -155,9 +155,8 @@ class TestCodexRestageSurvival(_CodexSandbox):
             ]
             self.assertTrue(commands)
             for command in commands:
-                self.assertTrue(
-                    Path(command).samefile(self.root / ".evo" / "bin" / HOOK_NAME)
-                )
+                self.assertIn("node -e", command)
+                self.assertIn("Buffer.from", command)
 
     @unittest.skipIf(sys.platform == "win32", "shell-script smoke is posix-only")
     def test_materialized_hook_runs_without_claude_plugin_root(self):
@@ -179,6 +178,57 @@ class TestCodexRestageSurvival(_CodexSandbox):
             input=b'{"hook_event_name":"SessionStart","session_id":"s"}',
             capture_output=True,
             env=env,
+            shell=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), b"{}")
+
+    @unittest.skipIf(sys.platform == "win32", "shell-script smoke is posix-only")
+    def test_materialized_hook_preserves_real_hook_output(self):
+        self.assertEqual(codex._install_via_filecopy(None), 0)
+        stable = self.root / ".evo" / "bin" / HOOK_NAME
+        stable.write_text(
+            "#!/bin/sh\n"
+            "cat >/dev/null\n"
+            "printf '{\"decision\":\"block\",\"reason\":\"evo-test\"}'\n"
+        )
+        stable.chmod(0o755)
+
+        hooks = json.loads(
+            (self._cache_plugin_dir() / "hooks" / "hooks.json").read_text()
+        )
+        command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        result = subprocess.run(
+            command,
+            input=b'{"hook_event_name":"SessionStart","session_id":"s"}',
+            capture_output=True,
+            env=os.environ.copy(),
+            shell=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {"decision": "block", "reason": "evo-test"},
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "shell-script smoke is posix-only")
+    def test_materialized_hook_fails_open_when_stable_binary_is_killed(self):
+        self.assertEqual(codex._install_via_filecopy(None), 0)
+        stable = self.root / ".evo" / "bin" / HOOK_NAME
+        stable.write_text("#!/bin/sh\ncat >/dev/null\nkill -9 $$\n")
+        stable.chmod(0o755)
+
+        hooks = json.loads(
+            (self._cache_plugin_dir() / "hooks" / "hooks.json").read_text()
+        )
+        command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        result = subprocess.run(
+            command,
+            input=b'{"hook_event_name":"SessionStart","session_id":"s"}',
+            capture_output=True,
+            env=os.environ.copy(),
             shell=True,
             timeout=10,
         )
@@ -390,6 +440,89 @@ class TestWrapperFallback(_SandboxBase):
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout.strip(), b"{}")
         self.assertIn(b"binary not staged", r.stderr)
+
+    @unittest.skipIf(sys.platform == "win32", "shell-script smoke is posix-only")
+    def test_committed_hooks_do_not_require_claude_plugin_root(self):
+        """Codex may refresh its cache from the raw marketplace source after
+        `evo install codex` has already materialized hooks. The committed hook
+        command must still work when CLAUDE_PLUGIN_ROOT is absent."""
+        import subprocess
+        stable = self.root / ".evo" / "bin" / "evo-hook-drain"
+        stable.parent.mkdir(parents=True)
+        stable.write_text("#!/bin/sh\ncat >/dev/null\nprintf '{}'\n")
+        stable.chmod(0o755)
+
+        hooks = json.loads((REPO_ROOT / "plugins" / "evo" / "hooks" / "hooks.json").read_text())
+        self.assertNotIn(
+            "CLAUDE_PLUGIN_ROOT",
+            (REPO_ROOT / "plugins" / "evo" / "hooks" / "hooks.json").read_text(),
+        )
+        command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        env = os.environ.copy()
+        env.pop("CLAUDE_PLUGIN_ROOT", None)
+        r = subprocess.run(
+            command,
+            input=b'{"hook_event_name":"SessionStart","session_id":"s"}',
+            capture_output=True,
+            env=env,
+            shell=True,
+            timeout=10,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), b"{}")
+
+    @unittest.skipIf(sys.platform == "win32", "shell-script smoke is posix-only")
+    def test_committed_hooks_preserve_real_hook_output(self):
+        import subprocess
+        stable = self.root / ".evo" / "bin" / "evo-hook-drain"
+        stable.parent.mkdir(parents=True)
+        stable.write_text(
+            "#!/bin/sh\n"
+            "cat >/dev/null\n"
+            "printf '{\"hookSpecificOutput\":{\"permissionDecision\":\"deny\"}}'\n"
+        )
+        stable.chmod(0o755)
+
+        hooks = json.loads((REPO_ROOT / "plugins" / "evo" / "hooks" / "hooks.json").read_text())
+        command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        env = os.environ.copy()
+        env.pop("CLAUDE_PLUGIN_ROOT", None)
+        r = subprocess.run(
+            command,
+            input=b'{"hook_event_name":"SessionStart","session_id":"s"}',
+            capture_output=True,
+            env=env,
+            shell=True,
+            timeout=10,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(
+            json.loads(r.stdout),
+            {"hookSpecificOutput": {"permissionDecision": "deny"}},
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "shell-script smoke is posix-only")
+    def test_committed_hooks_fail_open_when_stable_binary_is_killed(self):
+        import subprocess
+        stable = self.root / ".evo" / "bin" / "evo-hook-drain"
+        stable.parent.mkdir(parents=True)
+        stable.write_text("#!/bin/sh\ncat >/dev/null\nkill -9 $$\n")
+        stable.chmod(0o755)
+
+        hooks = json.loads((REPO_ROOT / "plugins" / "evo" / "hooks" / "hooks.json").read_text())
+        command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        env = os.environ.copy()
+        env.pop("CLAUDE_PLUGIN_ROOT", None)
+        r = subprocess.run(
+            command,
+            input=b'{"hook_event_name":"SessionStart","session_id":"s"}',
+            capture_output=True,
+            env=env,
+            shell=True,
+            timeout=10,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), b"{}")
 
 
 @unittest.skipIf(sys.platform == "win32", "sh wrapper is posix-only")

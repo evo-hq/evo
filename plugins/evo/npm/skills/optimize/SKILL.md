@@ -2,7 +2,7 @@
 name: optimize
 description: Drive structured autoresearch iteration after evo:discover and the baseline commit. Use when the user invokes /evo:optimize or asks to try ideas, try variants, run experiments, use available GPUs, improve the current best/frontier, continue an evo search, or compare candidate changes in an evo workspace. The orchestrator plans and spawns optimization subagents; candidate edits/runs belong to those subagents. Width is set via subagents=N (1 for serial workloads, larger for parallel); the loop's structural value applies at any width.
 argument-hint: "[subagents=N] [budget=N] [stall=N]"
-evo_version: 0.6.1
+evo_version: 0.6.2
 ---
 
 Run the `evo` optimization loop. Each round, the orchestrator writes structured briefs and spawns subagents that execute within them. Each subagent is semi-autonomous: it reads the pointer traces, forms the concrete edit, runs experiments, and can iterate within its branch. Runs until interrupted or the stall limit is reached.

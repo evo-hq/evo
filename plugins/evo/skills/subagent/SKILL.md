@@ -1,7 +1,7 @@
 ---
 name: subagent
 description: Protocol that evo optimization subagents follow when dispatched from /optimize. Auto-loaded by spawned subagents via their host's skill loader. The orchestrator may also invoke this skill to understand the brief shape its dispatched subagents expect + what they're required to emit -- useful when writing briefs or debugging a subagent's behavior.
-evo_version: 0.6.1
+evo_version: 0.6.2
 ---
 
 # Evo Subagent Protocol

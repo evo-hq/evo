@@ -1,7 +1,7 @@
 ---
 name: finetuning
 description: This skill should be used when picking or diagnosing a training move (SFT, LoRA, DPO/KTO/ORPO, RFT, GRPO/PPO/RLOO, RLHF), or when the user mentions fine-tuning, post-training, training recipe, reward design, or weight updates. Decision tree by reward shape, smoke-run gate, three failure diagnostics, five false-progress patterns. Provider recipes and I/O contract in references/.
-evo_version: 0.6.1
+evo_version: 0.6.2
 ---
 
 # Finetuning

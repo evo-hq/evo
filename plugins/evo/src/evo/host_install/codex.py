@@ -5,10 +5,9 @@ done by adding a `[plugins."<name>@<marketplace>"]` section."""
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
-import platform
-import shlex
 import subprocess
 from pathlib import Path
 
@@ -32,22 +31,27 @@ in ~/.codex/config.toml.
 """
 
 
-def _command_quote(path: Path) -> str:
-    """Return a shell-safe command token for an absolute executable path."""
-    text = str(path)
-    if platform.system().lower() == "windows":
-        return subprocess.list2cmdline([text])
-    return shlex.quote(text)
-
-
 def _stable_hook_command() -> str:
     """Codex-safe hook command.
 
     Codex does not guarantee Claude Code's `${CLAUDE_PLUGIN_ROOT}` env var.
     Materialize the user's stable evo hook binary path at install time so
     Codex hook execution does not depend on plugin-root expansion, cwd, or PATH.
+    The Node wrapper deliberately fails open: hooks run in every Codex session,
+    and a killed/corrupt helper binary must not break unrelated work.
     """
-    return _command_quote(stable_binary_path().resolve())
+    stable_json = json.dumps(str(stable_binary_path().resolve()))
+    script = (
+        "const fs=require('fs'),cp=require('child_process');"
+        "const input=fs.readFileSync(0);"
+        f"const bin={stable_json};"
+        "try{const r=cp.spawnSync(bin,[],{input});"
+        "if(r.status===0&&r.stdout&&r.stdout.length){"
+        "process.stdout.write(r.stdout);process.exit(0)}}catch(e){}"
+        "process.stdout.write('{}\\n')"
+    )
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    return f"node -e \"eval(Buffer.from('{encoded}','base64').toString())\""
 
 
 def _materialize_codex_hooks(hooks_json_path: Path) -> bool:

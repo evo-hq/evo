@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/evo-hook-drain"
+            "command": "node -e \"eval(Buffer.from('Y29uc3QgZnM9cmVxdWlyZSgnZnMnKSxvcz1yZXF1aXJlKCdvcycpLHBhdGg9cmVxdWlyZSgncGF0aCcpLGNwPXJlcXVpcmUoJ2NoaWxkX3Byb2Nlc3MnKTtjb25zdCBpbnB1dD1mcy5yZWFkRmlsZVN5bmMoMCk7Y29uc3QgbmFtZXM9cHJvY2Vzcy5wbGF0Zm9ybT09PSd3aW4zMic/Wydldm8taG9vay1kcmFpbi5leGUnLCdldm8taG9vay1kcmFpbiddOlsnZXZvLWhvb2stZHJhaW4nXTtjb25zdCBjYW5kaWRhdGVzPVtdO2NvbnN0IHJvb3Q9cHJvY2Vzcy5lbnYuQ0xBVURFX1BMVUdJTl9ST09UO2lmKHJvb3Qpe2Zvcihjb25zdCBuIG9mIG5hbWVzKWNhbmRpZGF0ZXMucHVzaChwYXRoLmpvaW4ocm9vdCwnYmluJyxuKSk7fWNvbnN0IGhvbWU9cHJvY2Vzcy5lbnYuRVZPX0hPTUV8fHBhdGguam9pbihvcy5ob21lZGlyKCksJy5ldm8nKTtmb3IoY29uc3QgbiBvZiBuYW1lcyljYW5kaWRhdGVzLnB1c2gocGF0aC5qb2luKGhvbWUsJ2JpbicsbikpO2Zvcihjb25zdCBiIG9mIGNhbmRpZGF0ZXMpe3RyeXtpZihmcy5leGlzdHNTeW5jKGIpKXtjb25zdCByPWNwLnNwYXduU3luYyhiLFtdLHtpbnB1dH0pO2lmKHIuc3RhdHVzPT09MCYmci5zdGRvdXQmJnIuc3Rkb3V0Lmxlbmd0aCl7cHJvY2Vzcy5zdGRvdXQud3JpdGUoci5zdGRvdXQpO3Byb2Nlc3MuZXhpdCgwKTt9fX1jYXRjaChlKXt9fXByb2Nlc3Muc3Rkb3V0LndyaXRlKCd7fVxuJyk7','base64').toString())\""
           }
         ]
       }
@@ -17,16 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/evo-hook-drain"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/wait_hint.sh"
+            "command": "node -e \"eval(Buffer.from('Y29uc3QgZnM9cmVxdWlyZSgnZnMnKSxvcz1yZXF1aXJlKCdvcycpLHBhdGg9cmVxdWlyZSgncGF0aCcpLGNwPXJlcXVpcmUoJ2NoaWxkX3Byb2Nlc3MnKTtjb25zdCBpbnB1dD1mcy5yZWFkRmlsZVN5bmMoMCk7Y29uc3QgbmFtZXM9cHJvY2Vzcy5wbGF0Zm9ybT09PSd3aW4zMic/Wydldm8taG9vay1kcmFpbi5leGUnLCdldm8taG9vay1kcmFpbiddOlsnZXZvLWhvb2stZHJhaW4nXTtjb25zdCBjYW5kaWRhdGVzPVtdO2NvbnN0IHJvb3Q9cHJvY2Vzcy5lbnYuQ0xBVURFX1BMVUdJTl9ST09UO2lmKHJvb3Qpe2Zvcihjb25zdCBuIG9mIG5hbWVzKWNhbmRpZGF0ZXMucHVzaChwYXRoLmpvaW4ocm9vdCwnYmluJyxuKSk7fWNvbnN0IGhvbWU9cHJvY2Vzcy5lbnYuRVZPX0hPTUV8fHBhdGguam9pbihvcy5ob21lZGlyKCksJy5ldm8nKTtmb3IoY29uc3QgbiBvZiBuYW1lcyljYW5kaWRhdGVzLnB1c2gocGF0aC5qb2luKGhvbWUsJ2JpbicsbikpO2Zvcihjb25zdCBiIG9mIGNhbmRpZGF0ZXMpe3RyeXtpZihmcy5leGlzdHNTeW5jKGIpKXtjb25zdCByPWNwLnNwYXduU3luYyhiLFtdLHtpbnB1dH0pO2lmKHIuc3RhdHVzPT09MCYmci5zdGRvdXQmJnIuc3Rkb3V0Lmxlbmd0aCl7cHJvY2Vzcy5zdGRvdXQud3JpdGUoci5zdGRvdXQpO3Byb2Nlc3MuZXhpdCgwKTt9fX1jYXRjaChlKXt9fXByb2Nlc3Muc3Rkb3V0LndyaXRlKCd7fVxuJyk7','base64').toString())\""
           }
         ]
       }
@@ -36,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/evo-hook-drain"
+            "command": "node -e \"eval(Buffer.from('Y29uc3QgZnM9cmVxdWlyZSgnZnMnKSxvcz1yZXF1aXJlKCdvcycpLHBhdGg9cmVxdWlyZSgncGF0aCcpLGNwPXJlcXVpcmUoJ2NoaWxkX3Byb2Nlc3MnKTtjb25zdCBpbnB1dD1mcy5yZWFkRmlsZVN5bmMoMCk7Y29uc3QgbmFtZXM9cHJvY2Vzcy5wbGF0Zm9ybT09PSd3aW4zMic/Wydldm8taG9vay1kcmFpbi5leGUnLCdldm8taG9vay1kcmFpbiddOlsnZXZvLWhvb2stZHJhaW4nXTtjb25zdCBjYW5kaWRhdGVzPVtdO2NvbnN0IHJvb3Q9cHJvY2Vzcy5lbnYuQ0xBVURFX1BMVUdJTl9ST09UO2lmKHJvb3Qpe2Zvcihjb25zdCBuIG9mIG5hbWVzKWNhbmRpZGF0ZXMucHVzaChwYXRoLmpvaW4ocm9vdCwnYmluJyxuKSk7fWNvbnN0IGhvbWU9cHJvY2Vzcy5lbnYuRVZPX0hPTUV8fHBhdGguam9pbihvcy5ob21lZGlyKCksJy5ldm8nKTtmb3IoY29uc3QgbiBvZiBuYW1lcyljYW5kaWRhdGVzLnB1c2gocGF0aC5qb2luKGhvbWUsJ2JpbicsbikpO2Zvcihjb25zdCBiIG9mIGNhbmRpZGF0ZXMpe3RyeXtpZihmcy5leGlzdHNTeW5jKGIpKXtjb25zdCByPWNwLnNwYXduU3luYyhiLFtdLHtpbnB1dH0pO2lmKHIuc3RhdHVzPT09MCYmci5zdGRvdXQmJnIuc3Rkb3V0Lmxlbmd0aCl7cHJvY2Vzcy5zdGRvdXQud3JpdGUoci5zdGRvdXQpO3Byb2Nlc3MuZXhpdCgwKTt9fX1jYXRjaChlKXt9fXByb2Nlc3Muc3Rkb3V0LndyaXRlKCd7fVxuJyk7','base64').toString())\""
           }
         ]
       }
@@ -46,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/evo-hook-drain"
+            "command": "node -e \"eval(Buffer.from('Y29uc3QgZnM9cmVxdWlyZSgnZnMnKSxvcz1yZXF1aXJlKCdvcycpLHBhdGg9cmVxdWlyZSgncGF0aCcpLGNwPXJlcXVpcmUoJ2NoaWxkX3Byb2Nlc3MnKTtjb25zdCBpbnB1dD1mcy5yZWFkRmlsZVN5bmMoMCk7Y29uc3QgbmFtZXM9cHJvY2Vzcy5wbGF0Zm9ybT09PSd3aW4zMic/Wydldm8taG9vay1kcmFpbi5leGUnLCdldm8taG9vay1kcmFpbiddOlsnZXZvLWhvb2stZHJhaW4nXTtjb25zdCBjYW5kaWRhdGVzPVtdO2NvbnN0IHJvb3Q9cHJvY2Vzcy5lbnYuQ0xBVURFX1BMVUdJTl9ST09UO2lmKHJvb3Qpe2Zvcihjb25zdCBuIG9mIG5hbWVzKWNhbmRpZGF0ZXMucHVzaChwYXRoLmpvaW4ocm9vdCwnYmluJyxuKSk7fWNvbnN0IGhvbWU9cHJvY2Vzcy5lbnYuRVZPX0hPTUV8fHBhdGguam9pbihvcy5ob21lZGlyKCksJy5ldm8nKTtmb3IoY29uc3QgbiBvZiBuYW1lcyljYW5kaWRhdGVzLnB1c2gocGF0aC5qb2luKGhvbWUsJ2JpbicsbikpO2Zvcihjb25zdCBiIG9mIGNhbmRpZGF0ZXMpe3RyeXtpZihmcy5leGlzdHNTeW5jKGIpKXtjb25zdCByPWNwLnNwYXduU3luYyhiLFtdLHtpbnB1dH0pO2lmKHIuc3RhdHVzPT09MCYmci5zdGRvdXQmJnIuc3Rkb3V0Lmxlbmd0aCl7cHJvY2Vzcy5zdGRvdXQud3JpdGUoci5zdGRvdXQpO3Byb2Nlc3MuZXhpdCgwKTt9fX1jYXRjaChlKXt9fXByb2Nlc3Muc3Rkb3V0LndyaXRlKCd7fVxuJyk7','base64').toString())\""
           }
         ]
       }
@@ -56,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/evo-hook-drain"
+            "command": "node -e \"eval(Buffer.from('Y29uc3QgZnM9cmVxdWlyZSgnZnMnKSxvcz1yZXF1aXJlKCdvcycpLHBhdGg9cmVxdWlyZSgncGF0aCcpLGNwPXJlcXVpcmUoJ2NoaWxkX3Byb2Nlc3MnKTtjb25zdCBpbnB1dD1mcy5yZWFkRmlsZVN5bmMoMCk7Y29uc3QgbmFtZXM9cHJvY2Vzcy5wbGF0Zm9ybT09PSd3aW4zMic/Wydldm8taG9vay1kcmFpbi5leGUnLCdldm8taG9vay1kcmFpbiddOlsnZXZvLWhvb2stZHJhaW4nXTtjb25zdCBjYW5kaWRhdGVzPVtdO2NvbnN0IHJvb3Q9cHJvY2Vzcy5lbnYuQ0xBVURFX1BMVUdJTl9ST09UO2lmKHJvb3Qpe2Zvcihjb25zdCBuIG9mIG5hbWVzKWNhbmRpZGF0ZXMucHVzaChwYXRoLmpvaW4ocm9vdCwnYmluJyxuKSk7fWNvbnN0IGhvbWU9cHJvY2Vzcy5lbnYuRVZPX0hPTUV8fHBhdGguam9pbihvcy5ob21lZGlyKCksJy5ldm8nKTtmb3IoY29uc3QgbiBvZiBuYW1lcyljYW5kaWRhdGVzLnB1c2gocGF0aC5qb2luKGhvbWUsJ2JpbicsbikpO2Zvcihjb25zdCBiIG9mIGNhbmRpZGF0ZXMpe3RyeXtpZihmcy5leGlzdHNTeW5jKGIpKXtjb25zdCByPWNwLnNwYXduU3luYyhiLFtdLHtpbnB1dH0pO2lmKHIuc3RhdHVzPT09MCYmci5zdGRvdXQmJnIuc3Rkb3V0Lmxlbmd0aCl7cHJvY2Vzcy5zdGRvdXQud3JpdGUoci5zdGRvdXQpO3Byb2Nlc3MuZXhpdCgwKTt9fX1jYXRjaChlKXt9fXByb2Nlc3Muc3Rkb3V0LndyaXRlKCd7fVxuJyk7','base64').toString())\""
           }
         ]
       }
@@ -66,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/evo-hook-drain"
+            "command": "node -e \"eval(Buffer.from('Y29uc3QgZnM9cmVxdWlyZSgnZnMnKSxvcz1yZXF1aXJlKCdvcycpLHBhdGg9cmVxdWlyZSgncGF0aCcpLGNwPXJlcXVpcmUoJ2NoaWxkX3Byb2Nlc3MnKTtjb25zdCBpbnB1dD1mcy5yZWFkRmlsZVN5bmMoMCk7Y29uc3QgbmFtZXM9cHJvY2Vzcy5wbGF0Zm9ybT09PSd3aW4zMic/Wydldm8taG9vay1kcmFpbi5leGUnLCdldm8taG9vay1kcmFpbiddOlsnZXZvLWhvb2stZHJhaW4nXTtjb25zdCBjYW5kaWRhdGVzPVtdO2NvbnN0IHJvb3Q9cHJvY2Vzcy5lbnYuQ0xBVURFX1BMVUdJTl9ST09UO2lmKHJvb3Qpe2Zvcihjb25zdCBuIG9mIG5hbWVzKWNhbmRpZGF0ZXMucHVzaChwYXRoLmpvaW4ocm9vdCwnYmluJyxuKSk7fWNvbnN0IGhvbWU9cHJvY2Vzcy5lbnYuRVZPX0hPTUV8fHBhdGguam9pbihvcy5ob21lZGlyKCksJy5ldm8nKTtmb3IoY29uc3QgbiBvZiBuYW1lcyljYW5kaWRhdGVzLnB1c2gocGF0aC5qb2luKGhvbWUsJ2JpbicsbikpO2Zvcihjb25zdCBiIG9mIGNhbmRpZGF0ZXMpe3RyeXtpZihmcy5leGlzdHNTeW5jKGIpKXtjb25zdCByPWNwLnNwYXduU3luYyhiLFtdLHtpbnB1dH0pO2lmKHIuc3RhdHVzPT09MCYmci5zdGRvdXQmJnIuc3Rkb3V0Lmxlbmd0aCl7cHJvY2Vzcy5zdGRvdXQud3JpdGUoci5zdGRvdXQpO3Byb2Nlc3MuZXhpdCgwKTt9fX1jYXRjaChlKXt9fXByb2Nlc3Muc3Rkb3V0LndyaXRlKCd7fVxuJyk7','base64').toString())\""
           }
         ]
       }

@@ -1,7 +1,7 @@
 ---
 name: ship
 description: Land the winning experiment from an evo run as a clean, mergeable change -- open a PR when the repo has a remote, otherwise merge into the working branch. Distills the best-scoring experiment down to the minimal diff that reproduces its behaviour, shaped for the qualities a maintainer merges on (scope discipline, test integrity, style adherence), then attaches an advisory mergeability report. Use when the user invokes /evo:ship, asks to land/merge/ship the best result, or wants to turn a finished optimization into a pull request.
-evo_version: 0.6.1
+evo_version: 0.6.2
 ---
 
 # Ship

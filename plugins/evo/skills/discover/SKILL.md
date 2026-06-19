@@ -2,7 +2,7 @@
 name: discover
 description: Initialize evo for the current repository by exploring the codebase, proposing unexplored optimization dimensions, constructing the benchmark inside a baseline worktree, and running the first experiment. Use when the user invokes /evo:discover, mentions setting up evo, wants to instrument a codebase for autonomous optimization, or asks to start a new evo run on a project.
 argument-hint: <optional context about what to optimize>
-evo_version: 0.6.1
+evo_version: 0.6.2
 ---
 
 # Discover
@@ -119,20 +119,20 @@ evo --version
 The output must be exactly:
 
 ```
-evo-hq-cli 0.6.1
+evo-hq-cli 0.6.2
 ```
 
 Three outcomes:
 
 1. **Matches exactly** — continue to step 1.
 2. **Reports a different version** (`evo-hq-cli 0.4.2`, etc.) — the host refetched a newer/older skill bundle than the CLI on PATH. Drift breaks skills silently. Stop and tell the user:
-   > Your installed evo CLI is on a different version than this skill (`0.6.1`). Run:
+   > Your installed evo CLI is on a different version than this skill (`0.6.2`). Run:
    > ```
-   > uv tool install --force evo-hq-cli==0.6.1
+   > uv tool install --force evo-hq-cli==0.6.2
    > ```
    > Then re-invoke this skill.
 3. **`command not found`, or reports a different package** (commonly `evo 1.x` — the unrelated SLAM tool) — the CLI isn't installed. Tell the user:
-   > `evo-hq-cli` isn't on your PATH. Install it: `uv tool install evo-hq-cli==0.6.1` (or `pipx install evo-hq-cli==0.6.1`). Then re-invoke this skill.
+   > `evo-hq-cli` isn't on your PATH. Install it: `uv tool install evo-hq-cli==0.6.2` (or `pipx install evo-hq-cli==0.6.2`). Then re-invoke this skill.
 
 Do not try to auto-install. Host sandbox + network policy may block it; leaving the install as a user action keeps failure modes clear.
 

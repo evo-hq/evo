@@ -14,7 +14,7 @@ authors:
 repository-code: "https://github.com/evo-hq/evo"
 url: "https://github.com/evo-hq/evo"
 license: Apache-2.0
-version: 0.6.1
+version: 0.6.2
 date-released: 2026-06-19
 keywords:
   - autoresearch
