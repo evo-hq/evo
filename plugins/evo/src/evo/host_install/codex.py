@@ -85,7 +85,7 @@ def _materialize_codex_hooks(hooks_json_path: Path) -> bool:
                         handler = {**handler, "command": drain_cmd}
                         changed = True
                     handlers.append(handler)
-                elif "wait_hint.sh" in cmd:
+                elif "wait_hint.sh" in cmd or "evo-wait-hint" in cmd:
                     # Optional UX hint. Keeping a Claude-only path here makes
                     # Codex emit hook failures, which is worse than omitting it.
                     changed = True

@@ -143,8 +143,8 @@ class TestCodexRestageSurvival(_CodexSandbox):
             self.snapshot / "plugins" / "evo" / "hooks" / "hooks.json",
         ):
             text = hooks_json.read_text()
-            self.assertNotIn("CLAUDE_PLUGIN_ROOT", text)
             self.assertNotIn("wait_hint.sh", text)
+            self.assertNotIn("evo-wait-hint", text)
             data = json.loads(text)
             commands = [
                 handler["command"]
@@ -477,11 +477,9 @@ class TestWrapperFallback(_SandboxBase):
         stable.chmod(0o755)
 
         hooks = json.loads((REPO_ROOT / "plugins" / "evo" / "hooks" / "hooks.json").read_text())
-        self.assertNotIn(
-            "CLAUDE_PLUGIN_ROOT",
-            (REPO_ROOT / "plugins" / "evo" / "hooks" / "hooks.json").read_text(),
-        )
         command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        self.assertIn("node -e", command)
+        self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", command)
         env = os.environ.copy()
         env.pop("CLAUDE_PLUGIN_ROOT", None)
         r = subprocess.run(
@@ -494,6 +492,56 @@ class TestWrapperFallback(_SandboxBase):
         )
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), b"{}")
+
+    @unittest.skipIf(sys.platform == "win32", "shell-script smoke is posix-only")
+    def test_committed_wait_hint_hook_is_safe_without_claude_plugin_root(self):
+        import subprocess
+
+        hooks = json.loads((REPO_ROOT / "plugins" / "evo" / "hooks" / "hooks.json").read_text())
+        command = hooks["hooks"]["PostToolUse"][1]["hooks"][0]["command"]
+        self.assertIn("evo-wait-hint", command)
+        self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", command)
+        env = os.environ.copy()
+        env.pop("CLAUDE_PLUGIN_ROOT", None)
+        r = subprocess.run(
+            command,
+            input=b'{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"python train.py"}}',
+            capture_output=True,
+            env=env,
+            shell=True,
+            timeout=10,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), b"{}")
+
+    @unittest.skipIf(sys.platform == "win32", "shell-script smoke is posix-only")
+    def test_committed_wait_hint_hook_runs_for_claude_plugin_root(self):
+        import subprocess
+
+        plugin_root = self.root / "plugin"
+        hooks_dir = plugin_root / "hooks"
+        hooks_dir.mkdir(parents=True)
+        (hooks_dir / "wait_hint.sh").write_text(
+            "#!/bin/sh\n"
+            "cat >/dev/null\n"
+            "printf '[evo-hint] test\\n'\n"
+        )
+        (hooks_dir / "wait_hint.sh").chmod(0o755)
+
+        hooks = json.loads((REPO_ROOT / "plugins" / "evo" / "hooks" / "hooks.json").read_text())
+        command = hooks["hooks"]["PostToolUse"][1]["hooks"][0]["command"]
+        env = os.environ.copy()
+        env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+        r = subprocess.run(
+            command,
+            input=b'{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"python train.py"}}',
+            capture_output=True,
+            env=env,
+            shell=True,
+            timeout=10,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), b"[evo-hint] test")
 
     @unittest.skipIf(sys.platform == "win32", "shell-script smoke is posix-only")
     def test_committed_hooks_preserve_real_hook_output(self):
