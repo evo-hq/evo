@@ -282,6 +282,87 @@ class TestDisablePlugin(_Base):
         self.assertEqual(self._read_config(), original)
 
 
+class TestCodexConfigConvergence(_Base):
+
+    def test_enable_plugin_replaces_disabled_and_duplicate_blocks(self):
+        from evo.host_install.codex import _enable_plugin
+
+        self._write_config(
+            '[features]\n'
+            'plugin_hooks = true\n'
+            '\n'
+            '[plugins."evo@evo-hq"]\n'
+            'enabled = false\n'
+            '\n'
+            '[plugins."github@openai-curated"]\n'
+            'enabled = true\n'
+            '\n'
+            '[plugins."evo@evo-hq"]\n'
+            'enabled = true\n'
+        )
+        changed, _ = _enable_plugin(enable=True)
+        self.assertTrue(changed)
+        text = self._read_config()
+        self.assertEqual(text.count('[plugins."evo@evo-hq"]'), 1)
+        self.assertIn('[plugins."evo@evo-hq"]\nenabled = true', text)
+        self.assertNotIn('[plugins."evo@evo-hq"]\nenabled = false', text)
+        self.assertIn('[plugins."github@openai-curated"]', text)
+
+    def test_trust_hooks_replaces_disabled_duplicate_hook_state_blocks(self):
+        from evo.host_install.codex import _trust_plugin_hooks
+
+        hooks = self.codex_home / "plugins" / "cache" / "evo-hq" / "evo" / "0.6.2" / "hooks" / "hooks.json"
+        hooks.parent.mkdir(parents=True)
+        hooks.write_text(
+            '{"hooks":{"SessionStart":[{"hooks":[{"type":"command",'
+            '"command":"node -e \\"process.stdout.write(\\\\\\"{}\\\\\\\\n\\\\\\")\\""}]}]}}'
+        )
+        self._write_config(
+            '[features]\n'
+            'plugin_hooks = true\n'
+            '\n'
+            '[hooks.state."evo@evo-hq:hooks/hooks.json:session_start:0:0"]\n'
+            'enabled = false\n'
+            'trusted_hash = "sha256:old"\n'
+            '\n'
+            '[plugins."github@openai-curated"]\n'
+            'enabled = true\n'
+            '\n'
+            '[hooks.state."evo@evo-hq:hooks/hooks.json:session_start:0:0"]\n'
+            'enabled = true\n'
+            'trusted_hash = "sha256:also-old"\n'
+        )
+
+        _trust_plugin_hooks(hooks, plugin_id="evo@evo-hq", cfg=self.cfg_path)
+
+        text = self._read_config()
+        self.assertEqual(
+            text.count('[hooks.state."evo@evo-hq:hooks/hooks.json:session_start:0:0"]'),
+            1,
+        )
+        self.assertNotIn("enabled = false", text)
+        self.assertNotIn("sha256:old", text)
+        self.assertNotIn("sha256:also-old", text)
+        self.assertIn('trusted_hash = "sha256:', text)
+        self.assertIn('[plugins."github@openai-curated"]', text)
+
+    def test_no_trust_cleanup_removes_stale_hook_state(self):
+        from evo.host_install.codex import _strip_plugin_hook_state
+
+        self._write_config(
+            '[hooks.state."evo@evo-hq:hooks/hooks.json:pre_tool_use:0:0"]\n'
+            'enabled = false\n'
+            'trusted_hash = "sha256:old"\n'
+            '\n'
+            '[plugins."github@openai-curated"]\n'
+            'enabled = true\n'
+        )
+        self.assertTrue(_strip_plugin_hook_state(self.cfg_path, "evo@evo-hq"))
+        text = self._read_config()
+        self.assertNotIn("[hooks.state.", text)
+        self.assertIn('[plugins."github@openai-curated"]', text)
+
+
 class TestDoctorHookBinary(_Base):
     """`doctor()` resolves the hook-drain binary at the cache dir codex
     actually loads. These exercise the version-dir selection (numeric, not

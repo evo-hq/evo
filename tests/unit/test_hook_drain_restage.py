@@ -407,6 +407,59 @@ class TestCodexMarketplaceRefresh(_CodexSandbox):
         self.assertTrue(cache_hooks.exists())
         self.assertNotIn("CLAUDE_PLUGIN_ROOT", cache_hooks.read_text())
 
+    def test_non_force_install_repairs_config_without_refreshing_marketplace(self):
+        import argparse
+        from unittest import mock
+
+        # Mirrors a real broken user config: duplicate canonical sections plus
+        # Codex-managed enabled keys inside hook-state tables. TOML parsing fails
+        # before Codex can start until these are collapsed to one canonical block.
+        (self.codex_home / "config.toml").write_text(
+            '[features]\n'
+            'plugin_hooks = true\n'
+            '\n'
+            '[plugins."evo@evo-hq"]\n'
+            'enabled = false\n'
+            '\n'
+            '[hooks.state."evo@evo-hq:hooks/hooks.json:pre_tool_use:0:0"]\n'
+            'enabled = false\n'
+            'trusted_hash = "sha256:old"\n'
+            '\n'
+            '[plugins."github@openai-curated"]\n'
+            'enabled = true\n'
+            '\n'
+            '[plugins."evo@evo-hq"]\n'
+            'enabled = true\n'
+            '\n'
+            '[hooks.state."evo@evo-hq:hooks/hooks.json:pre_tool_use:0:0"]\n'
+            'enabled = true\n'
+            'trusted_hash = "sha256:also-old"\n'
+        )
+        old_path = self._with_fake_codex_on_path()
+        try:
+            with mock.patch("subprocess.call") as call:
+                rc = codex.install(argparse.Namespace(
+                    from_path=None,
+                    trust_hooks=True,
+                    force=False,
+                    version=None,
+                ))
+        finally:
+            os.environ["PATH"] = old_path
+
+        self.assertEqual(rc, 0)
+        call.assert_not_called()
+        cfg = self._config()
+        self.assertEqual(cfg.count('[plugins."evo@evo-hq"]'), 1)
+        self.assertIn('[plugins."evo@evo-hq"]\nenabled = true', cfg)
+        self.assertEqual(
+            cfg.count('[hooks.state."evo@evo-hq:hooks/hooks.json:pre_tool_use:0:0"]'),
+            1,
+        )
+        self.assertNotIn('trusted_hash = "sha256:old"', cfg)
+        self.assertNotIn('trusted_hash = "sha256:also-old"', cfg)
+        self.assertIn('[plugins."github@openai-curated"]', cfg)
+
     def test_version_pin_fails_closed_when_snapshot_stays_stale(self):
         import argparse
         from unittest import mock

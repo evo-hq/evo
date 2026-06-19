@@ -150,41 +150,48 @@ def _toggle_plugin_hooks(enable: bool) -> tuple[bool, Path]:
     return True, cfg
 
 
+def _strip_toml_sections(text: str, should_strip) -> str:
+    """Remove whole TOML sections whose header matches ``should_strip``.
+
+    The Codex config is user-owned, so keep this deliberately text-based and
+    narrow: when a matching table header is seen, drop that header and every
+    following line until the next table header.
+    """
+    new_lines: list[str] = []
+    skip = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("["):
+            header = stripped.rstrip()
+            skip = bool(should_strip(header))
+            if skip:
+                continue
+        if skip:
+            continue
+        new_lines.append(line)
+    return "".join(new_lines)
+
+
 def _enable_plugin(enable: bool) -> tuple[bool, Path]:
     """Add or remove the `[plugins."evo@evo-hq"]` section in
     config.toml. Codex 0.130+ uses owner-only marketplace names, so the
     plugin key is `evo@evo-hq` (not `evo@evo-hq-evo`)."""
     cfg = _codex_base() / "config.toml"
-    if not cfg.exists():
+    if not cfg.exists() and not enable:
         return False, cfg
-    text = cfg.read_text()
-    present = _PLUGIN_KEY in text
+    text = cfg.read_text() if cfg.exists() else ""
 
+    stripped = _strip_toml_sections(text, lambda header: header == _PLUGIN_KEY)
     if enable:
-        if present:
-            return False, cfg
-        text = text.rstrip() + f"\n\n{_PLUGIN_KEY}\n"
+        text = stripped.rstrip() + f"\n\n{_PLUGIN_KEY}\nenabled = true\n"
     else:
-        if not present:
+        if stripped == text:
             return False, cfg
-        # Remove the section header AND the key lines that belong to it
-        # (`enabled = true`, written by _install_via_filecopy) up to the
-        # next section. Dropping only the header would orphan
-        # `enabled = true`, which a TOML parser attaches to the preceding
-        # table.
-        new_lines: list[str] = []
-        skip = False
-        for line in text.splitlines():
-            stripped = line.lstrip()
-            if stripped.startswith("["):
-                skip = stripped.rstrip() == _PLUGIN_KEY
-                if skip:
-                    continue
-            if skip:
-                continue
-            new_lines.append(line)
-        text = "\n".join(new_lines).rstrip() + "\n"
+        text = stripped.rstrip() + "\n"
 
+    if text == (cfg.read_text() if cfg.exists() else ""):
+        return False, cfg
+    cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(text)
     return True, cfg
 
@@ -411,14 +418,11 @@ def _install_via_filecopy(from_path: str | None, *, trust_hooks: bool = True) ->
     else:
         print(f"plugin_hooks already enabled in {cfg}")
 
-    plugin_key = f'[plugins."evo@{mkt_name}"]'
-    text = cfg.read_text() if cfg.exists() else ""
-    if plugin_key not in text:
-        text = text.rstrip() + f"\n\n{plugin_key}\nenabled = true\n"
-        cfg.write_text(text)
-        print(f"updated {cfg}: added {plugin_key} (enabled = true)")
+    changed_p, cfg = _enable_plugin(enable=True)
+    if changed_p:
+        print(f"updated {cfg}: enabled [plugins.\"evo@{mkt_name}\"]")
     else:
-        print(f"{plugin_key} already present in {cfg}")
+        print(f"[plugins.\"evo@{mkt_name}\"] already enabled in {cfg}")
 
     # Hooks are codex's most security-sensitive surface (run on every
     # tool call). Codex installs them in `untrusted` state — they're
@@ -433,6 +437,8 @@ def _install_via_filecopy(from_path: str | None, *, trust_hooks: bool = True) ->
     if trust_hooks:
         _trust_plugin_hooks(nested_hooks, plugin_id=f"evo@{mkt_name}", cfg=cfg)
     else:
+        if _strip_plugin_hook_state(cfg, f"evo@{mkt_name}"):
+            print(f"updated {cfg}: removed stale hook trust for evo@{mkt_name}")
         print(
             "\nPlugin hooks installed UNTRUSTED (--no-trust-hooks). They "
             "register but never fire, so mid-run directives (`evo direct`) "
@@ -619,6 +625,19 @@ def _expected_hook_state(hooks_json_path: Path, plugin_id: str) -> dict[str, str
     return expected
 
 
+def _strip_plugin_hook_state(cfg: Path, plugin_id: str) -> bool:
+    text = cfg.read_text() if cfg.exists() else ""
+    stripped = _strip_toml_sections(
+        text,
+        lambda header: header.startswith(f'[hooks.state."{plugin_id}:'),
+    ).rstrip()
+    new_text = (stripped + "\n") if stripped else ""
+    if new_text == text:
+        return False
+    cfg.write_text(new_text)
+    return True
+
+
 def _trust_plugin_hooks(hooks_json_path: Path, plugin_id: str, cfg: Path) -> None:
     """Write `[hooks.state."<key>"] trusted_hash = "..."` entries to
     config.toml, same effect as `codex` → `/hooks` → Trust each.
@@ -636,15 +655,14 @@ def _trust_plugin_hooks(hooks_json_path: Path, plugin_id: str, cfg: Path) -> Non
 
     block = "\n\n".join(lines) + "\n"
     text = cfg.read_text() if cfg.exists() else ""
-    # Replace existing [hooks.state."..."] blocks for this plugin so
-    # repeated --trust-hooks calls don't accumulate stale entries.
-    import re as _re
-    pat = _re.compile(
-        rf'\[hooks\.state\."{_re.escape(plugin_id)}:[^"]+"\]\n'
-        rf'trusted_hash = "sha256:[a-f0-9]+"\s*',
-        _re.MULTILINE,
-    )
-    text = pat.sub("", text).rstrip() + "\n\n" + block
+    # Replace whole existing [hooks.state."..."] blocks for this plugin so
+    # repeated --trust-hooks calls don't accumulate stale or disabled entries.
+    # Codex may include additional keys such as `enabled = false`; a regex that
+    # only removes `trusted_hash` lines leaves duplicate TOML table headers.
+    text = _strip_toml_sections(
+        text,
+        lambda header: header.startswith(f'[hooks.state."{plugin_id}:'),
+    ).rstrip() + "\n\n" + block
     cfg.write_text(text)
     events = sorted({key.split(":")[-3] for key in expected})
     print(

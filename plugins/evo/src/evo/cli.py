@@ -6894,10 +6894,9 @@ def build_parser() -> argparse.ArgumentParser:
     install_p.add_argument(
         "--force",
         action="store_true",
-        help="Re-run the host's marketplace install even if the install state "
-             "already exists. Without --force, the prereq is skipped when the "
-             "host plugin is already present (avoids overwriting a tag-pinned "
-             "install with default-branch content).",
+        help="Refresh the host marketplace/source even if one already exists. "
+             "Normal install still repairs evo config and cached plugin files; "
+             "--force is for replacing stale, pinned, or broken source state.",
     )
     install_p.set_defaults(func=cmd_install)
 
@@ -6918,10 +6917,10 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Refresh evo's installation. With <host>: update just that host. "
             "Without <host>: refresh the global CLI from PyPI, then update every "
-            "host whose `evo doctor` currently passes. Use --force to wipe the "
-            "host's plugin cache and reinstall from scratch (workaround for the "
-            "upstream Claude Code cache-invalidation bug, "
-            "anthropics/claude-code#14061)."
+            "host whose `evo doctor` currently passes. A normal update repairs "
+            "evo config, hooks, helper binaries, and cached plugin files. Use "
+            "--force when the host marketplace/source itself should be refreshed "
+            "or replaced."
         ),
     )
     update_p.add_argument(
@@ -6934,8 +6933,8 @@ def build_parser() -> argparse.ArgumentParser:
     update_p.add_argument(
         "--force",
         action="store_true",
-        help="Uninstall + wipe plugin cache + reinstall (routes around upstream "
-             "cache-invalidation bug). Use this for migrating from pre-0.4.1.",
+        help="Refresh/reinstall the host marketplace or source before repairing "
+             "the host integration.",
     )
     update_p.add_argument(
         "--scope",
