@@ -184,6 +184,30 @@ class TestCodexRestageSurvival(_CodexSandbox):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), b"{}")
 
+    def test_materialized_hook_fails_open_when_stable_binary_is_missing(self):
+        import subprocess
+
+        self.assertEqual(codex._install_via_filecopy(None), 0)
+        stable = self.root / ".evo" / "bin" / HOOK_NAME
+        stable.unlink()
+
+        hooks = json.loads(
+            (self._cache_plugin_dir() / "hooks" / "hooks.json").read_text()
+        )
+        command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        env = os.environ.copy()
+        env.pop("CLAUDE_PLUGIN_ROOT", None)
+        result = subprocess.run(
+            command,
+            input=b'{"hook_event_name":"SessionStart","session_id":"s"}',
+            capture_output=True,
+            env=env,
+            shell=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), b"{}")
+
     @unittest.skipIf(sys.platform == "win32", "shell-script smoke is posix-only")
     def test_materialized_hook_preserves_real_hook_output(self):
         self.assertEqual(codex._install_via_filecopy(None), 0)
