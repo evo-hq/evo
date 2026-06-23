@@ -4560,14 +4560,19 @@ def cmd_metrics(args: argparse.Namespace) -> int:
             print("[]")
             return 0
     if args.tail:
+        fragment = b""
+        seen_size = 0
+        fragment = _print_metrics_lines(target, offset=0, fragment=b"")
         seen_size = target.stat().st_size
-        _print_metrics_lines(target, offset=0)
         try:
             while True:
                 time.sleep(2)
                 current = target.stat().st_size
+                if current < seen_size:
+                    seen_size = 0
+                    fragment = b""
                 if current > seen_size:
-                    _print_metrics_lines(target, offset=seen_size)
+                    fragment = _print_metrics_lines(target, offset=seen_size, fragment=fragment)
                     seen_size = current
         except KeyboardInterrupt:
             pass
@@ -4576,14 +4581,27 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_metrics_lines(path: Path, *, offset: int) -> None:
+def _print_metrics_lines(path: Path, *, offset: int, fragment: bytes = b"") -> bytes:
     size = path.stat().st_size
     if offset >= size:
-        return
+        return fragment
     with path.open("rb") as fh:
         fh.seek(offset)
-        raw = fh.read().decode("utf-8", errors="replace")
-    for line in raw.splitlines():
+        raw = fragment + fh.read()
+    last_nl = raw.rfind(b"\n")
+    if last_nl < 0:
+        if not fragment:
+            try:
+                parsed = json.loads(raw.decode("utf-8", errors="replace"))
+                print(json.dumps(parsed))
+                return b""
+            except json.JSONDecodeError:
+                pass
+        return raw
+    new_fragment = raw[last_nl + 1:]
+    complete = raw[:last_nl]
+    text = complete.decode("utf-8", errors="replace")
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -4592,6 +4610,14 @@ def _print_metrics_lines(path: Path, *, offset: int) -> None:
             print(json.dumps(parsed))
         except json.JSONDecodeError:
             pass
+    if new_fragment:
+        try:
+            parsed = json.loads(new_fragment.decode("utf-8", errors="replace"))
+            print(json.dumps(parsed))
+            return b""
+        except json.JSONDecodeError:
+            pass
+    return new_fragment
 
 
 def cmd_annotate(args: argparse.Namespace) -> int:
