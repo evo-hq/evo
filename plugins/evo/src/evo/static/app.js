@@ -2202,6 +2202,10 @@ async function openDrawer(expId, opts) {
       detail = `<div class="drawer-summary-detail">${esc(node.discard_reason)}</div>`;
     } else if (isFrontierCandidate(node)) {
       detail = `<div class="drawer-summary-detail accent">Frontier candidate — evo may branch from this node next.</div>`;
+    } else if (node.status === 'active' && node.active_attempt) {
+      const a = node.active_attempt;
+      const phaseLabel = a.phase || 'running';
+      detail = `<div class="drawer-summary-detail accent">Attempt ${a.n} — ${esc(phaseLabel)}${a.updated_at ? ' · ' + esc(relTime(a.updated_at)) + ' ago' : ''}</div>`;
     }
     html += `<div class="drawer-section drawer-summary">
       <div class="drawer-score-row">
@@ -2258,6 +2262,7 @@ async function openDrawer(expId, opts) {
       <div class="drawer-meta-row"><span class="drawer-meta-key">Epoch</span><span class="drawer-meta-val">${esc(node.eval_epoch || '--')}</span></div>
       <div class="drawer-meta-row"><span class="drawer-meta-key">Backend</span><span class="drawer-meta-val mono">${esc(backendLabel(node.resolved_backend || ws.default_backend))}</span></div>
       <div class="drawer-meta-row"><span class="drawer-meta-key">Created</span><span class="drawer-meta-val">${esc(relTime(node.created_at))} ago</span></div>
+      ${node.active_attempt ? `<div class="drawer-meta-row"><span class="drawer-meta-key">Attempt</span><span class="drawer-meta-val mono">${esc(node.active_attempt.phase || 'running')} (#${node.active_attempt.n})</span></div>` : ''}
       ${node.children?.length ? `<div class="drawer-meta-row"><span class="drawer-meta-key">Children</span><span class="drawer-meta-val mono" style="color:var(--indigo)">${node.children.length}</span></div>` : ''}
     </div>
     ${renderBackendSection(node, ws)}

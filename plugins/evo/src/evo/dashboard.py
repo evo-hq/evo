@@ -61,6 +61,28 @@ def _redact_value(value: Any, *, key: str | None = None) -> Any:
     return value
 
 
+def _read_attempt_state(root: Path, exp_id: str, attempt: int) -> dict | None:
+    path = attempt_dir(root, exp_id, attempt) / "attempt_state.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _latest_attempt_on_disk(root: Path, exp_id: str) -> int | None:
+    exp_root = experiments_dir_for(root, exp_id) / "attempts"
+    if not exp_root.exists():
+        return None
+    candidates = sorted(
+        (int(p.name) for p in exp_root.iterdir() if p.is_dir() and p.name.isdigit()),
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
 def _public_node(
     root: Path,
     node: dict[str, Any],
@@ -97,6 +119,22 @@ def _public_node(
         blocker = lineage_invalidated_by(graph, node.get("id", ""))
         public["lineage_blocked_by"] = blocker.get("id") if blocker else None
         public["lineage_blocked_reason"] = blocker.get("pruned_reason") if blocker else None
+
+    if public.get("status") == "active":
+        exp_id = node.get("id", "")
+        attempt_n = _latest_attempt_on_disk(root, exp_id)
+        if attempt_n is not None:
+            state = _read_attempt_state(root, exp_id, attempt_n)
+            if state is not None:
+                public["active_attempt"] = {
+                    "n": attempt_n,
+                    "phase": state.get("phase"),
+                    "status": state.get("status"),
+                    "started_at": state.get("started_at"),
+                    "updated_at": state.get("updated_at"),
+                    "pid": state.get("pid"),
+                }
+
     return public
 
 
@@ -948,7 +986,7 @@ def create_app(root: Path | None = None) -> Flask:
         if dirpath.exists():
             # Surface .log and .out at the attempt root and one level under
             # logs/ (the convention training scripts typically use).
-            patterns = ["*.log", "*.out", "logs/*.log", "logs/*.out"]
+            patterns = ["*.log", "*.out", "*.jsonl", "logs/*.log", "logs/*.out", "logs/*.jsonl"]
             seen: set[Path] = set()
             for pat in patterns:
                 for p in sorted(dirpath.glob(pat)):
