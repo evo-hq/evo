@@ -20,6 +20,12 @@ from ._hook_drain import (
 )
 
 
+# ponytail: 2000ms was too tight — evo-drain is ~140ms healthy but a loaded
+# host (heavy benchmark run) can push it past 2s, and the wrapper silently
+# drops the directive on timeout (evo-hq/evo#58). 8000ms gives ~57x headroom
+# over the healthy case; bump again if a loaded host still trips it.
+_HOOK_TIMEOUT_MS = 8000
+
 _PLUGIN_KEY = '[plugins."evo@evo-hq"]'
 
 _INSTALL_HINT = """\
@@ -53,7 +59,7 @@ def _stable_hook_command() -> str:
         "let input=Buffer.alloc(0);"
         "try{if(!tty.isatty(0))input=fs.readFileSync(0)}catch(e){}"
         f"const bin={stable_json};"
-        "try{const r=cp.spawnSync(bin,[],{input,timeout:2000,killSignal:'SIGKILL'});"
+        f"try{{const r=cp.spawnSync(bin,[],{{input,timeout:{_HOOK_TIMEOUT_MS},killSignal:'SIGKILL'}});"
         "if(r.status===0&&r.stdout&&r.stdout.length){"
         "process.stdout.write(r.stdout);process.exit(0)}}catch(e){}"
         "process.stdout.write('{}\\n')"
