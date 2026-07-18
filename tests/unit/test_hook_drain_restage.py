@@ -308,6 +308,44 @@ class TestCodexRestageSurvival(_CodexSandbox):
             "is not bounded by a timeout",
         )
 
+    @unittest.skipIf(sys.platform == "win32", "shell-script smoke is posix-only")
+    def test_materialized_hook_survives_load_induced_delay(self):
+        """Regression evo-hq/evo#58: a loaded host (heavy benchmark run)
+        can push evo-drain's own runtime past the launcher's timeout —
+        not a lingering grandchild, the binary itself is just slow. Old
+        2000ms budget: this exact delay times out, wrapper writes `{}`,
+        directive banner silently lost forever (no retry, marker already
+        unlinked). New _HOOK_TIMEOUT_MS=8000 budget: it returns the real
+        banner. 3s sits strictly between the two, so this only passes
+        post-fix.
+        """
+        self.assertEqual(codex._install_via_filecopy(None), 0)
+        stable = self.root / ".evo" / "bin" / HOOK_NAME
+        stable.write_text(
+            "#!/bin/sh\ncat >/dev/null\nsleep 3\nprintf '{\"ok\":true}'\n"
+        )
+        stable.chmod(0o755)
+
+        hooks = json.loads(
+            (self._cache_plugin_dir() / "hooks" / "hooks.json").read_text()
+        )
+        command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        result = subprocess.run(
+            command,
+            input=b'{"hook_event_name":"SessionStart","session_id":"slow"}',
+            capture_output=True,
+            env=os.environ.copy(),
+            shell=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            b'{"ok":true}',
+            "3s host-load delay still lost the banner to the spawnSync "
+            "timeout — evo-hq/evo#58 not fixed",
+        )
+
     def test_binary_survives_codex_restage(self):
         """The regression: codex wipes the cache dir and re-copies the
         snapshot. With the binary mirrored into the snapshot, the
