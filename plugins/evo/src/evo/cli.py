@@ -4443,6 +4443,24 @@ def cmd_show(args: argparse.Namespace) -> int:
                 pass
         attempts.append(attempt_payload)
 
+    active_attempt = None
+    if node.get("status") == "active":
+        current = int(node.get("current_attempt", 0))
+        if current > 0:
+            state = _read_attempt_state(root, args.exp_id, current)
+            if state is not None:
+                active_attempt = {"n": current, "state": state}
+                diff_path = attempt_log_path(root, args.exp_id, current, "diff.patch")
+                if diff_path.exists():
+                    try:
+                        active_attempt["diff"] = diff_path.read_text(encoding="utf-8")
+                        parsed = parse_diff_patch(root, args.exp_id, current)
+                        if parsed:
+                            active_attempt["diff_added"] = parsed["added"]
+                            active_attempt["diff_removed"] = parsed["removed"]
+                    except OSError:
+                        pass
+
     # Annotations filtered to this exp.
     all_annotations = load_annotations(root).get("annotations", [])
     annotations = [a for a in all_annotations if a.get("experiment_id") == args.exp_id]
@@ -4460,6 +4478,7 @@ def cmd_show(args: argparse.Namespace) -> int:
         "children": list(node.get("children", [])),
         "effective_gates": collect_gates_from_path(graph, args.exp_id),
         "attempts": attempts,
+        "active_attempt": active_attempt,
         "annotations": annotations,
         "notes": list(node.get("notes", [])),
         "tags": list(node.get("tags", [])),
@@ -4550,6 +4569,83 @@ def cmd_traces(args: argparse.Namespace) -> int:
             payload[path.name] = json.loads(path.read_text(encoding="utf-8"))
     print(json.dumps(payload, indent=2))
     return 0
+
+
+def cmd_metrics(args: argparse.Namespace) -> int:
+    """Read metrics.jsonl from the latest attempt. With --tail, follow new lines."""
+    root = repo_root()
+    node = _read_node(root, args.exp_id)
+    attempt = int(node.get("current_attempt", 0))
+    if attempt == 0:
+        print("[]")
+        return 0
+    target = attempt_log_path(root, args.exp_id, attempt, "metrics.jsonl")
+    if not target.exists():
+        fallback = Path(node.get("worktree", "")) / "metrics.jsonl"
+        if fallback.exists():
+            target = fallback
+        else:
+            print("[]")
+            return 0
+    if args.tail:
+        fragment = b""
+        seen_size = 0
+        fragment = _print_metrics_lines(target, offset=0, fragment=b"")
+        seen_size = target.stat().st_size
+        try:
+            while True:
+                time.sleep(2)
+                current = target.stat().st_size
+                if current < seen_size:
+                    seen_size = 0
+                    fragment = b""
+                if current > seen_size:
+                    fragment = _print_metrics_lines(target, offset=seen_size, fragment=fragment)
+                    seen_size = current
+        except KeyboardInterrupt:
+            pass
+        return 0
+    _print_metrics_lines(target, offset=0)
+    return 0
+
+
+def _print_metrics_lines(path: Path, *, offset: int, fragment: bytes = b"") -> bytes:
+    size = path.stat().st_size
+    if offset >= size:
+        return fragment
+    with path.open("rb") as fh:
+        fh.seek(offset)
+        raw = fragment + fh.read()
+    last_nl = raw.rfind(b"\n")
+    if last_nl < 0:
+        if not fragment:
+            try:
+                parsed = json.loads(raw.decode("utf-8", errors="replace"))
+                print(json.dumps(parsed))
+                return b""
+            except json.JSONDecodeError:
+                pass
+        return raw
+    new_fragment = raw[last_nl + 1:]
+    complete = raw[:last_nl]
+    text = complete.decode("utf-8", errors="replace")
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+            print(json.dumps(parsed))
+        except json.JSONDecodeError:
+            pass
+    if new_fragment:
+        try:
+            parsed = json.loads(new_fragment.decode("utf-8", errors="replace"))
+            print(json.dumps(parsed))
+            return b""
+        except json.JSONDecodeError:
+            pass
+    return new_fragment
 
 
 def cmd_annotate(args: argparse.Namespace) -> int:
@@ -6718,6 +6814,17 @@ def build_parser() -> argparse.ArgumentParser:
     traces_p.add_argument("exp_id")
     traces_p.add_argument("task", nargs="?")
     traces_p.set_defaults(func=cmd_traces)
+
+    metrics_p = sub.add_parser(
+        "metrics",
+        help="live-training metrics from metrics.jsonl (loss, reward, lr, ...)",
+    )
+    metrics_p.add_argument("exp_id")
+    metrics_p.add_argument(
+        "--tail", action="store_true",
+        help="follow new lines every 2 seconds (like tail -f)",
+    )
+    metrics_p.set_defaults(func=cmd_metrics)
 
     annotate_p = sub.add_parser("annotate")
     annotate_p.add_argument("exp_id")
