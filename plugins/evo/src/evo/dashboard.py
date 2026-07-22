@@ -9,6 +9,7 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
+from .backends.protocol import BackendError
 from .core import (
     PRUNE_KIND_EXHAUSTED,
     PRUNE_KINDS,
@@ -304,6 +305,10 @@ def _provider_readiness(config: dict[str, Any]) -> dict[str, Any]:
 def _clean_provider_config(data: dict[str, Any]) -> dict[str, Any]:
     cleaned: dict[str, Any] = {}
     for key, value in (data or {}).items():
+        if isinstance(value, dict):
+            raise ValueError(
+                f"provider_config.{key} must be a scalar or list, not an object"
+            )
         if isinstance(value, str):
             value = value.strip()
         if value in ("", None):
@@ -407,7 +412,14 @@ def _validate_and_save_execution_settings(root: Path, body: dict[str, Any]) -> d
         provider = str(body.get("provider", "")).strip()
         if not provider:
             raise ValueError("remote backend requires a provider")
-        provider_config = _clean_provider_config(body.get("provider_config") or {})
+        raw_provider_config = body.get("provider_config")
+        if raw_provider_config is None:
+            raw_provider_config = {}
+        if not isinstance(raw_provider_config, dict):
+            raise ValueError(
+                "provider_config must be a JSON object of key/value settings"
+            )
+        provider_config = _clean_provider_config(raw_provider_config)
         if old_name == "remote" and old_config.get("provider") == provider:
             provider_config = _preserve_secret_fields(
                 provider_config,
@@ -463,7 +475,8 @@ def _validate_and_save_execution_settings(root: Path, body: dict[str, Any]) -> d
 
 
 def _normalize_runtime_env_settings(body: dict[str, Any]) -> dict[str, Any]:
-    inherit_shell = bool(body.get("inherit_shell", True))
+    raw_inherit = body.get("inherit_shell", True)
+    inherit_shell = "always" if raw_inherit == "always" else bool(raw_inherit)
     sources = []
     for raw in body.get("dotenv", []) or []:
         if not isinstance(raw, dict):
@@ -817,7 +830,7 @@ def create_app(root: Path | None = None) -> Flask:
         body = request.get_json(silent=True) or {}
         try:
             summary = _validate_and_save_execution_settings(_root(), body)
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, BackendError) as exc:
             return jsonify({"error": str(exc)}), 400
         return jsonify(summary)
 

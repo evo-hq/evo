@@ -415,15 +415,27 @@ def _dotenv_path(root: Path, raw_path: str) -> Path:
     return path
 
 
-def resolve_runtime_env(root: Path, config: dict[str, Any]) -> dict[str, str]:
+def resolve_runtime_env(
+    root: Path,
+    config: dict[str, Any],
+    *,
+    remote: bool = False,
+) -> dict[str, str]:
     """Resolve benchmark/gate runtime env fresh for each attempt.
 
     Config stores source metadata only; values are loaded from the orchestrator
     process environment and configured dotenv files when this function runs.
+
+    `inherit_shell: true` forwards the orchestrator's environment only when
+    the attempt runs locally: host vars like HOME or PATH override sane
+    values inside a remote sandbox and break anything that reads them
+    (npm's cache dir, for one). `inherit_shell: "always"` forwards it to
+    remote sandboxes too, for callers who know their env translates.
     """
     runtime_env = dict(config.get("runtime_env") or {})
     resolved: dict[str, str] = {}
-    if runtime_env.get("inherit_shell", True):
+    inherit = runtime_env.get("inherit_shell", True)
+    if inherit == "always" or (inherit and not remote):
         resolved.update(os.environ)
 
     for source in runtime_env.get("dotenv", []) or []:
@@ -881,10 +893,68 @@ def delete_discarded_experiment(root: Path, node: dict[str, Any]) -> None:
 
 
 def reset_runtime_state(root: Path) -> None:
-    """Remove the active run's worktrees, branches, and directory."""
-    from .backends import load_backend
+    """Remove the active run's worktrees, branches, and directory.
 
-    load_backend(root).reset_all(root)
+    Every distinct backend spec in the run gets its own `reset_all` -- the
+    workspace default plus any per-experiment overrides (`evo new --remote
+    ...` on a worktree-default workspace), so remote sandboxes are torn
+    down no matter which backend is the default. Remote specs reset first
+    because local backends wipe the run directory that still holds the
+    remote state files. If any remote teardown fails, the run directory is
+    preserved (local resets and the final cleanup are skipped) so the
+    surviving state can drive a retry, and the error propagates.
+    """
+    import shutil
+
+    from .backends import (
+        backend_spec_for_node,
+        backend_spec_from_config,
+        load_backend,
+    )
+
+    config = load_config(root)
+    specs: list[tuple[str, dict[str, Any]]] = [backend_spec_from_config(config)]
+    try:
+        graph = load_graph(root)
+    except (FileNotFoundError, RuntimeError):
+        graph = {"nodes": {}}
+    for node_id, node in graph.get("nodes", {}).items():
+        if node_id == "root":
+            continue
+        spec = backend_spec_for_node(root, node, workspace_config=config)
+        if spec not in specs:
+            specs.append(spec)
+    remote_specs = [spec for spec in specs if spec[0] == "remote"]
+    local_specs = [spec for spec in specs if spec[0] != "remote"]
+
+    failures: list[str] = []
+    for name, backend_config in remote_specs:
+        try:
+            backend = load_backend(
+                root, explicit_name=name, explicit_config=backend_config
+            )
+            backend.reset_all(root)
+        except Exception as exc:
+            failures.append(f"{name} ({backend_config.get('provider', '-')}): {exc}")
+    if failures:
+        raise RuntimeError(
+            "reset could not tear down every remote sandbox; runtime state "
+            "was kept so `evo reset` can retry the cleanup: "
+            + "; ".join(failures)
+        )
+
+    for name, backend_config in local_specs:
+        try:
+            load_backend(
+                root, explicit_name=name, explicit_config=backend_config
+            ).reset_all(root)
+        except Exception as exc:
+            failures.append(f"{name}: {exc}")
+    shutil.rmtree(workspace_path(root), ignore_errors=True)
+    if failures:
+        raise RuntimeError(
+            "reset could not clean up every backend: " + "; ".join(failures)
+        )
 
 
 def git_status_porcelain(path: Path) -> str:

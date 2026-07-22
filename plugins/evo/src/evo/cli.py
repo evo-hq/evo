@@ -1043,7 +1043,9 @@ def cmd_env(args: argparse.Namespace) -> int:
         runtime_env = _ensure_runtime_env_config(config)
 
         if args.env_action == "inherit-shell":
-            runtime_env["inherit_shell"] = args.value == "on"
+            runtime_env["inherit_shell"] = (
+                "always" if args.value == "always" else args.value == "on"
+            )
             atomic_write_json(config_path(root), config)
             print(f"inherit_shell set to {str(runtime_env['inherit_shell']).lower()}")
             return 0
@@ -2602,8 +2604,9 @@ def _runtime_env_for_attempt(
     env_traces_dir: str,
     env_result_path: str,
     env_checkpoint_dir: str,
+    remote: bool = False,
 ) -> dict[str, str]:
-    env = resolve_runtime_env(root, config)
+    env = resolve_runtime_env(root, config, remote=remote)
     env["EVO_TRACES_DIR"] = env_traces_dir
     env["EVO_WORKTREE"] = str(worktree)
     env["EVO_EXPERIMENT_ID"] = exp_id
@@ -2819,6 +2822,7 @@ def _cmd_run_check(
         env_traces_dir=env_traces_dir,
         env_result_path=env_result_path,
         env_checkpoint_dir=env_checkpoint_dir,
+        remote=executor.is_remote,
     )
     gate_records: list[dict] = []
     runtime_records: list[dict] = []
@@ -3121,6 +3125,7 @@ def _cmd_run_impl(
         env_traces_dir=env_traces_dir,
         env_result_path=env_result_path,
         env_checkpoint_dir=env_checkpoint_dir,
+        remote=executor.is_remote,
     )
     # Stamp this driver's PID so a re-invocation of `evo run` can detect
     # whether the attempt is actually still in flight (the concurrent-run
@@ -4719,7 +4724,7 @@ def _cmd_gate_check_impl(
     gates_dir.mkdir(parents=True, exist_ok=True)
     remote = executor.is_remote
     run_cwd: Path | str = worktree if remote else root
-    env = resolve_runtime_env(root, config)
+    env = resolve_runtime_env(root, config, remote=remote)
     runtime_records: list[dict] = []
     gate_records: list[dict] = []
     inherited_gates, gate_origins = _inherited_gate_specs(config, graph, args.exp_id)
@@ -6329,9 +6334,10 @@ def build_parser() -> argparse.ArgumentParser:
     env_show_p.set_defaults(func=cmd_env)
     env_inherit_p = env_sub.add_parser(
         "inherit-shell",
-        help="enable or disable inheriting the orchestrator process environment",
+        help="inherit the orchestrator process environment: on (local runs "
+        "only), off, or always (remote sandboxes too)",
     )
-    env_inherit_p.add_argument("value", choices=["on", "off"])
+    env_inherit_p.add_argument("value", choices=["on", "off", "always"])
     env_inherit_p.set_defaults(func=cmd_env)
     env_load_p = env_sub.add_parser("load", help="add or update a dotenv source")
     env_load_p.add_argument("path")

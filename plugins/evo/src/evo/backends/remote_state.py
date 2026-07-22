@@ -121,6 +121,13 @@ def locked_state(root: Path, state_key: str) -> Iterator[dict[str, Any]]:
         atomic_write_json(state_path, _encode_state_for_disk(root, state))
 
 
+def delete_state(root: Path, state_key: str) -> None:
+    """Remove this remote config's state file and its lock file."""
+    state_path = _migrate_legacy_if_needed(root, state_key)
+    state_path.unlink(missing_ok=True)
+    _lock_path(state_path).unlink(missing_ok=True)
+
+
 def read_state(root: Path, state_key: str | None = None) -> dict[str, Any]:
     """Read-only snapshot of this remote config's state file."""
     state_path = _resolve_state_path(root, state_key)
