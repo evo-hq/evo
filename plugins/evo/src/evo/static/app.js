@@ -102,6 +102,20 @@ const REMOTE_PROVIDER_FIELDS = {
     {key: 'ssh_token_ttl_minutes', label: 'SSH token TTL minutes', type: 'int', advanced: true},
     {key: 'sandbox_timeout_seconds', label: 'Sandbox timeout', type: 'int', advanced: true},
   ],
+  tenki: [
+    {key: 'auth_token', label: 'API key', type: 'secret'},
+    {key: 'project_id', label: 'Project ID', type: 'text'},
+    {key: 'workspace_id', label: 'Workspace ID', type: 'text', advanced: true},
+    {key: 'cpu_cores', label: 'CPU cores', type: 'int', min: 1},
+    {key: 'memory_mb', label: 'Memory MB', type: 'int', min: 1},
+    {key: 'image', label: 'Image', type: 'text'},
+    {key: 'snapshot_id', label: 'Snapshot ID', type: 'text', advanced: true},
+    {key: 'disk_size_gb', label: 'Disk size GB', type: 'int', min: 1, advanced: true},
+    {key: 'base_url', label: 'API base URL', type: 'text', advanced: true},
+    {key: 'idle_timeout_minutes', label: 'Idle timeout minutes', type: 'int', min: 1, advanced: true},
+    {key: 'timeout_seconds', label: 'Timeout seconds', type: 'int', advanced: true},
+    {key: 'health_timeout_seconds', label: 'Health timeout', type: 'float', advanced: true},
+  ],
   aws: [
     {key: 'region', label: 'Region', type: 'text'},
     {key: 'image_id', label: 'Image ID', type: 'text'},
@@ -309,6 +323,11 @@ const BACKEND_FALLBACK_SVG = {
     <circle cx="6" cy="6" r="4.8" fill="#10b981"/>
     <path d="M 4 4 L 8 6 L 4 8 Z" fill="#0a0a0c"/>
   </svg>`,
+  tenki: `<svg viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <polygon points="6,0.8 10.6,3.4 6,6 1.4,3.4" fill="#4da3ff"/>
+    <polygon points="1.4,3.4 6,6 6,11.2 1.4,8.6" fill="#047bff"/>
+    <polygon points="10.6,3.4 6,6 6,11.2 10.6,8.6" fill="#0363cc"/>
+  </svg>`,
   aws: `<svg viewBox="0 0 24 12" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <text x="12" y="5" font-family="-apple-system, sans-serif" font-size="5.4" font-weight="800" fill="#ff9900" text-anchor="middle" dominant-baseline="central">AWS</text>
     <path d="M 4 9.2 Q 12 11.4 20 9.2" stroke="#ff9900" stroke-width="1.2" fill="none" stroke-linecap="round"/>
@@ -324,6 +343,7 @@ const BACKEND_FALLBACK_SVG = {
 // SVG fallback.
 const VENDOR_LOGO_EXT = {
   modal: 'svg', aws: 'svg', azure: 'svg', daytona: 'svg', e2b: 'png',
+  tenki: 'svg',
 };
 
 function backendLogoFor(spec) {
@@ -433,6 +453,11 @@ function renderProviderRows(provider, pc) {
   }
   if (provider === 'daytona') {
     return metaRow('Region', pc.region || '--')
+         + (pc.image ? metaRow('Image', pc.image, { mono: true }) : '');
+  }
+  if (provider === 'tenki') {
+    return metaRow('CPU', pc.cpu_cores ? `${pc.cpu_cores} cores` : '--')
+         + metaRow('Memory', pc.memory_mb ? `${pc.memory_mb} MB` : '--')
          + (pc.image ? metaRow('Image', pc.image, { mono: true }) : '');
   }
   if (provider === 'ssh') {
@@ -3729,12 +3754,13 @@ const BACKEND_DROPDOWN_OPTIONS = [
   { value: 'e2b',      label: 'E2B',      description: 'E2B cloud sandboxes',                      group: 'REMOTE' },
   { value: 'ssh',      label: 'SSH',      description: 'your own SSH host',                        group: 'REMOTE' },
   { value: 'daytona',  label: 'Daytona',  description: 'Daytona cloud workspaces',                 group: 'REMOTE' },
+  { value: 'tenki',    label: 'Tenki',    description: 'Tenki cloud sandboxes',                    group: 'REMOTE' },
   { value: 'aws',      label: 'AWS',      description: 'AWS EC2 sandboxes',                        group: 'REMOTE' },
   { value: 'azure',    label: 'Azure',    description: 'Azure VM sandboxes',                       group: 'REMOTE' },
   { value: 'manual',   label: 'Manual',   description: 'orchestrate sandboxes manually',           group: 'REMOTE' },
   { value: 'custom',   label: 'Custom',   description: 'your own SandboxProvider class',           group: 'REMOTE' },
 ];
-const KNOWN_REMOTE_PROVIDERS = new Set(['modal','e2b','ssh','daytona','aws','azure','manual']);
+const KNOWN_REMOTE_PROVIDERS = new Set(['modal','e2b','ssh','daytona','tenki','aws','azure','manual']);
 
 function backendDropdownSpec(value) {
   if (value === 'worktree' || value === 'pool') return { name: value };
@@ -3958,6 +3984,7 @@ function renderProviderField(field, value) {
         data-provider-key="${field.key}"
         type="${inputType}"
         ${step ? `step="${step}"` : ''}
+        ${field.min != null ? `min="${field.min}"` : ''}
         value="${esc(String(displayValue))}"
         placeholder="${esc(placeholder)}"
       >

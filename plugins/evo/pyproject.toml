@@ -27,6 +27,9 @@ e2b = [
 daytona = [
     "daytona>=0.170.0",
 ]
+tenki = [
+    "tenki-sandbox>=0.4.0",
+]
 aws = [
     "boto3>=1.42.66",
 ]
@@ -40,6 +43,7 @@ all = [
     "modal>=0.62.0",
     "e2b>=2.20.0",
     "daytona>=0.170.0",
+    "tenki-sandbox>=0.4.0",
     "boto3>=1.42.66",
     "azure-identity>=1.17.1",
     "azure-mgmt-resource>=23.1.1",
@@ -77,4 +81,4 @@ script-files = []
 where = ["src"]
 
 [tool.setuptools.package-data]
-evo = ["static/*", "opencode_plugin/*.js", "openclaw_plugin/*.js", "openclaw_plugin/native/*.js", "openclaw_plugin/native/*.json", "openclaw_plugin/native/*.md"]
+evo = ["static/*", "static/logos/*", "opencode_plugin/*.js", "openclaw_plugin/*.js", "openclaw_plugin/native/*.js", "openclaw_plugin/native/*.json", "openclaw_plugin/native/*.md"]

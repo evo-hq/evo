@@ -6,7 +6,7 @@ evo_version: 0.8.0
 
 # Infra Setup
 
-Use this when the user wants to change where experiments run: local worktrees, pool slots, or a remote provider such as Modal, E2B, Daytona, AWS, Azure, SSH, manual, or a custom dotted-path provider.
+Use this when the user wants to change where experiments run: local worktrees, pool slots, or a remote provider such as Modal, E2B, Daytona, Tenki, AWS, Azure, SSH, manual, or a custom dotted-path provider.
 
 ## Goals
 
@@ -25,6 +25,7 @@ Use this when the user wants to change where experiments run: local worktrees, p
 - `modal`
 - `e2b`
 - `daytona`
+- `tenki`
 - `aws`
 - `azure`
 - `manual`
@@ -72,6 +73,7 @@ Before trying to switch a workspace to a remote provider, confirm the basics:
   - `modal`: auth + optional config
   - `e2b`: API key + optional config
   - `daytona`: API key and API URL/target if needed
+  - `tenki`: API key + project id + optional config
   - `aws`: creds, region, image, SSH key pair/private key, and usually network config
   - `azure`: subscription, resource group, region, SSH key/private key, and VM/image choices
   - `ssh`: reachable host, working SSH user, and key/port if needed
