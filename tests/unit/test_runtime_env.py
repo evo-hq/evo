@@ -108,6 +108,38 @@ def test_resolve_runtime_env_overlays_dotenv_over_shell(tmp_path: Path, monkeypa
     assert "OTHER" not in resolved
 
 
+def test_resolve_runtime_env_remote_skips_shell_inheritance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOST_ONLY_VAR", "macos-value")
+    write(tmp_path / ".env", "TOKEN=dotenv\n")
+    config = {
+        "runtime_env": {
+            "inherit_shell": True,
+            "dotenv": [{"path": ".env", "mode": "all"}],
+        }
+    }
+    resolved = resolve_runtime_env(tmp_path, config, remote=True)
+    assert "HOST_ONLY_VAR" not in resolved
+    assert "HOME" not in resolved
+    assert resolved["TOKEN"] == "dotenv"
+
+    local = resolve_runtime_env(tmp_path, config, remote=False)
+    assert local["HOST_ONLY_VAR"] == "macos-value"
+
+
+def test_resolve_runtime_env_always_inherits_for_remote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOST_ONLY_VAR", "macos-value")
+    config = {"runtime_env": {"inherit_shell": "always", "dotenv": []}}
+    resolved = resolve_runtime_env(tmp_path, config, remote=True)
+    assert resolved["HOST_ONLY_VAR"] == "macos-value"
+
+
+def test_resolve_runtime_env_off_stays_off_everywhere(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOST_ONLY_VAR", "macos-value")
+    config = {"runtime_env": {"inherit_shell": False, "dotenv": []}}
+    assert "HOST_ONLY_VAR" not in resolve_runtime_env(tmp_path, config, remote=False)
+    assert "HOST_ONLY_VAR" not in resolve_runtime_env(tmp_path, config, remote=True)
+
+
 def test_resolve_runtime_env_overlays_dashboard_variables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TOKEN", "shell")
     write(tmp_path / ".evo" / "run_0000" / "runtime_env_values.json", '{"variables":{"TOKEN":"dashboard"}}')

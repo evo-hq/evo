@@ -126,7 +126,16 @@ def load_provider(name: str, config: dict[str, Any]) -> SandboxProvider:
     -- keep it actionable.
     """
     if name in _LOADERS:
-        return _LOADERS[name](config)
+        try:
+            return _LOADERS[name](config)
+        except RemoteBackendUnavailable:
+            raise
+        except Exception as exc:
+            # Constructor failures from bad config must surface as the typed
+            # user-facing error, not a raw TypeError 500ing the dashboard.
+            raise RemoteBackendUnavailable(
+                f"Remote provider {name!r} rejected its configuration: {exc}"
+            ) from exc
     if ":" in name or "." in name:
         return _load_dotted_path_provider(name, config)
     known = ", ".join(sorted(_LOADERS)) or "(none)"

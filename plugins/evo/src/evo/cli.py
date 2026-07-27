@@ -1043,7 +1043,9 @@ def cmd_env(args: argparse.Namespace) -> int:
         runtime_env = _ensure_runtime_env_config(config)
 
         if args.env_action == "inherit-shell":
-            runtime_env["inherit_shell"] = args.value == "on"
+            runtime_env["inherit_shell"] = (
+                "always" if args.value == "always" else args.value == "on"
+            )
             atomic_write_json(config_path(root), config)
             print(f"inherit_shell set to {str(runtime_env['inherit_shell']).lower()}")
             return 0
@@ -2602,8 +2604,9 @@ def _runtime_env_for_attempt(
     env_traces_dir: str,
     env_result_path: str,
     env_checkpoint_dir: str,
+    remote: bool = False,
 ) -> dict[str, str]:
-    env = resolve_runtime_env(root, config)
+    env = resolve_runtime_env(root, config, remote=remote)
     env["EVO_TRACES_DIR"] = env_traces_dir
     env["EVO_WORKTREE"] = str(worktree)
     env["EVO_EXPERIMENT_ID"] = exp_id
@@ -2819,6 +2822,7 @@ def _cmd_run_check(
         env_traces_dir=env_traces_dir,
         env_result_path=env_result_path,
         env_checkpoint_dir=env_checkpoint_dir,
+        remote=executor.is_remote,
     )
     gate_records: list[dict] = []
     runtime_records: list[dict] = []
@@ -3121,6 +3125,7 @@ def _cmd_run_impl(
         env_traces_dir=env_traces_dir,
         env_result_path=env_result_path,
         env_checkpoint_dir=env_checkpoint_dir,
+        remote=executor.is_remote,
     )
     # Stamp this driver's PID so a re-invocation of `evo run` can detect
     # whether the attempt is actually still in flight (the concurrent-run
@@ -3475,12 +3480,14 @@ def _cmd_run_impl(
             # Release the workspace lease on transition into `committed`.
             # Worktree backend: no-op. Pool backend: returns the slot to the
             # free queue. Failed and evaluated transitions retain the lease.
-            from .backends import DiscardCtx as _DCtx, load_backend as _lb
             committed_node = dict(node)
             committed_node["status"] = "committed"
             committed_node["commit"] = commit
-            _lb(root, node=committed_node, workspace_config=config).release_lease(
-                _DCtx(root=root, node=committed_node)
+            _release_committed_lease(
+                root,
+                committed_node,
+                config,
+                backend=backend,
             )
             delta = "" if parent_score is None else f" ({'+' if metric == 'max' else ''}{score - parent_score:.4f} vs parent)"
             print(f"COMMITTED {args.exp_id} {score}{delta}")
@@ -3579,6 +3586,31 @@ def _cmd_run_impl(
         return 1
 
 
+def _release_committed_lease(
+    root: Path,
+    node: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    backend: Any | None = None,
+) -> None:
+    """Release committed workspace state without changing the run outcome."""
+    from .backends import DiscardCtx, load_backend
+
+    try:
+        resolved = (
+            backend
+            if backend is not None
+            else load_backend(root, node=node, workspace_config=config)
+        )
+        resolved.release_lease(DiscardCtx(root=root, node=node))
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"WARNING: {node['id']} committed, but workspace cleanup failed: "
+            f"{exc}. Run `evo gc` or `evo reset --yes` to retry.",
+            file=sys.stderr,
+        )
+
+
 def _record_done_result(root: Path, args: argparse.Namespace) -> int:
     config, graph = _require_workspace(root)
     node = _read_node(root, args.exp_id)
@@ -3648,11 +3680,8 @@ def _record_done_result(root: Path, args: argparse.Namespace) -> int:
     update_node(root, args.exp_id, _mark)
     _finalize_result(root, args.exp_id, node, args.score, status, {"recorded_only": True})
     if status == "committed":
-        from .backends import DiscardCtx as _DCtx, load_backend as _lb
         committed_node = {**node, "status": "committed"}
-        _lb(root, node=committed_node, workspace_config=config).release_lease(
-            _DCtx(root=root, node=committed_node)
-        )
+        _release_committed_lease(root, committed_node, config)
     _emit_experiment_result_telemetry(
         root,
         args.exp_id,
@@ -4719,7 +4748,7 @@ def _cmd_gate_check_impl(
     gates_dir.mkdir(parents=True, exist_ok=True)
     remote = executor.is_remote
     run_cwd: Path | str = worktree if remote else root
-    env = resolve_runtime_env(root, config)
+    env = resolve_runtime_env(root, config, remote=remote)
     runtime_records: list[dict] = []
     gate_records: list[dict] = []
     inherited_gates, gate_origins = _inherited_gate_specs(config, graph, args.exp_id)
@@ -6329,9 +6358,10 @@ def build_parser() -> argparse.ArgumentParser:
     env_show_p.set_defaults(func=cmd_env)
     env_inherit_p = env_sub.add_parser(
         "inherit-shell",
-        help="enable or disable inheriting the orchestrator process environment",
+        help="inherit the orchestrator process environment: on (local runs "
+        "only), off, or always (remote sandboxes too)",
     )
-    env_inherit_p.add_argument("value", choices=["on", "off"])
+    env_inherit_p.add_argument("value", choices=["on", "off", "always"])
     env_inherit_p.set_defaults(func=cmd_env)
     env_load_p = env_sub.add_parser("load", help="add or update a dotenv source")
     env_load_p.add_argument("path")

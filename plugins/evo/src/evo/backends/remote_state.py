@@ -10,6 +10,7 @@ Schema:
       "native_id": "sb-abc123",
       "base_url": "https://...",
       "leased_by": null | {"exp_id": "exp_NNNN", "pid": 12345, "leased_at": "..."},
+      "cleanup_pending": true | false,
       "last_branch": "evo/run_NNNN/exp_NNNN" | null,
       "provisioned_at": "..."
     }
@@ -119,6 +120,13 @@ def locked_state(root: Path, state_key: str) -> Iterator[dict[str, Any]]:
         state = _load_validated(root, state_path, migrate_plaintext=True)
         yield state
         atomic_write_json(state_path, _encode_state_for_disk(root, state))
+
+
+def delete_state(root: Path, state_key: str) -> None:
+    """Remove this remote config's state file and its lock file."""
+    state_path = _migrate_legacy_if_needed(root, state_key)
+    state_path.unlink(missing_ok=True)
+    _lock_path(state_path).unlink(missing_ok=True)
 
 
 def read_state(root: Path, state_key: str | None = None) -> dict[str, Any]:
