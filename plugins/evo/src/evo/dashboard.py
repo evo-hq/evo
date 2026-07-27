@@ -263,7 +263,7 @@ def _provider_readiness(config: dict[str, Any]) -> dict[str, Any]:
             "auth_source": "env" if daytona_auth_present else "missing",
         },
         "tenki": {
-            "sdk_installed": _module_available("tenki_sandbox"),
+            "sdk_installed": _module_available("tenki"),
             "auth_present": tenki_source != "missing",
             "auth_source": tenki_source,
         },

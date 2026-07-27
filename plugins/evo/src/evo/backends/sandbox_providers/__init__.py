@@ -112,10 +112,10 @@ def _load_tenki(config: dict[str, Any]) -> SandboxProvider:
         from . import tenki as _tenki_module
     except ImportError as exc:
         raise RemoteBackendUnavailable(
-            "Tenki provider requested but the 'tenki-sandbox' Python SDK is "
+            "Tenki provider requested but the 'tenki' Python SDK is "
             "not installed. Install it with: python -m pip install "
             "'evo-hq-cli[tenki]' "
-            "(or `pipx inject evo-hq-cli tenki-sandbox` if evo itself was "
+            "(or `pipx inject evo-hq-cli tenki` if evo itself was "
             "installed with pipx)."
         ) from exc
     return _tenki_module.TenkiProvider(config)

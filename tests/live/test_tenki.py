@@ -1,8 +1,8 @@
 """Live test: `evo run` an experiment inside a real Tenki sandbox.
 
-Skipped unless `EVO_LIVE_TEST_TENKI=1`, a Tenki auth token
-(`TENKI_API_KEY` or `TENKI_AUTH_TOKEN`), and `TENKI_PROJECT_ID` are set.
-Requires the optional `tenki-sandbox` SDK.
+Skipped unless `EVO_LIVE_TEST_TENKI=1` and a Tenki auth token
+(`TENKI_API_KEY` or `TENKI_AUTH_TOKEN`) are set. Requires the optional
+`tenki` SDK.
 """
 from __future__ import annotations
 
@@ -26,12 +26,10 @@ def _skip_reason() -> str | None:
         return "set EVO_LIVE_TEST_TENKI=1 to enable"
     if not (os.environ.get("TENKI_API_KEY") or os.environ.get("TENKI_AUTH_TOKEN")):
         return "set TENKI_API_KEY or TENKI_AUTH_TOKEN to enable"
-    if not os.environ.get("TENKI_PROJECT_ID", "").strip():
-        return "set TENKI_PROJECT_ID to enable"
     try:
-        import tenki_sandbox  # noqa: F401
+        import tenki  # noqa: F401
     except ImportError:
-        return "tenki-sandbox SDK not installed"
+        return "tenki SDK not installed"
     return None
 
 

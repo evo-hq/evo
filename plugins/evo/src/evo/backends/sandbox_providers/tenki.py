@@ -1,10 +1,10 @@
 """Tenki sandbox provider.
 
-Uses Tenki's Python SDK (`tenki-sandbox`) to provision a sandbox session,
+Uses Tenki's Python SDK (`tenki`) to provision a sandbox session,
 boot sandbox-agent inside it, and expose that service on a public Tenki
 preview URL. Requires an x86_64 Tenki image (sandbox-agent ships as an
-x86_64 musl binary) and a project id, which Tenki's SDK does not resolve
-from the environment -- evo falls back to TENKI_PROJECT_ID itself.
+x86_64 musl binary). The API key selects the workspace automatically;
+an explicit workspace id remains available as an advanced override.
 
 Tenki SDK reference: https://tenki.cloud/docs/sandbox/sdk
 """
@@ -14,18 +14,13 @@ import os
 import time
 from typing import Any
 
-from tenki_sandbox import Client, Sandbox
-from tenki_sandbox import (
-    InvalidResourceConfigError,
+from tenki import (
+    Client,
     MissingAuthTokenError,
+    Sandbox,
     SessionNotFoundError,
     UnauthorizedError,
 )
-
-try:
-    from tenki_sandbox._resource_validation import validate_create_resources
-except ImportError:
-    validate_create_resources = None
 
 from ...sandbox_client import SandboxAgentClient
 from ..protocol import (
@@ -53,6 +48,12 @@ _AUTH_HINT = (
     "--provider-config auth_token=tk_..."
 )
 UPLOAD_CHUNK_BYTES = 1024 * 1024
+MIN_CPU_CORES = 1
+MAX_CPU_CORES = 16
+MIN_MEMORY_MB = 128
+MAX_MEMORY_MB = 65536
+MIN_DISK_SIZE_GB = 5
+MAX_DISK_SIZE_GB = 100
 
 
 class TenkiSandboxClient(SandboxAgentClient):
@@ -110,11 +111,6 @@ class TenkiProvider(SandboxAgentProviderMixin):
             or None
         )
         self.base_url = str(config.get("base_url", "")).strip() or None
-        self.project_id = (
-            str(config.get("project_id", "")).strip()
-            or os.environ.get("TENKI_PROJECT_ID", "").strip()
-            or None
-        )
         self.workspace_id = (
             str(config.get("workspace_id", "")).strip()
             or os.environ.get("TENKI_WORKSPACE_ID", "").strip()
@@ -134,15 +130,9 @@ class TenkiProvider(SandboxAgentProviderMixin):
         self.idle_timeout_minutes = _parse_positive_int(
             config.get("idle_timeout_minutes"), "idle_timeout_minutes"
         )
-        if validate_create_resources is not None:
-            try:
-                validate_create_resources(
-                    self.cpu_cores, self.memory_mb, self.disk_size_gb
-                )
-            except InvalidResourceConfigError as exc:
-                raise RemoteBackendUnavailable(
-                    f"Tenki provider config rejected: {exc}"
-                ) from exc
+        _validate_create_resources(
+            self.cpu_cores, self.memory_mb, self.disk_size_gb
+        )
         self.root = str(config.get("root", DEFAULT_ROOT)).strip() or DEFAULT_ROOT
         self.timeout = int(config.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
         self.create_timeout = float(
@@ -166,8 +156,6 @@ class TenkiProvider(SandboxAgentProviderMixin):
             "max_duration": max_duration,
             "env": spec.env or None,
         }
-        if self.project_id:
-            create_kwargs["project_id"] = self.project_id
         if self.workspace_id:
             create_kwargs["workspace_id"] = self.workspace_id
         if self.cpu_cores is not None:
@@ -195,10 +183,10 @@ class TenkiProvider(SandboxAgentProviderMixin):
             ) from exc
         except Exception as exc:
             hint = ""
-            if "project_id" in str(exc):
+            if "workspace_id" in str(exc):
                 hint = (
-                    " Pass --provider-config project_id=... or set "
-                    "TENKI_PROJECT_ID (find it with `tenki project list`)."
+                    " Check --provider-config workspace_id=... or unset "
+                    "TENKI_WORKSPACE_ID to use the API key's workspace."
                 )
             raise RemoteBackendUnavailable(
                 f"Tenki sandbox creation failed: {exc}.{hint}"
@@ -380,3 +368,35 @@ def _parse_positive_int(value: Any, key: str) -> int | None:
             f"Tenki provider config {key!r} must be a positive integer, got {parsed}"
         )
     return parsed
+
+
+def _validate_create_resources(
+    cpu_cores: int | None,
+    memory_mb: int | None,
+    disk_size_gb: int | None,
+) -> None:
+    """Validate the resource limits accepted by the Tenki create API."""
+    if cpu_cores is not None and not MIN_CPU_CORES <= cpu_cores <= MAX_CPU_CORES:
+        raise RemoteBackendUnavailable(
+            "Tenki provider config rejected: "
+            f"cpu_cores must be between {MIN_CPU_CORES} and {MAX_CPU_CORES}"
+        )
+    if memory_mb is not None:
+        if not MIN_MEMORY_MB <= memory_mb <= MAX_MEMORY_MB:
+            raise RemoteBackendUnavailable(
+                "Tenki provider config rejected: "
+                f"memory_mb must be between {MIN_MEMORY_MB} and {MAX_MEMORY_MB}"
+            )
+        if memory_mb % 2 != 0:
+            raise RemoteBackendUnavailable(
+                "Tenki provider config rejected: memory_mb must be aligned to 2 MiB"
+            )
+    if (
+        disk_size_gb is not None
+        and not MIN_DISK_SIZE_GB <= disk_size_gb <= MAX_DISK_SIZE_GB
+    ):
+        raise RemoteBackendUnavailable(
+            "Tenki provider config rejected: "
+            f"disk_size_gb must be between {MIN_DISK_SIZE_GB} "
+            f"and {MAX_DISK_SIZE_GB}"
+        )

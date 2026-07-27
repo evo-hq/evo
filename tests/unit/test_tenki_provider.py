@@ -1,5 +1,5 @@
 """Tenki provider config validation: resource limits are checked at
-construction time with the SDK's own rules, so bad values fail at
+construction time against Tenki's create API limits, so bad values fail at
 config-save / `evo new` instead of minutes later inside provisioning."""
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import unittest
 
 
 @unittest.skipUnless(
-    importlib.util.find_spec("tenki_sandbox"),
-    "tenki-sandbox SDK not installed",
+    importlib.util.find_spec("tenki"),
+    "tenki SDK not installed",
 )
 class TestTenkiResourceValidation(unittest.TestCase):
     def test_invalid_resources_are_rejected(self):
@@ -41,6 +41,50 @@ class TestTenkiResourceValidation(unittest.TestCase):
         self.assertEqual(provider.memory_mb, 8192)
         self.assertEqual(provider.disk_size_gb, 50)
         self.assertIsNone(TenkiProvider({}).cpu_cores)
+
+    def test_provision_passes_workspace_id_without_project_id(self):
+        from unittest.mock import patch
+
+        from evo.backends.protocol import SandboxSpec
+        from evo.backends.sandbox_providers import tenki as tenki_provider
+
+        captured = {}
+
+        class FakeResult:
+            exit_code = 0
+            stderr_text = ""
+            stdout_text = ""
+
+        class FakeSandbox:
+            id = "sb-test"
+
+            def exec(self, *argv, **kwargs):
+                return FakeResult()
+
+            def expose_port(self, port, **kwargs):
+                return type("Exposed", (), {"url": "https://sb-test.example"})()
+
+        def fake_create(**kwargs):
+            captured.update(kwargs)
+            return FakeSandbox()
+
+        provider = tenki_provider.TenkiProvider(
+            {"auth_token": "tk_test", "workspace_id": "ws-test"}
+        )
+        spec = SandboxSpec(
+            image_ref="",
+            env={},
+            bearer_token="bearer",
+        )
+        with (
+            patch.object(tenki_provider.Sandbox, "create", side_effect=fake_create),
+            patch.object(tenki_provider, "wait_for_sandbox_agent"),
+        ):
+            handle = provider.provision(spec)
+
+        self.assertEqual(captured["workspace_id"], "ws-test")
+        self.assertNotIn("project_id", captured)
+        self.assertEqual(handle.native_id, "sb-test")
 
     def test_fs_upload_batch_streams_chunks_over_data_plane(self):
         from evo.backends.sandbox_providers.tenki import (

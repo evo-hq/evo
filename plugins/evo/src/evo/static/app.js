@@ -104,7 +104,6 @@ const REMOTE_PROVIDER_FIELDS = {
   ],
   tenki: [
     {key: 'auth_token', label: 'API key', type: 'secret'},
-    {key: 'project_id', label: 'Project ID', type: 'text'},
     {key: 'workspace_id', label: 'Workspace ID', type: 'text', advanced: true},
     {key: 'cpu_cores', label: 'CPU cores', type: 'int', min: 1},
     {key: 'memory_mb', label: 'Memory MB', type: 'int', min: 1},
