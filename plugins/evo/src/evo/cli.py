@@ -3480,12 +3480,14 @@ def _cmd_run_impl(
             # Release the workspace lease on transition into `committed`.
             # Worktree backend: no-op. Pool backend: returns the slot to the
             # free queue. Failed and evaluated transitions retain the lease.
-            from .backends import DiscardCtx as _DCtx, load_backend as _lb
             committed_node = dict(node)
             committed_node["status"] = "committed"
             committed_node["commit"] = commit
-            _lb(root, node=committed_node, workspace_config=config).release_lease(
-                _DCtx(root=root, node=committed_node)
+            _release_committed_lease(
+                root,
+                committed_node,
+                config,
+                backend=backend,
             )
             delta = "" if parent_score is None else f" ({'+' if metric == 'max' else ''}{score - parent_score:.4f} vs parent)"
             print(f"COMMITTED {args.exp_id} {score}{delta}")
@@ -3584,6 +3586,31 @@ def _cmd_run_impl(
         return 1
 
 
+def _release_committed_lease(
+    root: Path,
+    node: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    backend: Any | None = None,
+) -> None:
+    """Release committed workspace state without changing the run outcome."""
+    from .backends import DiscardCtx, load_backend
+
+    try:
+        resolved = (
+            backend
+            if backend is not None
+            else load_backend(root, node=node, workspace_config=config)
+        )
+        resolved.release_lease(DiscardCtx(root=root, node=node))
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"WARNING: {node['id']} committed, but workspace cleanup failed: "
+            f"{exc}. Run `evo gc` or `evo reset --yes` to retry.",
+            file=sys.stderr,
+        )
+
+
 def _record_done_result(root: Path, args: argparse.Namespace) -> int:
     config, graph = _require_workspace(root)
     node = _read_node(root, args.exp_id)
@@ -3653,11 +3680,8 @@ def _record_done_result(root: Path, args: argparse.Namespace) -> int:
     update_node(root, args.exp_id, _mark)
     _finalize_result(root, args.exp_id, node, args.score, status, {"recorded_only": True})
     if status == "committed":
-        from .backends import DiscardCtx as _DCtx, load_backend as _lb
         committed_node = {**node, "status": "committed"}
-        _lb(root, node=committed_node, workspace_config=config).release_lease(
-            _DCtx(root=root, node=committed_node)
-        )
+        _release_committed_lease(root, committed_node, config)
     _emit_experiment_result_telemetry(
         root,
         args.exp_id,

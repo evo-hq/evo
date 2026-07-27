@@ -10,6 +10,7 @@ Schema:
       "native_id": "sb-abc123",
       "base_url": "https://...",
       "leased_by": null | {"exp_id": "exp_NNNN", "pid": 12345, "leased_at": "..."},
+      "cleanup_pending": true | false,
       "last_branch": "evo/run_NNNN/exp_NNNN" | null,
       "provisioned_at": "..."
     }

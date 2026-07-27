@@ -164,19 +164,27 @@ class RemoteSandboxBackend:
     # ---------------------------------------------------------------- release_lease
 
     def release_lease(self, ctx: DiscardCtx) -> None:
-        """Clear the lease without tearing down the sandbox.
+        """Release a sandbox after an experiment commits.
 
-        POC behavior: ALSO tears down (no warm-reuse yet). When
-        we add `keep_warm` config in alpha.4, this becomes the path that
-        retains the sandbox.
+        POC behavior tears it down (no warm-reuse yet). A failed teardown
+        leaves the lease pinned and marks the record for a later `gc` retry.
+        When we add `keep_warm` config, this becomes the path that retains
+        the sandbox.
         """
         # POC: same as discard.
-        self.discard(ctx)
+        try:
+            self.discard(ctx)
+        except Exception:
+            # The experiment may already be committed. Keep this record pinned
+            # and make it eligible for `gc` retries without letting allocation
+            # reconciliation turn it into a reusable slot.
+            self._mark_cleanup_pending(ctx.root, ctx.node["id"])
+            raise
 
     # ---------------------------------------------------------------- gc
 
     def gc(self, ctx: DiscardCtx) -> bool:
-        """Best-effort cleanup of stale sandboxes whose holders are gone.
+        """Best-effort cleanup of free or cleanup-pending sandboxes.
 
         Returns True if anything got cleaned up so cli.cmd_gc reports it.
         """
@@ -184,7 +192,12 @@ class RemoteSandboxBackend:
         with remote_state.locked_state(ctx.root, self.state_key) as state:
             keep: list[dict[str, Any]] = []
             for sandbox in state["sandboxes"]:
-                if sandbox.get("leased_by") is None:
+                lease = sandbox.get("leased_by")
+                pending_for_node = (
+                    sandbox.get("cleanup_pending")
+                    and (lease or {}).get("exp_id") == ctx.node.get("id")
+                )
+                if lease is None or pending_for_node:
                     handle = self._handle_from_record(sandbox)
                     if handle is not None:
                         try:
@@ -517,6 +530,14 @@ class RemoteSandboxBackend:
                         sandbox["leased_by"] = None
                     break
 
+    def _mark_cleanup_pending(self, root: Path, exp_id: str) -> None:
+        with remote_state.locked_state(root, self.state_key) as state:
+            for sandbox in state["sandboxes"]:
+                lease = sandbox.get("leased_by")
+                if lease and lease.get("exp_id") == exp_id:
+                    sandbox["cleanup_pending"] = True
+                    break
+
     def _handle_for_slot(self, root: Path, slot_id: int) -> SandboxHandle | None:
         handle = self._handles.get(slot_id)
         if handle is not None:
@@ -555,7 +576,8 @@ class RemoteSandboxBackend:
 
         Only acts when the graph has an explicit terminal status. A missing
         node is NOT treated as terminal -- masks real bugs (e.g. a partial
-        graph write would otherwise look like a leaked lease).
+        graph write would otherwise look like a leaked lease). Records marked
+        cleanup-pending stay pinned until `gc` or `reset` confirms teardown.
         """
         from ..core import load_graph
 
@@ -572,5 +594,9 @@ class RemoteSandboxBackend:
                     continue
                 exp_id = lease.get("exp_id")
                 node = graph["nodes"].get(exp_id)
-                if node is not None and node.get("status") in terminal:
+                if (
+                    node is not None
+                    and node.get("status") in terminal
+                    and not sandbox.get("cleanup_pending")
+                ):
                     sandbox["leased_by"] = None

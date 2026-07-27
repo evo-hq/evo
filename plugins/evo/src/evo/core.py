@@ -902,14 +902,17 @@ def reset_runtime_state(root: Path) -> None:
     because local backends wipe the run directory that still holds the
     remote state files. If any remote teardown fails, the run directory is
     preserved (local resets and the final cleanup are skipped) so the
-    surviving state can drive a retry, and the error propagates.
+    surviving state can drive a retry, and the error propagates. A remote
+    spec with no sandbox records is skipped before provider construction.
     """
     import shutil
 
     from .backends import (
+        backend_state_key,
         backend_spec_for_node,
         backend_spec_from_config,
         load_backend,
+        remote_state,
     )
 
     config = load_config(root)
@@ -930,6 +933,22 @@ def reset_runtime_state(root: Path) -> None:
     failures: list[str] = []
     for name, backend_config in remote_specs:
         try:
+            state_key = backend_state_key(
+                name,
+                {
+                    "provider": backend_config.get("provider"),
+                    "provider_config": dict(
+                        backend_config.get("provider_config", {}) or {}
+                    ),
+                },
+            )
+            try:
+                state = remote_state.read_state(root, state_key)
+            except FileNotFoundError:
+                continue
+            if not state.get("sandboxes"):
+                remote_state.delete_state(root, state_key)
+                continue
             backend = load_backend(
                 root, explicit_name=name, explicit_config=backend_config
             )

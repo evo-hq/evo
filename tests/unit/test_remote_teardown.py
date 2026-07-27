@@ -68,6 +68,10 @@ def _native_ids(root: Path, backend: RemoteSandboxBackend) -> list[str]:
     return [sandbox["native_id"] for sandbox in state["sandboxes"]]
 
 
+def _records(root: Path, backend: RemoteSandboxBackend) -> list[dict[str, Any]]:
+    return remote_state.read_state(root, backend.state_key)["sandboxes"]
+
+
 @pytest.mark.parametrize("method_name", ["discard", "release_lease"])
 def test_direct_cleanup_retains_record_and_surfaces_failure(
     tmp_path: Path,
@@ -80,6 +84,8 @@ def test_direct_cleanup_retains_record_and_surfaces_failure(
     with pytest.raises(RuntimeError, match="close failed for sandbox-1"):
         getattr(backend, method_name)(ctx)
     assert _native_ids(tmp_path, backend) == ["sandbox-1"]
+    if method_name == "release_lease":
+        assert _records(tmp_path, backend)[0]["cleanup_pending"] is True
 
     provider.fail = False
     getattr(backend, method_name)(ctx)
@@ -95,6 +101,22 @@ def test_gc_retains_record_until_teardown_succeeds(tmp_path: Path) -> None:
     assert _native_ids(tmp_path, backend) == ["sandbox-1"]
 
     provider.fail = False
+    assert backend.gc(ctx) is True
+    assert _native_ids(tmp_path, backend) == []
+
+
+def test_gc_retries_failed_release_for_committed_node(tmp_path: Path) -> None:
+    provider = _TeardownProvider()
+    backend = _backend_with_record(tmp_path, provider, exp_id="exp_0001")
+    ctx = DiscardCtx(
+        root=tmp_path,
+        node={"id": "exp_0001", "status": "committed"},
+    )
+
+    with pytest.raises(RuntimeError, match="close failed for sandbox-1"):
+        backend.release_lease(ctx)
+    provider.fail = False
+
     assert backend.gc(ctx) is True
     assert _native_ids(tmp_path, backend) == []
 

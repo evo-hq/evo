@@ -150,22 +150,84 @@ class TestResetTearsDownOverrideBackends(unittest.TestCase):
         self.assertTrue((self.marker_dir / "torn-sb-test").exists())
         self.assertFalse(workspace_path(self.root).exists())
 
-    def test_reset_survives_unloadable_override_backend(self):
+    def test_reset_skips_unloadable_override_without_live_sandboxes(self):
+        backend_config = {"provider": "definitely-not-a-provider"}
         graph = load_graph(self.root)
         graph["nodes"]["exp_0000"] = {
             "id": "exp_0000",
             "status": "pending",
             "backend": "remote",
-            "backend_config": {"provider": "definitely-not-a-provider"},
+            "backend_config": backend_config,
         }
         atomic_write_json(graph_path(self.root), graph)
+
+        state_key = backend_state_key(
+            "remote",
+            {
+                "provider": backend_config["provider"],
+                "provider_config": {},
+            },
+        )
+        remote_state.init_state(
+            self.root,
+            provider="definitely-not-a-provider",
+            provider_config={},
+            state_key=state_key,
+        )
+
+        reset_runtime_state(self.root)
+
+        self.assertFalse(workspace_path(self.root).exists())
+
+    def test_reset_preserves_unloadable_backend_with_sandbox_record(self):
+        backend_config = {"provider": "definitely-not-a-provider"}
+        graph = load_graph(self.root)
+        graph["nodes"]["exp_0000"] = {
+            "id": "exp_0000",
+            "status": "pending",
+            "backend": "remote",
+            "backend_config": backend_config,
+        }
+        atomic_write_json(graph_path(self.root), graph)
+
+        state_key = backend_state_key(
+            "remote",
+            {
+                "provider": backend_config["provider"],
+                "provider_config": {},
+            },
+        )
+        remote_state.init_state(
+            self.root,
+            provider="definitely-not-a-provider",
+            provider_config={},
+            state_key=state_key,
+        )
+        with remote_state.locked_state(self.root, state_key) as state:
+            state["sandboxes"].append(
+                {
+                    "id": 0,
+                    "native_id": "still-live",
+                    "base_url": "https://still-live.example.test",
+                    "bearer_token": "",
+                    "metadata": {},
+                    "leased_by": None,
+                }
+            )
 
         with self.assertRaises(RuntimeError) as ctx:
             reset_runtime_state(self.root)
         self.assertIn("definitely-not-a-provider", str(ctx.exception))
-        # An unloadable provider can't tear down its sandboxes; the run
-        # dir must survive so a later reset can finish the cleanup.
         self.assertTrue(workspace_path(self.root).exists())
+        self.assertEqual(
+            [
+                sandbox["native_id"]
+                for sandbox in remote_state.read_state(self.root, state_key)[
+                    "sandboxes"
+                ]
+            ],
+            ["still-live"],
+        )
 
 
 if __name__ == "__main__":
