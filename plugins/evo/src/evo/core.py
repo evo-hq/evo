@@ -727,15 +727,36 @@ def append_annotation(root: Path, exp_id: str, task_id: str | None, analysis: st
         return entry
 
 
+def make_infra_event(event_kind: str, event_message: str, **fields: Any) -> dict[str, Any]:
+    """Build a canonical infra-log event.
+
+    Keep required schema fields in one helper so event producers do not drift
+    from what scratchpad/dashboard readers expect.
+    """
+    reserved = {"kind", "message", "timestamp"}
+    overlap = reserved.intersection(fields)
+    if overlap:
+        names = ", ".join(sorted(overlap))
+        raise ValueError(f"infra event fields may not override: {names}")
+    event_kind = event_kind.strip()
+    event_message = event_message.strip()
+    if not event_kind:
+        raise ValueError("infra event kind is required")
+    if not event_message:
+        raise ValueError("infra event message is required")
+    return {
+        "kind": event_kind,
+        "message": event_message,
+        "timestamp": utc_now(),
+        **fields,
+    }
+
+
 def append_infra_event(root: Path, message: str, breaking: bool) -> dict[str, Any]:
     path = infra_path(root)
     with advisory_lock(lock_file_for(path)):
         data = load_json(path, {"events": []})
-        event = {
-            "message": message,
-            "breaking": breaking,
-            "timestamp": utc_now(),
-        }
+        event = make_infra_event("infra", message, breaking=breaking)
         data.setdefault("events", []).append(event)
         atomic_write_json(path, data)
         return event
