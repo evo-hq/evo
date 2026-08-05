@@ -450,6 +450,22 @@ def resolve_runtime_env(root: Path, config: dict[str, Any]) -> dict[str, str]:
     runtime_variables = values.get("variables", {}) if isinstance(values, dict) else {}
     if isinstance(runtime_variables, dict):
         resolved.update({str(key): str(value) for key, value in runtime_variables.items()})
+    lynkr_cfg = runtime_env.get("lynkr", {})
+    if lynkr_cfg.get("enabled"):
+        lynkr_url = lynkr_cfg.get("url", "http://localhost:8081")
+
+        resolved["ANTHROPIC_BASE_URL"] = f"{lynkr_url}/v1"
+        resolved["OPENAI_BASE_URL"] = f"{lynkr_url}/v1"
+
+        resolved["LYNKR_VERIFY_ESCALATE"] = "false"
+
+        resolved["LYNKR_CLIENT_HINT"] = "evo-experiment"
+
+        for key in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MOONSHOT_API_KEY",
+                    "AZURE_OPENAI_API_KEY", "ZAI_API_KEY"]:
+            if key in os.environ and key not in resolved:
+                resolved[key] = os.environ[key]
+
     return resolved
 
 

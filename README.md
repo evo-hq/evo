@@ -87,6 +87,71 @@ For remote backends, install with the matching provider extra: `uv tool install 
 
 `evo install codex` trusts evo's hooks for you. To review them yourself first, pass `--no-trust-hooks`, then approve via `/hooks` inside codex.
 
+## Cost Optimization with Lynkr
+
+Evo spawns hundreds of AI agents per optimization run. [Lynkr](https://github.com/Fast-Editor/Lynkr) is a tier-routing proxy that routes agent requests to cheaper models when appropriate, with **measured 70-87% cost savings** on typical Evo workloads.
+
+### How it works
+
+Lynkr sits between Evo's host agents and the LLM APIs, routing each request to the cheapest appropriate tier:
+
+- **SIMPLE** work (reading logs, sketching hypotheses) → free local tier (ollama)
+- **MEDIUM** work (code edits, diffs) → mid-tier models  
+- **COMPLEX** work (synthesis, verification) → frontier models (Claude Sonnet, o1)
+
+All routing is transparent — no changes to your Evo workflow.
+
+### Setup (one-time)
+
+```bash
+# 1. Install Lynkr
+git clone https://github.com/Fast-Editor/Lynkr.git ~/claude-code
+cd ~/claude-code && npm install
+
+# 2. Configure Lynkr's backends (copy your .env.example to .env and set keys)
+cp .env.example .env
+# Edit .env to add your ANTHROPIC_API_KEY, MOONSHOT_API_KEY, etc.
+
+# 3. Configure Evo to use Lynkr
+cd your-evo-project
+evo lynkr configure --lynkr-path ~/claude-code
+
+# 4. Check status
+evo lynkr status
+```
+
+### Usage
+
+Lynkr starts automatically when you run `evo optimize`:
+
+```bash
+evo optimize
+# Lynkr auto-starts if not running
+# Watch tier decisions: tail -f ~/claude-code/data/logs/lynkr.log | grep tier
+```
+
+**Manual control:**
+
+```bash
+evo lynkr start    # Start Lynkr manually
+evo lynkr stop     # Stop Lynkr
+evo lynkr status   # Check if running
+evo lynkr configure --no-auto-start  # Disable auto-start
+```
+
+### Disabling
+
+```bash
+# Temporarily disable auto-start
+evo lynkr configure --no-auto-start
+
+# Or remove from config
+# Edit .evo/config.json and remove the "lynkr" section under "runtime_env"
+```
+
+---
+
+
 ## How it works
 
 ### Parallel

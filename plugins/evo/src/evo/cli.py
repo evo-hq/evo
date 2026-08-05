@@ -1085,6 +1085,208 @@ def cmd_env(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# evo lynkr -- configure Lynkr tier-routing proxy for cost optimization
+# ---------------------------------------------------------------------------
+
+
+def cmd_lynkr(args: argparse.Namespace) -> int:
+    """Configure Lynkr tier-routing proxy as the LLM backend for host agents."""
+    root = repo_root()
+
+    if args.lynkr_action == "configure":
+        return _lynkr_configure(root, args)
+    elif args.lynkr_action == "start":
+        return _lynkr_start(root, args)
+    elif args.lynkr_action == "stop":
+        return _lynkr_stop(root, args)
+    elif args.lynkr_action == "status":
+        return _lynkr_status(root, args)
+
+    raise RuntimeError(f"unknown lynkr action: {args.lynkr_action}")
+
+
+def _lynkr_configure(root: Path, args: argparse.Namespace) -> int:
+    """Set host agent env vars to route through Lynkr."""
+    with advisory_lock(lock_file_for(config_path(root))):
+        config = load_config(root)
+        runtime_env = _ensure_runtime_env_config(config)
+
+        # Build Lynkr config from args
+        lynkr_config = runtime_env.get("lynkr", {})
+        lynkr_config["enabled"] = True
+        lynkr_config["url"] = args.url or lynkr_config.get("url", "http://localhost:8081")
+
+        if hasattr(args, "auto_start"):
+            lynkr_config["auto_start"] = args.auto_start
+        else:
+            lynkr_config.setdefault("auto_start", True)
+
+        if args.lynkr_path:
+            lynkr_config["lynkr_path"] = str(Path(args.lynkr_path).expanduser().resolve())
+
+        runtime_env["lynkr"] = lynkr_config
+        atomic_write_json(config_path(root), config)
+
+    print("Lynkr configured:")
+    print(f"  URL: {lynkr_config['url']}")
+    print(f"  Auto-start: {lynkr_config.get('auto_start', False)}")
+    if lynkr_config.get("lynkr_path"):
+        print(f"  Path: {lynkr_config['lynkr_path']}")
+    print("")
+    print("Host agents will now route LLM calls through Lynkr for tier-based cost optimization.")
+    print("Run 'evo lynkr status' to check if Lynkr is running.")
+
+    return 0
+
+
+def _lynkr_start(root: Path, args: argparse.Namespace) -> int:
+    """Start Lynkr proxy if not already running."""
+    config = load_config(root)
+    lynkr_cfg = config.get("runtime_env", {}).get("lynkr", {})
+
+    if not lynkr_cfg.get("enabled"):
+        print("Lynkr not configured. Run 'evo lynkr configure' first.")
+        return 1
+
+    url = lynkr_cfg.get("url", "http://localhost:8081")
+    lynkr_path = lynkr_cfg.get("lynkr_path")
+
+    # Check if already running
+    if _lynkr_is_healthy(url):
+        print(f"Lynkr already running at {url}")
+        return 0
+
+    # Attempt to start
+    if not lynkr_path:
+        print("Lynkr not running and no lynkr_path configured.")
+        print("Either:")
+        print("  1. Start Lynkr manually: cd ~/claude-code && node index.js")
+        print("  2. Configure path: evo lynkr configure --lynkr-path ~/claude-code")
+        return 1
+
+    lynkr_root = Path(lynkr_path).expanduser()
+    if not (lynkr_root / "index.js").exists():
+        print(f"Lynkr not found at {lynkr_root}/index.js")
+        return 1
+
+    log_path = lynkr_root / "data" / "logs" / "evo-lynkr.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(log_path, "a") as log:
+        proc = subprocess.Popen(
+            ["node", "index.js"],
+            cwd=lynkr_root,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+    # Wait for health
+    for i in range(30):
+        if _lynkr_is_healthy(url):
+            print(f"✓ Lynkr started at {url} (PID {proc.pid})")
+            print(f"  Logs: {log_path}")
+            return 0
+        time.sleep(1)
+
+    print(f"Lynkr started but health check failed. Check logs: {log_path}")
+    return 1
+
+
+def _lynkr_stop(root: Path, args: argparse.Namespace) -> int:
+    """Stop Lynkr proxy."""
+    # Try multiple patterns to catch different launch methods
+    patterns = [
+        "node.*index.js",  # basic node launch
+        "lynkr",           # if installed as a command
+    ]
+
+    stopped_any = False
+    for pattern in patterns:
+        result = subprocess.run(
+            ["pkill", "-f", pattern],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            stopped_any = True
+
+    if stopped_any:
+        print("Lynkr stopped")
+        return 0
+    else:
+        print("No Lynkr process found (or already stopped)")
+        return 1
+
+
+def _lynkr_status(root: Path, args: argparse.Namespace) -> int:
+    """Check Lynkr status."""
+    config = load_config(root)
+    lynkr_cfg = config.get("runtime_env", {}).get("lynkr", {})
+
+    if not lynkr_cfg.get("enabled"):
+        print("Status: NOT CONFIGURED")
+        print("Run 'evo lynkr configure' to enable Lynkr routing.")
+        return 0
+
+    url = lynkr_cfg.get("url", "http://localhost:8081")
+
+    if _lynkr_is_healthy(url):
+        print(f"Status: RUNNING at {url}")
+        print(f"Auto-start: {lynkr_cfg.get('auto_start', False)}")
+        if lynkr_cfg.get("lynkr_path"):
+            print(f"Path: {lynkr_cfg['lynkr_path']}")
+        return 0
+    else:
+        print(f"Status: NOT RUNNING (expected at {url})")
+        if lynkr_cfg.get("auto_start"):
+            print("\nLynkr will start automatically on next 'evo optimize'")
+            print("Or run: evo lynkr start")
+        else:
+            print("\nRun: evo lynkr start")
+        return 1
+
+
+def _lynkr_is_healthy(url: str) -> bool:
+    """Check if Lynkr is responding at the given URL."""
+    try:
+        import urllib.request
+        req = urllib.request.urlopen(f"{url}/health/live", timeout=2)
+        return req.getcode() == 200
+    except Exception:
+        return False
+
+
+def _ensure_lynkr_running(root: Path, config: dict) -> None:
+    """Auto-start Lynkr if configured with auto_start=true and not already running."""
+    lynkr_cfg = config.get("runtime_env", {}).get("lynkr", {})
+    if not lynkr_cfg.get("enabled") or not lynkr_cfg.get("auto_start"):
+        return
+
+    url = lynkr_cfg.get("url", "http://localhost:8081")
+    if _lynkr_is_healthy(url):
+        return  # Already running
+
+    # Not running, attempt auto-start
+    lynkr_path = lynkr_cfg.get("lynkr_path")
+    if not lynkr_path:
+        # Configured for auto-start but no path given - warn once and continue
+        print("Note: Lynkr auto-start configured but no lynkr_path set.")
+        print("      Experiments will use default LLM endpoints.")
+        print("      Configure path: evo lynkr configure --lynkr-path ~/claude-code")
+        return
+
+    print("Starting Lynkr proxy...")
+    args = argparse.Namespace(lynkr_action="start")
+    result = _lynkr_start(root, args)
+    if result != 0:
+        print("WARNING: Lynkr auto-start failed, experiments will use default LLM endpoints")
+        print("         Check status: evo lynkr status")
+
+
+
+
+# ---------------------------------------------------------------------------
 # evo workspace -- pool slot inspection and stale-lease release
 # ---------------------------------------------------------------------------
 
@@ -1100,6 +1302,11 @@ def cmd_workspace_status(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+
+
+    url = lynkr_cfg.get("url", "http://localhost:8081")
+    if _lynkr_is_healthy(url):
+        return  # Already running
 
     from .backends import backend_state_key, pool_state
 
@@ -2477,6 +2684,11 @@ def _resolve_run_timeout(args: argparse.Namespace, config: dict) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     root = repo_root()
     config, graph = _require_workspace(root)
+    # Auto-start Lynkr if configured and not running
+    _ensure_lynkr_running(root, config)
+
+
+
     # Resolve the effective per-experiment timeout once, then write it back
     # so every downstream `args.timeout` reference picks up the resolved value.
     args.timeout = _resolve_run_timeout(args, config)
@@ -6341,6 +6553,59 @@ def build_parser() -> argparse.ArgumentParser:
     env_load_p.set_defaults(func=cmd_env)
     env_clear_p = env_sub.add_parser("clear", help="remove all configured dotenv sources")
     env_clear_p.set_defaults(func=cmd_env)
+
+# Add after line 6343 (after env_clear_p.set_defaults), before workspace_p definition
+
+    lynkr_p = sub.add_parser(
+        "lynkr",
+        help="configure Lynkr tier-routing proxy for cost optimization",
+    )
+    lynkr_sub = lynkr_p.add_subparsers(dest="lynkr_action", required=True)
+
+    lynkr_configure_p = lynkr_sub.add_parser(
+        "configure",
+        help="enable Lynkr and configure routing",
+    )
+    lynkr_configure_p.add_argument(
+        "--url",
+        help="Lynkr URL (default: http://localhost:8081)",
+    )
+    lynkr_configure_p.add_argument(
+        "--lynkr-path",
+        help="path to Lynkr installation for auto-start",
+    )
+    lynkr_configure_p.add_argument(
+        "--auto-start",
+        action="store_true",
+        default=True,
+        help="auto-start Lynkr if not running (default)",
+    )
+    lynkr_configure_p.add_argument(
+        "--no-auto-start",
+        action="store_false",
+        dest="auto_start",
+        help="don't auto-start Lynkr",
+    )
+    lynkr_configure_p.set_defaults(func=cmd_lynkr)
+
+    lynkr_start_p = lynkr_sub.add_parser(
+        "start",
+        help="start Lynkr proxy",
+    )
+    lynkr_start_p.set_defaults(func=cmd_lynkr)
+
+    lynkr_stop_p = lynkr_sub.add_parser(
+        "stop",
+        help="stop Lynkr proxy",
+    )
+    lynkr_stop_p.set_defaults(func=cmd_lynkr)
+
+    lynkr_status_p = lynkr_sub.add_parser(
+        "status",
+        help="check Lynkr status",
+    )
+    lynkr_status_p.set_defaults(func=cmd_lynkr)
+
 
     workspace_p = sub.add_parser(
         "workspace",
