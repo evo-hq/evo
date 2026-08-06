@@ -1116,7 +1116,7 @@ def _lynkr_configure(root: Path, args: argparse.Namespace) -> int:
         lynkr_config["enabled"] = True
         lynkr_config["url"] = args.url or lynkr_config.get("url", "http://localhost:8081")
 
-        if hasattr(args, "auto_start"):
+        if args.auto_start is not None:
             lynkr_config["auto_start"] = args.auto_start
         else:
             lynkr_config.setdefault("auto_start", True)
@@ -1197,11 +1197,9 @@ def _lynkr_stop(root: Path, args: argparse.Namespace) -> int:
     """Stop Lynkr proxy."""
     # Try multiple patterns to catch different launch methods
     patterns = [
-        "node.*index.js",  # basic node launch
-        "lynkr",           # if installed as a command
+        "node.*/claude-code/index.js",  # Lynkr via npm/node
+        "evo-lynkr",  # if renamed
     ]
-
-    stopped_any = False
     for pattern in patterns:
         result = subprocess.run(
             ["pkill", "-f", pattern],
@@ -1304,9 +1302,6 @@ def cmd_workspace_status(args: argparse.Namespace) -> int:
         return 1
 
 
-    url = lynkr_cfg.get("url", "http://localhost:8081")
-    if _lynkr_is_healthy(url):
-        return  # Already running
 
     from .backends import backend_state_key, pool_state
 
@@ -6577,7 +6572,7 @@ def build_parser() -> argparse.ArgumentParser:
     lynkr_configure_p.add_argument(
         "--auto-start",
         action="store_true",
-        default=True,
+        default=None,
         help="auto-start Lynkr if not running (default)",
     )
     lynkr_configure_p.add_argument(
