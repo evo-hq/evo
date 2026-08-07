@@ -73,7 +73,7 @@ Before trying to switch a workspace to a remote provider, confirm the basics:
   - `modal`: auth + optional config
   - `e2b`: API key + optional config
   - `daytona`: API key and API URL/target if needed
-  - `tenki`: API key + project id + optional config
+  - `tenki`: API key + optional config
   - `aws`: creds, region, image, SSH key pair/private key, and usually network config
   - `azure`: subscription, resource group, region, SSH key/private key, and VM/image choices
   - `ssh`: reachable host, working SSH user, and key/port if needed

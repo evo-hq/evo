@@ -28,7 +28,7 @@ daytona = [
     "daytona>=0.170.0",
 ]
 tenki = [
-    "tenki>=0.5.1",
+    "tenki>=0.5.4",
 ]
 aws = [
     "boto3>=1.42.66",
@@ -43,7 +43,7 @@ all = [
     "modal>=0.62.0",
     "e2b>=2.20.0",
     "daytona>=0.170.0",
-    "tenki>=0.5.1",
+    "tenki>=0.5.4",
     "boto3>=1.42.66",
     "azure-identity>=1.17.1",
     "azure-mgmt-resource>=23.1.1",

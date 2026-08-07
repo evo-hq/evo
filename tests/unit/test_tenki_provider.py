@@ -42,7 +42,7 @@ class TestTenkiResourceValidation(unittest.TestCase):
         self.assertEqual(provider.disk_size_gb, 50)
         self.assertIsNone(TenkiProvider({}).cpu_cores)
 
-    def test_provision_passes_workspace_id_without_project_id(self):
+    def test_provision_passes_workspace_id(self):
         from unittest.mock import patch
 
         from evo.backends.protocol import SandboxSpec
@@ -83,7 +83,6 @@ class TestTenkiResourceValidation(unittest.TestCase):
             handle = provider.provision(spec)
 
         self.assertEqual(captured["workspace_id"], "ws-test")
-        self.assertNotIn("project_id", captured)
         self.assertEqual(handle.native_id, "sb-test")
 
     def test_fs_upload_batch_streams_chunks_over_data_plane(self):

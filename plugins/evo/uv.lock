@@ -879,8 +879,8 @@ requires-dist = [
     { name = "portalocker", specifier = ">=2.8.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "requests", specifier = ">=2.31.0" },
-    { name = "tenki", marker = "extra == 'all'", specifier = ">=0.5.1" },
-    { name = "tenki", marker = "extra == 'tenki'", specifier = ">=0.5.1" },
+    { name = "tenki", marker = "extra == 'all'", specifier = ">=0.5.4" },
+    { name = "tenki", marker = "extra == 'tenki'", specifier = ">=0.5.4" },
 ]
 provides-extras = ["modal", "e2b", "daytona", "tenki", "aws", "azure", "all", "mcp"]
 
@@ -2493,16 +2493,16 @@ wheels = [
 
 [[package]]
 name = "tenki"
-version = "0.5.1"
+version = "0.5.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "grpcio" },
     { name = "protobuf" },
     { name = "websocket-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/06/24/40a827e1795d7cafaffbf615c3b13ad5aa8462359db01bab969f3f00913b/tenki-0.5.1.tar.gz", hash = "sha256:a1ed4e753db3d4a38a71cfb8d9cbf0cd05b28463f4c718fc9ec37f3155f28b4c", size = 184908, upload-time = "2026-07-25T02:22:23.961Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/30/85/9f311f784b92639de2d0aaae7c6d67c76c5ebfd60543d56739724c07683a/tenki-0.5.4.tar.gz", hash = "sha256:3d900ca3eedf98aea0ace315246a3f2bbdc19149d966a320cdb99fd406b681fa", size = 186073, upload-time = "2026-07-29T11:08:41.791Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/58/cb/cba98c901307d5e266a072015d7963834f28ba14cf74598149a98093c655/tenki-0.5.1-py3-none-any.whl", hash = "sha256:2e296544c85b8709f85e84728b5de0c4cb42009fac5475899a1ac238b99ab459", size = 158595, upload-time = "2026-07-25T02:22:22.46Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/de/244e8d8bffe6673ae3a58423016b8c03465214ab9101a3e61234b5d4c076/tenki-0.5.4-py3-none-any.whl", hash = "sha256:d5df29fa5f7f93fc6c420d3a0b50e68e0b35fda63e17ed57c0f302a522cbf9ef", size = 158916, upload-time = "2026-07-29T11:08:40.023Z" },
 ]
 
 [[package]]
