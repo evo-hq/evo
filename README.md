@@ -34,7 +34,7 @@ You give it a codebase. It discovers metrics to optimize, sets up the evaluation
 - **Benchmark discovery.** The `discover` skill explores the repo, figures out what to measure, and instruments the evaluation.
 
 
-Runs on Claude Code, Codex, Cursor, Kimi, OpenClaw, Hermes, Opencode, or Pi. Experiments run locally or on remote sandboxes — Modal, E2B, Daytona, AWS, Azure, SSH.
+Runs on Claude Code, Codex, Cursor, Kimi, OpenClaw, Hermes, Opencode, or Pi. Experiments run locally or on remote sandboxes — Modal, E2B, Daytona, Tenki, AWS, Azure, SSH.
 
 
 <p align="center">
@@ -81,7 +81,7 @@ npm install -g @anthropic-ai/claude-code     # or @openai/codex, openclaw, @eare
 evo install <host>     # claude-code | codex | cursor | hermes | kimi | opencode | openclaw | pi
 ```
 
-For remote backends, install with the matching provider extra: `uv tool install 'evo-hq-cli[modal]'` (or `[e2b]`, `[daytona]`, `[aws]`, `[azure]`, `[all]`).
+For remote backends, install with the matching provider extra: `uv tool install 'evo-hq-cli[modal]'` (or `[e2b]`, `[daytona]`, `[tenki]`, `[aws]`, `[azure]`, `[all]`).
 
 ### Codex hook trust
 
@@ -127,6 +127,7 @@ When `discover` builds a benchmark from scratch, it attaches a held-out-slice sc
 | **modal** | Modal serverless cloud | `uv tool install 'evo-hq-cli[modal]'` |
 | **e2b** | E2B cloud sandboxes | `uv tool install 'evo-hq-cli[e2b]'` |
 | **daytona** | Daytona cloud workspaces | `uv tool install 'evo-hq-cli[daytona]'` |
+| **tenki** | Tenki cloud sandboxes | `uv tool install 'evo-hq-cli[tenki]'` |
 | **aws** | AWS EC2 sandboxes | `uv tool install 'evo-hq-cli[aws]'` |
 | **azure** | Azure VMs | `uv tool install 'evo-hq-cli[azure]'` |
 
