@@ -9,6 +9,7 @@ import base64
 import binascii
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -65,8 +66,25 @@ def _stable_hook_command() -> str:
 
 def _is_evo_hook_drain_command(command: str) -> bool:
     """Recognize source and already-materialized evo drain commands."""
-    if "${CLAUDE_PLUGIN_ROOT}/bin/evo-hook-drain" in command:
+    if command.strip() == "${CLAUDE_PLUGIN_ROOT}/bin/evo-hook-drain":
         return True
+
+    try:
+        tokens = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        tokens = []
+    if len(tokens) == 1:
+        candidate = tokens[0]
+        if os.name == "nt" and len(candidate) >= 2:
+            if candidate[0] == candidate[-1] and candidate[0] in "'\"":
+                candidate = candidate[1:-1]
+        path = Path(candidate)
+        if (
+            path.is_absolute()
+            and path.parent.name.lower() == "bin"
+            and path.name.lower() in {"evo-hook-drain", "evo-hook-drain.exe"}
+        ):
+            return True
 
     prefix = "node -e \"eval(Buffer.from('"
     suffix = "','base64').toString())\""

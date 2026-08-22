@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -424,6 +426,22 @@ class TestCodexHookMaterialization(_Base):
             self._read_command(hooks_path), codex._stable_hook_command()
         )
 
+    def test_legacy_absolute_drain_path_still_materializes(self):
+        from evo.host_install import codex
+
+        stable_path = str(codex.stable_binary_path().resolve())
+        command = (
+            subprocess.list2cmdline([stable_path])
+            if os.name == "nt"
+            else shlex.quote(stable_path)
+        )
+        hooks_path = self._write_hooks(command)
+
+        self.assertTrue(codex._materialize_codex_hooks(hooks_path))
+        self.assertEqual(
+            self._read_command(hooks_path), codex._stable_hook_command()
+        )
+
     def test_malformed_and_unrelated_wrappers_are_untouched(self):
         from evo.host_install import codex
 
@@ -431,6 +449,8 @@ class TestCodexHookMaterialization(_Base):
             "node -e \"eval(Buffer.from('not-base64!','base64').toString())\"",
             "node -e \"eval(Buffer.from('Y29uc29sZS5sb2coJ29rJyk=','base64').toString())\"",
             "node -e \"console.log('evo-hook-drain')\"",
+            "relative/bin/evo-hook-drain",
+            "/tmp/bin/evo-hook-drain --verbose",
         )
         for command in commands:
             with self.subTest(command=command):
