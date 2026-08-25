@@ -212,6 +212,11 @@ class Run:
         finally:
             with _ACTIVE_RUNS_LOCK:
                 _ACTIVE_RUNS.discard(self._experiment_id)
+            # Cancel the safety-net finalizer now that the slot is released.
+            # Otherwise it stays armed and, when this finished Run is later
+            # gc'd, fires _release_active_run(experiment_id) — clobbering the
+            # slot of a *different* live Run that reused the same id (#97).
+            self._finalizer.detach()
 
     # -- context manager --------------------------------------------------
 
@@ -223,6 +228,8 @@ class Run:
             self.finish()
         elif not self._finished:
             # Exception path -- finish() never called and won't be. Release
-            # the registry slot so a retry in the same process isn't blocked.
+            # the registry slot so a retry in the same process isn't blocked,
+            # and detach the finalizer so it can't later clobber a reused id.
             with _ACTIVE_RUNS_LOCK:
                 _ACTIVE_RUNS.discard(self._experiment_id)
+            self._finalizer.detach()
