@@ -50,13 +50,27 @@ def utc_now() -> str:
 
 def repo_root(cwd: Path | None = None) -> Path:
     base = cwd or Path.cwd()
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=base,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=base,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        # git isn't installed / not on PATH.
+        raise RuntimeError(
+            "git was not found on PATH. evo needs git to locate your "
+            "workspace; install git and run evo from inside your project."
+        ) from None
+    except subprocess.CalledProcessError:
+        # Not inside a git repository. Surface an actionable message instead
+        # of leaking the raw `git rev-parse` exit status (see #58).
+        raise RuntimeError(
+            f"not inside a git repository (looked from {base}). Run evo from "
+            "within your project directory, or `git init` to create one."
+        ) from None
     return Path(result.stdout.strip())
 
 
