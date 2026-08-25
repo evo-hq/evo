@@ -2429,7 +2429,7 @@ def cmd_ws_grep(args: argparse.Namespace) -> int:
     base = args.path or node["worktree"]
     with executor_ctxmgr as executor:
         which = executor.run(["which", "rg"], cwd=str(base))
-        if (which.exit_code or 1) == 0 and which.stdout.strip():
+        if which.exit_code == 0 and which.stdout.strip():
             cmd = ["rg", "--no-heading", "--line-number", args.pattern, str(base)]
         else:
             cmd = ["grep", "-rn", args.pattern, str(base)]
