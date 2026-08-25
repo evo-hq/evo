@@ -752,7 +752,12 @@ def allocate_experiment(
     Graph mutation (ID generation, parent linking, status init) stays here;
     workspace creation is delegated to the configured backend.
     """
-    from .backends import AllocateCtx, backend_spec_from_config, load_backend
+    from .backends import (
+        AllocateCtx,
+        DiscardCtx,
+        backend_spec_from_config,
+        load_backend,
+    )
 
     gpath = graph_path(root)
 
@@ -874,14 +879,47 @@ def allocate_experiment(
 
     # --- Phase 3: attach the finished node under the lock ---------------
     # Re-read the graph so we don't clobber nodes other allocators committed
-    # while we were in backend.allocate().
+    # while we were in backend.allocate(). Re-validate the parent too: the
+    # lock was released across backend.allocate(), so a concurrent
+    # prune/invalidate/delete could have made the parent ineligible since
+    # phase 1. Attaching regardless would either violate the phase-1 guards
+    # or (if the parent was deleted) orphan the child under a dangling
+    # parent reference.
+    attach_error: str | None = None
     with advisory_lock(lock_file_for(gpath)):
         graph = load_json(gpath, default_graph())
         nodes = graph["nodes"]
-        nodes[exp_id] = node
-        if parent_id in nodes:
+        if parent_id not in nodes:
+            attach_error = f"parent {parent_id} was removed during allocation"
+        elif lineage_invalidated_by(graph, parent_id) is not None:
+            blocker = lineage_invalidated_by(graph, parent_id)
+            attach_error = (
+                f"parent {parent_id} lineage was invalidated at "
+                f"{blocker.get('id')} during allocation"
+            )
+        elif nodes[parent_id].get("status") == "pruned":
+            attach_error = f"parent {parent_id} was pruned during allocation"
+        else:
+            nodes[exp_id] = node
             nodes[parent_id].setdefault("children", []).append(exp_id)
-        atomic_write_json(gpath, graph)
+            atomic_write_json(gpath, graph)
+
+    if attach_error is not None:
+        # Release the workspace we allocated in phase 2 so it doesn't leak,
+        # then surface the race. Teardown runs outside the graph lock and is
+        # best-effort -- a residual workspace is reclaimable via `evo gc`.
+        ctx = DiscardCtx(root=root, node=node)
+        for teardown in (backend.release_lease, backend.gc):
+            try:
+                teardown(ctx)
+            except Exception:  # noqa: BLE001
+                pass
+        raise RuntimeError(
+            f"Cannot attach experiment {exp_id}: {attach_error}. The reserved "
+            f"id is skipped and its workspace has been released; branch from a "
+            f"currently-valid node instead."
+        )
+
     experiments_dir_for(root, exp_id).mkdir(parents=True, exist_ok=True)
     return node
 

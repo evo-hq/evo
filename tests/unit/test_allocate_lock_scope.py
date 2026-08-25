@@ -91,3 +91,78 @@ def test_allocate_runs_concurrently_and_yields_distinct_ids(tmp_path, monkeypatc
     for exp_id in ids:
         assert exp_id in graph["nodes"]
         assert exp_id in graph["nodes"]["root"]["children"]
+
+
+class _ParentMutatingBackend:
+    """Simulates a concurrent mutation of the parent during the unlocked
+    backend.allocate() window: it edits graph.json on disk before returning,
+    exactly as a racing `evo discard`/`evo prune` process would."""
+
+    def __init__(self, root, parent_id, action):
+        self.name = "probe"
+        self._root = root
+        self._parent_id = parent_id
+        self._action = action  # "delete" or "prune"
+        self.torn_down = False
+
+    def allocate(self, ctx):
+        from evo.core import load_graph, save_graph
+        g = load_graph(self._root)
+        if self._action == "delete":
+            g["nodes"].pop(self._parent_id, None)
+            for n in g["nodes"].values():
+                if self._parent_id in n.get("children", []):
+                    n["children"].remove(self._parent_id)
+        elif self._action == "prune":
+            g["nodes"][self._parent_id]["status"] = "pruned"
+        save_graph(self._root, g)
+        return type("R", (), {
+            "worktree": str(ctx.root / "wt"), "branch": ctx.branch,
+            "commit": "deadbeef", "extra": {},
+        })()
+
+    def release_lease(self, ctx):
+        self.torn_down = True
+
+    def gc(self, ctx):
+        self.torn_down = True
+        return True
+
+
+def _setup_with_parent(tmp_path):
+    root = tmp_path.resolve()
+    _init_git_repo(root)
+    init_workspace(root, target="t.py", benchmark="echo hi", metric="max", gate=None)
+    # Real allocation of a committable parent (child of root).
+    parent = allocate_experiment(root, parent_id="root", hypothesis="p")
+    return root, parent["id"]
+
+
+def test_parent_deleted_during_allocation_raises_and_leaves_no_orphan(tmp_path, monkeypatch):
+    root, parent_id = _setup_with_parent(tmp_path)
+    probe = _ParentMutatingBackend(root, parent_id, "delete")
+    monkeypatch.setattr(backends, "load_backend", lambda *a, **k: probe)
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        allocate_experiment(root, parent_id=parent_id, hypothesis="child")
+
+    graph = load_graph(root)
+    # No node may reference the now-deleted parent (no dangling-parent orphan).
+    orphans = [n["id"] for n in graph["nodes"].values() if n.get("parent") == parent_id]
+    assert orphans == [], f"orphan node(s) attached to a deleted parent: {orphans}"
+    assert probe.torn_down, "allocated workspace was not released on the failure path"
+
+
+def test_parent_pruned_during_allocation_is_rejected(tmp_path, monkeypatch):
+    root, parent_id = _setup_with_parent(tmp_path)
+    probe = _ParentMutatingBackend(root, parent_id, "prune")
+    monkeypatch.setattr(backends, "load_backend", lambda *a, **k: probe)
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        allocate_experiment(root, parent_id=parent_id, hypothesis="child")
+
+    graph = load_graph(root)
+    children = graph["nodes"][parent_id].get("children", [])
+    assert children == [], f"child attached under a pruned parent: {children}"
