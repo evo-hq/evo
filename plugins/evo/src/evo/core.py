@@ -379,6 +379,29 @@ def save_config(root: Path, config: dict[str, Any]) -> None:
 
 _DOTENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Backslash escapes honored inside double-quoted dotenv values. Kept explicit
+# (rather than str.decode("unicode_escape")) so non-ASCII UTF-8 characters pass
+# through untouched instead of being reinterpreted byte-by-byte as Latin-1.
+_DOTENV_ESCAPES = {
+    "n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'", "`": "`",
+}
+
+
+def _unescape_double_quoted(value: str) -> str:
+    out: list[str] = []
+    i = 0
+    n = len(value)
+    while i < n:
+        ch = value[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = value[i + 1]
+            out.append(_DOTENV_ESCAPES.get(nxt, "\\" + nxt))
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
 
 def parse_dotenv(text: str) -> dict[str, str]:
     """Parse the simple dotenv subset evo supports for runtime env forwarding."""
@@ -399,7 +422,7 @@ def parse_dotenv(text: str) -> dict[str, str]:
         if len(value) >= 2 and value[0] == value[-1] == "'":
             value = value[1:-1]
         elif len(value) >= 2 and value[0] == value[-1] == '"':
-            value = bytes(value[1:-1], "utf-8").decode("unicode_escape")
+            value = _unescape_double_quoted(value[1:-1])
         else:
             match = re.search(r"\s+#", value)
             if match:
