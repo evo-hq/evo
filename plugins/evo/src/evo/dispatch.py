@@ -277,10 +277,29 @@ Budget: {budget} iterations. Follow the protocol you loaded earlier. Begin.
 # must NOT continue. It may also have been auto-compacted, summarizing the
 # protocol away. The lineage prompt explicitly closes the parent's task and
 # tells the child to re-read the protocol if it can't recall it.
+# Injected only into lineage forks. Such a child inherits the parent's
+# session, so the worker protocol reaches it through the cached transcript;
+# on long ancestor chains Claude Code auto-compacts the older portion and can
+# summarize the protocol away. This block marks the load-bearing context as
+# preserve-on-summary so compaction keeps it rather than trimming it (#27).
+LINEAGE_COMPACT_INSTRUCTIONS = """# Compact Instructions
+
+Preserve when summarizing:
+- current exp_id, hypothesis, parent_commit
+- worker protocol; `evo run` is terminal
+- pointer-trace references and gate semantics
+
+May be discarded:
+- older file reads (recoverable via `evo get` / Read)
+- older benchmark output detail
+- failed tool calls from prior attempts
+"""
+
 LINEAGE_EXECUTE_USER_PROMPT_TEMPLATE = """A new experiment is starting. Your prior work on {parent_id} is COMMITTED and CLOSED -- do not continue it.
 
 If your earlier transcript has been summarized during context compaction and you can no longer see the full worker protocol, re-read it from {protocol_path} before acting.
 
+{compact_instructions}
 EXECUTE phase begins now.
 Your experiment: {exp_id}
 Worktree: {worktree_path}
@@ -321,6 +340,7 @@ def render_execute_prompt(
             brief=brief.strip(),
             budget=budget,
             protocol_path=Path(subagent_skill_path()).as_posix(),
+            compact_instructions=LINEAGE_COMPACT_INSTRUCTIONS,
         )
     return EXECUTE_USER_PROMPT_TEMPLATE.format(
         exp_id=exp_id,
