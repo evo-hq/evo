@@ -752,9 +752,23 @@ def allocate_experiment(
     Graph mutation (ID generation, parent linking, status init) stays here;
     workspace creation is delegated to the configured backend.
     """
-    from .backends import AllocateCtx, backend_spec_from_config, load_backend
+    from .backends import (
+        AllocateCtx,
+        DiscardCtx,
+        backend_spec_from_config,
+        load_backend,
+    )
 
     gpath = graph_path(root)
+
+    # --- Phase 1: reserve the id under the lock -------------------------
+    # Only ID generation, parent validation, and the frozen parent-commit
+    # reference need the graph lock. The slow backend.allocate() (git
+    # `worktree add`, or remote sandbox provisioning) must NOT run under it,
+    # or parallel `evo new` calls serialize and later ones exceed the lock
+    # timeout with a spurious LockTimeoutError (#98). We bump+persist next_id
+    # here so the reserved exp_id is unique even though the node is attached
+    # later, then release the lock before allocating.
     with advisory_lock(lock_file_for(gpath)):
         graph = load_json(gpath, default_graph())
         nodes = graph["nodes"]
@@ -777,7 +791,6 @@ def allocate_experiment(
             )
         next_id = graph.get("next_id", 0)
         exp_id = f"exp_{next_id:04d}"
-        graph["next_id"] = next_id + 1
 
         meta = _load_meta(root)
         run_id = meta.get("active", "run")
@@ -808,57 +821,107 @@ def allocate_experiment(
                     f"Parent {parent_id} has no recorded commit; cannot allocate child"
                 )
 
-        workspace_config = load_config(root)
-        if backend_override is None:
-            backend_name, backend_config = backend_spec_from_config(workspace_config)
-        else:
-            backend_name = backend_override["name"]
-            backend_config = dict(backend_override.get("config") or {})
-
-        backend = load_backend(
-            root,
-            explicit_name=backend_name,
-            explicit_config=backend_config,
-        )
-        result = backend.allocate(
-            AllocateCtx(
-                root=root,
-                exp_id=exp_id,
-                parent_node=parent if parent_id != "root" else None,
-                parent_commit=parent_commit,
-                parent_ref=start_point,
-                branch=branch,
-                hypothesis=hypothesis,
-            )
-        )
-
-        node = {
-            "id": exp_id,
-            "parent": parent_id,
-            "children": [],
-            "status": "pending",
-            "hypothesis": hypothesis,
-            "created_at": utc_now(),
-            "updated_at": utc_now(),
-            "eval_epoch": load_config(root).get("current_eval_epoch", 1),
-            "score": None,
-            "backend": backend_name,
-            "backend_config": backend_config,
-            "branch": result.branch,
-            "worktree": str(result.worktree),
-            "commit": result.commit,
-            "pruned_reason": None,
-            "prune_kind": None,
-            "benchmark_result": None,
-            "gate_result": None,
-            "gates": [],
-            "current_attempt": 0,
-        }
-        nodes[exp_id] = node
-        nodes[parent_id].setdefault("children", []).append(exp_id)
+        parent_node_snapshot = parent if parent_id != "root" else None
+        # Persist the id reservation so a concurrent allocator can't hand out
+        # the same exp_id while we allocate outside the lock. (If the backend
+        # allocation below fails, this id is simply skipped -- exp_ids may have
+        # gaps; nothing depends on them being contiguous.)
+        graph["next_id"] = next_id + 1
         atomic_write_json(gpath, graph)
-        experiments_dir_for(root, exp_id).mkdir(parents=True, exist_ok=True)
-        return node
+
+    # --- Phase 2: slow backend allocation, NOT under the lock -----------
+    workspace_config = load_config(root)
+    if backend_override is None:
+        backend_name, backend_config = backend_spec_from_config(workspace_config)
+    else:
+        backend_name = backend_override["name"]
+        backend_config = dict(backend_override.get("config") or {})
+
+    backend = load_backend(
+        root,
+        explicit_name=backend_name,
+        explicit_config=backend_config,
+    )
+    result = backend.allocate(
+        AllocateCtx(
+            root=root,
+            exp_id=exp_id,
+            parent_node=parent_node_snapshot,
+            parent_commit=parent_commit,
+            parent_ref=start_point,
+            branch=branch,
+            hypothesis=hypothesis,
+        )
+    )
+
+    node = {
+        "id": exp_id,
+        "parent": parent_id,
+        "children": [],
+        "status": "pending",
+        "hypothesis": hypothesis,
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+        "eval_epoch": workspace_config.get("current_eval_epoch", 1),
+        "score": None,
+        "backend": backend_name,
+        "backend_config": backend_config,
+        "branch": result.branch,
+        "worktree": str(result.worktree),
+        "commit": result.commit,
+        "pruned_reason": None,
+        "prune_kind": None,
+        "benchmark_result": None,
+        "gate_result": None,
+        "gates": [],
+        "current_attempt": 0,
+    }
+
+    # --- Phase 3: attach the finished node under the lock ---------------
+    # Re-read the graph so we don't clobber nodes other allocators committed
+    # while we were in backend.allocate(). Re-validate the parent too: the
+    # lock was released across backend.allocate(), so a concurrent
+    # prune/invalidate/delete could have made the parent ineligible since
+    # phase 1. Attaching regardless would either violate the phase-1 guards
+    # or (if the parent was deleted) orphan the child under a dangling
+    # parent reference.
+    attach_error: str | None = None
+    with advisory_lock(lock_file_for(gpath)):
+        graph = load_json(gpath, default_graph())
+        nodes = graph["nodes"]
+        if parent_id not in nodes:
+            attach_error = f"parent {parent_id} was removed during allocation"
+        elif lineage_invalidated_by(graph, parent_id) is not None:
+            blocker = lineage_invalidated_by(graph, parent_id)
+            attach_error = (
+                f"parent {parent_id} lineage was invalidated at "
+                f"{blocker.get('id')} during allocation"
+            )
+        elif nodes[parent_id].get("status") == "pruned":
+            attach_error = f"parent {parent_id} was pruned during allocation"
+        else:
+            nodes[exp_id] = node
+            nodes[parent_id].setdefault("children", []).append(exp_id)
+            atomic_write_json(gpath, graph)
+
+    if attach_error is not None:
+        # Release the workspace we allocated in phase 2 so it doesn't leak,
+        # then surface the race. Teardown runs outside the graph lock and is
+        # best-effort -- a residual workspace is reclaimable via `evo gc`.
+        ctx = DiscardCtx(root=root, node=node)
+        for teardown in (backend.release_lease, backend.gc):
+            try:
+                teardown(ctx)
+            except Exception:  # noqa: BLE001
+                pass
+        raise RuntimeError(
+            f"Cannot attach experiment {exp_id}: {attach_error}. The reserved "
+            f"id is skipped and its workspace has been released; branch from a "
+            f"currently-valid node instead."
+        )
+
+    experiments_dir_for(root, exp_id).mkdir(parents=True, exist_ok=True)
+    return node
 
 
 def remove_worktree_only(root: Path, node: dict[str, Any]) -> bool:
