@@ -2171,6 +2171,30 @@ def _read_attempt_state(root: Path, exp_id: str, attempt: int) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _stale_active_entries(root: Path, graph: dict) -> list[tuple[str, int, int]]:
+    """Local `active` nodes whose stamped driver PID is gone (or was never
+    stamped) — i.e. an `evo run` that crashed, was killed, or died on reboot
+    and left the node wedged at status=active forever.
+
+    Returns (exp_id, attempt, pid) per stale node. Remote nodes are excluded:
+    they carry their own resume metadata (stream journal) and are reclaimed by
+    re-running, not by PID liveness.
+    """
+    entries: list[tuple[str, int, int]] = []
+    for exp_id, node in graph.get("nodes", {}).items():
+        if exp_id == "root" or node.get("status") != "active":
+            continue
+        if node.get("backend") == "remote":
+            continue
+        attempt = int(node.get("current_attempt") or 0)
+        state = _read_attempt_state(root, exp_id, attempt) or {}
+        pid = int(state.get("pid") or 0)
+        if pid and _is_pid_alive(pid):
+            continue
+        entries.append((exp_id, attempt, pid))
+    return entries
+
+
 def _write_attempt_state(
     root: Path,
     exp_id: str,
@@ -4143,14 +4167,92 @@ def cmd_status(args: argparse.Namespace) -> int:
     metric = config["metric"]
     nodes = [node for node in graph["nodes"].values() if node["id"] != "root"]
     best = best_committed_score(graph, metric)
+    stale = _stale_active_entries(root, graph)
     print(
         f"metric={metric} epoch={config.get('current_eval_epoch', 1)} "
         f"experiments={len(nodes)} committed={sum(1 for n in nodes if effective_status(graph, n) == 'committed')} "
         f"evaluated={sum(1 for n in nodes if n.get('status') == 'evaluated')} "
         f"discarded={sum(1 for n in nodes if n.get('status') == 'discarded')} "
         f"failed={sum(1 for n in nodes if n.get('status') == 'failed')} "
-        f"active={sum(1 for n in nodes if n.get('status') == 'active')} best={best}"
+        f"active={sum(1 for n in nodes if n.get('status') == 'active')} "
+        f"stale={len(stale)} best={best}"
     )
+    if stale:
+        ids = ", ".join(exp_id for exp_id, _a, _p in stale)
+        print(
+            f"\n! {len(stale)} stale active experiment(s) — driver process "
+            f"gone: {ids}"
+        )
+        print("  Run `evo recover` to mark them failed (traces preserved).")
+    return 0
+
+
+def cmd_recover(args: argparse.Namespace) -> int:
+    """Sweep crashed-mid-run experiments and settle them.
+
+    An `evo run` that dies (crash, shell exit, reboot) leaves its node wedged
+    at status=active with a dead driver PID stamped in attempt_state.json. This
+    walks every such node and, unless --dry-run, marks it `failed` with a
+    "process disappeared" reason -- leaving the worktree and traces intact so
+    partial data survives (unlike `evo discard`, which deletes them).
+    Idempotent. Remote experiments are skipped (they resume via their own
+    metadata)."""
+    root = repo_root()
+    _config, graph = _require_workspace(root)
+    dry_run = bool(getattr(args, "dry_run", False))
+    as_json = bool(getattr(args, "json", False))
+    stale = _stale_active_entries(root, graph)
+
+    recovered: list[str] = []
+    reason = "process disappeared (recovered by `evo recover`)"
+    if not dry_run:
+        for exp_id, attempt, _pid in stale:
+            node = graph["nodes"][exp_id]
+
+            def _mark_failed(current_node: dict, _graph: dict) -> None:
+                current_node["status"] = "failed"
+                current_node["error"] = reason
+
+            update_node(root, exp_id, _mark_failed)
+            _finalize_result(
+                root, exp_id, node, node.get("score"), "failed",
+                {"error": reason, "recovered": True},
+            )
+            prior = _read_attempt_state(root, exp_id, attempt) or {}
+            _write_attempt_state(
+                root, exp_id, attempt,
+                phase="failed", status="failed",
+                started_at=str(prior.get("started_at") or utc_now()),
+                extra={"error": reason, "recovered": True},
+            )
+            recovered.append(exp_id)
+
+    if as_json:
+        print(json.dumps({
+            "dry_run": dry_run,
+            "stale": [exp_id for exp_id, _a, _p in stale],
+            "recovered": recovered,
+        }))
+        return 0
+
+    if not stale:
+        print("No stale experiments found.")
+        return 0
+    if dry_run:
+        print(f"Would recover {len(stale)} stale experiment(s) (process gone):")
+        for exp_id, attempt, pid in stale:
+            print(f"  {exp_id} (attempt {attempt:03d}, pid {pid or 'unstamped'})")
+        print(
+            "\nRe-run without --dry-run to mark them failed "
+            "(worktrees + traces are preserved)."
+        )
+        return 0
+    print(
+        f"Recovered {len(recovered)} stale experiment(s) "
+        f"(marked failed, traces preserved):"
+    )
+    for exp_id in recovered:
+        print(f"  {exp_id}")
     return 0
 
 
@@ -6612,6 +6714,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_p = sub.add_parser("status")
     status_p.set_defaults(func=cmd_status)
+
+    recover_p = sub.add_parser(
+        "recover",
+        help="detect and settle crashed-mid-run (stale active) experiments",
+        description="Walk active experiments whose driver process has "
+        "disappeared (crash, shell exit, reboot) and mark them failed, "
+        "preserving worktrees and traces. Remote experiments are skipped.",
+    )
+    recover_p.add_argument(
+        "--dry-run", action="store_true",
+        help="list stale experiments without modifying anything",
+    )
+    recover_p.add_argument("--json", action="store_true", help="emit JSON")
+    recover_p.set_defaults(func=cmd_recover)
 
     tree_p = sub.add_parser("tree")
     tree_p.set_defaults(func=cmd_tree)
