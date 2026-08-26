@@ -668,6 +668,60 @@ def attempt_traces_dir(root: Path, exp_id: str, attempt: int) -> Path:
     return attempt_dir(root, exp_id, attempt) / "traces"
 
 
+def compute_spend(root: Path) -> dict[str, Any]:
+    """Roll up cumulative benchmark spend across every experiment attempt.
+
+    Walks each experiment's `attempts/*/traces/*.json` and sums the free-form
+    per-task `cost` dict (convention `{input_tokens, output_tokens, usd,
+    model}`). USD is the enforceable unit; traces that carry a `cost` but no
+    numeric `usd` are counted as `unpriced` so callers can flag the total as a
+    lower bound. Traces with no `cost` at all are ignored entirely.
+    """
+    total_usd = 0.0
+    input_tokens = 0
+    output_tokens = 0
+    priced = 0
+    unpriced = 0
+    per_experiment: dict[str, float] = {}
+
+    exp_root = experiments_path(root)
+    if exp_root.exists():
+        for trace_path in sorted(exp_root.glob("*/attempts/*/traces/*.json")):
+            try:
+                trace = json.loads(trace_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(trace, dict):
+                continue
+            cost = trace.get("cost")
+            if not isinstance(cost, dict):
+                continue
+            exp_id = trace_path.relative_to(exp_root).parts[0]
+            usd = cost.get("usd")
+            if isinstance(usd, (int, float)) and not isinstance(usd, bool):
+                total_usd += float(usd)
+                per_experiment[exp_id] = per_experiment.get(exp_id, 0.0) + float(usd)
+                priced += 1
+            else:
+                unpriced += 1
+            it = cost.get("input_tokens")
+            ot = cost.get("output_tokens")
+            if isinstance(it, int) and not isinstance(it, bool):
+                input_tokens += it
+            if isinstance(ot, int) and not isinstance(ot, bool):
+                output_tokens += ot
+
+    return {
+        "total_usd": round(total_usd, 6),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "trace_count": priced + unpriced,
+        "priced_traces": priced,
+        "unpriced_traces": unpriced,
+        "per_experiment": {k: round(v, 6) for k, v in per_experiment.items()},
+    }
+
+
 def attempt_outcome_path(root: Path, exp_id: str, attempt: int) -> Path:
     return attempt_dir(root, exp_id, attempt) / "outcome.json"
 
