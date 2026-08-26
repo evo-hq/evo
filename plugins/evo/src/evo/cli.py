@@ -707,6 +707,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     print(f"project_name: {data.get('project_name') or root.name}")
     print(f"benchmark: {data.get('benchmark', '')}")
     print(f"metric: {data.get('metric', '')}")
+    print(f"notify_webhook: {data.get('notify_webhook') or '<unset>'}")
     print(f"host: {get_host(root) or '<not set>'}")
     print(f"commit_strategy: {data.get('commit_strategy', 'all')}")
     print(f"default_autonomous: {str(bool(data.get('default_autonomous'))).lower()}")
@@ -740,6 +741,7 @@ _CONFIG_FIELD_TO_KEY: dict[str, str] = {
     "per-exp-timeout": "per_exp_timeout",
     "default-orchestrator": "default_orchestrator",
     "task-skills": "task_skills",
+    "notify-webhook": "notify_webhook",
 }
 
 # Workspace run-behavior defaults captured at discover time. Off by default;
@@ -815,6 +817,15 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             if seconds < 1:
                 raise RuntimeError("per-exp-timeout must be a positive integer (seconds)")
             config["per_exp_timeout"] = seconds
+        elif args.field == "notify-webhook":
+            # Webhook URL for event notifications (#106). Empty clears it.
+            raw = args.value.strip()
+            if not raw:
+                config["notify_webhook"] = None
+            elif raw.startswith("http://") or raw.startswith("https://"):
+                config["notify_webhook"] = raw
+            else:
+                raise RuntimeError("notify-webhook must be an http(s) URL")
         elif args.field == "gate":
             value = args.value.strip()
             config["gate"] = value or None
@@ -3484,6 +3495,16 @@ def _cmd_run_impl(
             )
             delta = "" if parent_score is None else f" ({'+' if metric == 'max' else ''}{score - parent_score:.4f} vs parent)"
             print(f"COMMITTED {args.exp_id} {score}{delta}")
+            # Notify (best-effort) when this commit is a new workspace best (#106).
+            if compare_scores(metric, score, best_before_score):
+                best_txt = "first commit" if best_before_score is None else f"previous best {best_before_score}"
+                _maybe_notify(
+                    root, config, "new_best",
+                    f"🎉 evo: new best score {score} on {args.exp_id} ({best_txt})",
+                    {"exp_id": args.exp_id, "score": score,
+                     "previous_best": best_before_score, "commit": commit,
+                     "metric": metric},
+                )
             return 0
 
         def _mark_evaluated(current_node: dict, _graph: dict) -> None:
@@ -4152,6 +4173,47 @@ def cmd_status(args: argparse.Namespace) -> int:
         f"active={sum(1 for n in nodes if n.get('status') == 'active')} best={best}"
     )
     return 0
+
+
+def _maybe_notify(root: Path, config: dict, event: str, message: str,
+                  extra: dict | None = None) -> bool:
+    """Fire a webhook notification if one is configured. Best-effort and
+    non-fatal: a missing or failing webhook never breaks the caller (#106)."""
+    url = config.get("notify_webhook")
+    if not url:
+        return False
+    from . import notify
+    ok = notify.send_notification(url, event, message, extra)
+    if not ok:
+        print(f"WARNING: notification webhook POST failed (event={event})", file=sys.stderr)
+    return ok
+
+
+def cmd_notify(args: argparse.Namespace) -> int:
+    """`evo notify test` — send a test notification to the configured webhook."""
+    if getattr(args, "notify_action", None) != "test":
+        print("usage: evo notify test", file=sys.stderr)
+        return 2
+    root = repo_root()
+    config, _graph = _require_workspace(root)
+    url = config.get("notify_webhook")
+    if not url:
+        print(
+            "ERROR: no notify-webhook configured. Set one with "
+            "`evo config set notify-webhook <url>`.",
+            file=sys.stderr,
+        )
+        return 2
+    from . import notify
+    ok = notify.send_notification(
+        url, "test", "✅ evo test notification — your webhook is wired up.",
+        {"workspace": str(root)},
+    )
+    if ok:
+        print("notification sent")
+        return 0
+    print("ERROR: notification POST failed (check the webhook URL)", file=sys.stderr)
+    return 1
 
 
 def cmd_tree(args: argparse.Namespace) -> int:
@@ -6237,6 +6299,7 @@ def build_parser() -> argparse.ArgumentParser:
             "per-exp-timeout",
             "default-orchestrator",
             "task-skills",
+            "notify-webhook",
         ],
     )
     config_set_p.add_argument(
@@ -6270,6 +6333,7 @@ def build_parser() -> argparse.ArgumentParser:
             "per-exp-timeout",
             "default-orchestrator",
             "task-skills",
+            "notify-webhook",
         ],
     )
     config_get_p.add_argument("--json", action="store_true",
@@ -6612,6 +6676,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_p = sub.add_parser("status")
     status_p.set_defaults(func=cmd_status)
+
+    notify_p = sub.add_parser("notify", help="webhook notifications")
+    notify_sub = notify_p.add_subparsers(dest="notify_action", required=True)
+    notify_test_p = notify_sub.add_parser("test", help="send a test notification")
+    notify_test_p.set_defaults(func=cmd_notify)
 
     tree_p = sub.add_parser("tree")
     tree_p.set_defaults(func=cmd_tree)
