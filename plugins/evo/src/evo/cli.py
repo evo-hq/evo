@@ -20,6 +20,7 @@ from .core import (
     _load_meta,
     add_gate,
     add_workspace_note,
+    aggregate_trial_scores,
     append_annotation,
     append_infra_event,
     ascii_tree,
@@ -707,6 +708,8 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     print(f"project_name: {data.get('project_name') or root.name}")
     print(f"benchmark: {data.get('benchmark', '')}")
     print(f"metric: {data.get('metric', '')}")
+    print(f"bench_repeat: {data.get('bench_repeat', 1)}")
+    print(f"score_aggregation: {data.get('score_aggregation') or 'median'}")
     print(f"host: {get_host(root) or '<not set>'}")
     print(f"commit_strategy: {data.get('commit_strategy', 'all')}")
     print(f"default_autonomous: {str(bool(data.get('default_autonomous'))).lower()}")
@@ -740,6 +743,8 @@ _CONFIG_FIELD_TO_KEY: dict[str, str] = {
     "per-exp-timeout": "per_exp_timeout",
     "default-orchestrator": "default_orchestrator",
     "task-skills": "task_skills",
+    "bench-repeat": "bench_repeat",
+    "score-aggregation": "score_aggregation",
 }
 
 # Workspace run-behavior defaults captured at discover time. Off by default;
@@ -843,6 +848,26 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             # read by every executing agent (prose subagent or workflow lane).
             names = [s.strip() for s in args.value.split(",") if s.strip()]
             config["task_skills"] = names or None
+        elif args.field == "bench-repeat":
+            # Number of times to run the scored benchmark per attempt (#4).
+            # 1 (default) keeps today's single-run behavior; >1 aggregates
+            # trial scores to blunt noisy-benchmark variance.
+            try:
+                repeat = int(args.value)
+            except ValueError:
+                raise RuntimeError("bench-repeat must be a positive integer")
+            if repeat < 1:
+                raise RuntimeError("bench-repeat must be a positive integer")
+            config["bench_repeat"] = repeat
+        elif args.field == "score-aggregation":
+            from .core import SCORE_AGGREGATIONS
+            value = args.value.strip().lower()
+            if value not in SCORE_AGGREGATIONS:
+                raise RuntimeError(
+                    "score-aggregation must be one of "
+                    f"{', '.join(SCORE_AGGREGATIONS)}"
+                )
+            config["score_aggregation"] = value
         elif args.field in _CONFIG_BOOL_FIELDS:
             config[_CONFIG_FIELD_TO_KEY[args.field]] = _parse_onoff(args.value)
         else:
@@ -2474,6 +2499,75 @@ def _resolve_run_timeout(args: argparse.Namespace, config: dict) -> int:
     return 1800
 
 
+def run_extra_benchmark_trials(
+    executor: Any,
+    *,
+    n_extra: int,
+    benchmark_cmd: str,
+    run_cwd: Any,
+    env: dict[str, str],
+    timeout: Any,
+    result_path: Path,
+    benchmark_log: Path,
+    benchmark_err: Path,
+    remote: bool = False,
+    sandbox_result_path: str = "",
+    sandbox_traces_dir: str = "",
+    traces_dir: Path | None = None,
+    sandbox_checkpoint_dir: str = "",
+    checkpoint_dir: Path | None = None,
+) -> list[float]:
+    """Run the scored benchmark ``n_extra`` ADDITIONAL times and return the
+    extra trial scores (#4, variance-aware scoring).
+
+    Only fresh runs repeat -- the caller invokes this after a primary run has
+    already produced one score, exclusively when ``bench_repeat > 1`` and the
+    primary run was not a crash-recovery/attach. Each trial clears the previous
+    ``result.json`` (local and, when remote, in the sandbox) so ``load_result``'s
+    O_EXCL writer claim starts clean, then re-streams the same command. Trials
+    are strict: a non-zero exit or timeout raises exactly as the primary run
+    would, so a flaky benchmark never masks a real crash. Each trial overwrites
+    the benchmark log (the last trial's log/traces are kept, matching the
+    design), while every trial score is preserved in the returned list.
+    """
+    extra: list[float] = []
+    for _ in range(n_extra):
+        # Clear the prior trial's result so this trial's writer starts clean.
+        if result_path.exists():
+            result_path.unlink()
+        if remote and sandbox_result_path:
+            executor.run(["rm", "-f", sandbox_result_path], cwd=run_cwd)
+
+        bench = executor.stream(
+            ["sh", "-c", benchmark_cmd],
+            cwd=run_cwd, env=env, timeout=timeout,
+            stdout_path=benchmark_log, stderr_path=benchmark_err,
+            mirror_remote_dir=sandbox_traces_dir if remote else None,
+            mirror_local_dir=traces_dir if remote else None,
+            mirror_dirs=[(sandbox_checkpoint_dir, checkpoint_dir)] if remote else None,
+        )
+        if bench is not None and bench.timed_out:
+            raise RuntimeError("benchmark_timeout")
+        if bench is not None and (bench.exit_code or 0) != 0:
+            raise RuntimeError(f"benchmark_exit_{bench.exit_code}")
+
+        if remote:
+            _fetch_remote_artifacts(
+                executor, sandbox_result_path, sandbox_traces_dir,
+                result_path, traces_dir,
+            )
+            if sandbox_checkpoint_dir and checkpoint_dir is not None:
+                executor.fetch_dir(sandbox_checkpoint_dir, checkpoint_dir)
+
+        bench_stdout = bench.stdout if bench is not None else (
+            benchmark_log.read_text(encoding="utf-8", errors="replace")
+            if benchmark_log.exists() else ""
+        )
+        trial_score, _ = load_result(result_path, bench_stdout)
+        extra.append(trial_score)
+    return extra
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     root = repo_root()
     config, graph = _require_workspace(root)
@@ -3337,6 +3431,50 @@ def _cmd_run_impl(
         score, parsed = load_result(result_path, bench_stdout)
         benchmark_record = {"command": benchmark_cmd, "returncode": 0, "result": parsed}
         _assert_tasks_aggregated(traces_dir, parsed)
+
+        # Variance-aware scoring (#4): for noisy benchmarks, re-run the scored
+        # benchmark and aggregate so a single lucky run can't set the new best.
+        # Only fresh runs repeat -- a crash-recovery/attach yields one score and
+        # must not be re-executed. bench_repeat<=1 keeps single-run behavior.
+        bench_repeat = int(config.get("bench_repeat", 1) or 1)
+        fresh_primary_run = not benchmark_completed and not resume_journal
+        if bench_repeat > 1 and fresh_primary_run:
+            aggregation = str(config.get("score_aggregation") or "median")
+            _write_attempt_state(
+                root, args.exp_id, attempt_n,
+                phase="benchmark", status="repeating", started_at=started_at,
+                extra={"bench_repeat": bench_repeat, "trial": 1},
+            )
+            extra_scores = run_extra_benchmark_trials(
+                executor,
+                n_extra=bench_repeat - 1,
+                benchmark_cmd=benchmark_cmd,
+                run_cwd=run_cwd,
+                env=env,
+                timeout=args.timeout,
+                result_path=result_path,
+                benchmark_log=benchmark_log,
+                benchmark_err=benchmark_err,
+                remote=remote,
+                sandbox_result_path=sandbox_result_path if remote else "",
+                sandbox_traces_dir=sandbox_traces_dir if remote else "",
+                traces_dir=traces_dir,
+                sandbox_checkpoint_dir=sandbox_checkpoint_dir if remote else "",
+                checkpoint_dir=checkpoint_dir,
+            )
+            trial_scores = [score] + extra_scores
+            score, agg_stats = aggregate_trial_scores(
+                trial_scores, aggregation, metric
+            )
+            benchmark_record["trials"] = [
+                {"score": s, "returncode": 0} for s in trial_scores
+            ]
+            benchmark_record["aggregate"] = {**agg_stats, "value": score}
+            print(
+                f"BENCH_AGGREGATE {args.exp_id} method={aggregation} "
+                f"n={len(trial_scores)} score={score} "
+                f"trials={','.join(str(s) for s in trial_scores)}"
+            )
 
         _write_attempt_state(
             root, args.exp_id, attempt_n,
@@ -6237,6 +6375,8 @@ def build_parser() -> argparse.ArgumentParser:
             "per-exp-timeout",
             "default-orchestrator",
             "task-skills",
+            "bench-repeat",
+            "score-aggregation",
         ],
     )
     config_set_p.add_argument(
@@ -6270,6 +6410,8 @@ def build_parser() -> argparse.ArgumentParser:
             "per-exp-timeout",
             "default-orchestrator",
             "task-skills",
+            "bench-repeat",
+            "score-aggregation",
         ],
     )
     config_get_p.add_argument("--json", action="store_true",

@@ -138,6 +138,30 @@ class TestConfigSet(unittest.TestCase):
             cmd_config_set(_args("default-subagents-only", "maybe"))
         self.assertIn("on/off", str(ctx.exception))
 
+    # --- variance-aware scoring (#4) ------------------------------------
+
+    def test_set_bench_repeat(self):
+        cmd_config_set(_args("bench-repeat", "5"))
+        self.assertEqual(load_config(self.root)["bench_repeat"], 5)
+
+    def test_bench_repeat_rejects_zero(self):
+        with self.assertRaises(RuntimeError):
+            cmd_config_set(_args("bench-repeat", "0"))
+
+    def test_bench_repeat_rejects_non_integer(self):
+        with self.assertRaises(RuntimeError):
+            cmd_config_set(_args("bench-repeat", "lots"))
+
+    def test_set_score_aggregation(self):
+        for method in ("median", "mean", "worst"):
+            cmd_config_set(_args("score-aggregation", method))
+            self.assertEqual(load_config(self.root)["score_aggregation"], method)
+
+    def test_score_aggregation_rejects_unknown(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            cmd_config_set(_args("score-aggregation", "p95"))
+        self.assertIn("median", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
