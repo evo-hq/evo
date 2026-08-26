@@ -28,6 +28,7 @@ from .core import (
     attempt_log_path,
     attempt_outcome_path,
     attempt_traces_dir,
+    compute_spend,
     best_committed_node,
     best_committed_score,
     best_spine_ids,
@@ -707,6 +708,8 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     print(f"project_name: {data.get('project_name') or root.name}")
     print(f"benchmark: {data.get('benchmark', '')}")
     print(f"metric: {data.get('metric', '')}")
+    budget = data.get("budget")
+    print(f"budget: {'<unset>' if budget is None else f'${float(budget):.2f}'}")
     print(f"host: {get_host(root) or '<not set>'}")
     print(f"commit_strategy: {data.get('commit_strategy', 'all')}")
     print(f"default_autonomous: {str(bool(data.get('default_autonomous'))).lower()}")
@@ -740,6 +743,7 @@ _CONFIG_FIELD_TO_KEY: dict[str, str] = {
     "per-exp-timeout": "per_exp_timeout",
     "default-orchestrator": "default_orchestrator",
     "task-skills": "task_skills",
+    "budget": "budget",
 }
 
 # Workspace run-behavior defaults captured at discover time. Off by default;
@@ -815,6 +819,19 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             if seconds < 1:
                 raise RuntimeError("per-exp-timeout must be a positive integer (seconds)")
             config["per_exp_timeout"] = seconds
+        elif args.field == "budget":
+            # USD spend cap for warn-only budget enforcement. Empty clears it.
+            raw = args.value.strip()
+            if not raw:
+                config["budget"] = None
+            else:
+                try:
+                    amount = float(raw)
+                except ValueError:
+                    raise RuntimeError("budget must be a non-negative number (USD)")
+                if amount < 0:
+                    raise RuntimeError("budget must be a non-negative number (USD)")
+                config["budget"] = amount
         elif args.field == "gate":
             value = args.value.strip()
             config["gate"] = value or None
@@ -2477,6 +2494,11 @@ def _resolve_run_timeout(args: argparse.Namespace, config: dict) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     root = repo_root()
     config, graph = _require_workspace(root)
+    # Warn-only budget check (#104): surface cumulative overspend at the start
+    # of each experiment run without blocking it.
+    _budget_msg = _budget_warning(root, config)
+    if _budget_msg:
+        print(_budget_msg, file=sys.stderr)
     # Resolve the effective per-experiment timeout once, then write it back
     # so every downstream `args.timeout` reference picks up the resolved value.
     args.timeout = _resolve_run_timeout(args, config)
@@ -4151,6 +4173,73 @@ def cmd_status(args: argparse.Namespace) -> int:
         f"failed={sum(1 for n in nodes if n.get('status') == 'failed')} "
         f"active={sum(1 for n in nodes if n.get('status') == 'active')} best={best}"
     )
+    return 0
+
+
+def _budget_warning(root: Path, config: dict) -> str | None:
+    """Warn-only budget check (#104). Returns a message if a USD cap is set
+    and cumulative spend has reached it, else None. Never blocks."""
+    cap = config.get("budget")
+    if cap is None:
+        return None
+    try:
+        cap_f = float(cap)
+    except (TypeError, ValueError):
+        return None
+    spent = compute_spend(root)["total_usd"]
+    if spent < cap_f:
+        return None
+    return (
+        f"WARNING: budget cap ${cap_f:.2f} reached (spent ${spent:.2f}). evo is "
+        f"not stopping automatically; stop the optimization loop or raise the "
+        f"cap with `evo config set budget <usd>`."
+    )
+
+
+def cmd_budget(args: argparse.Namespace) -> int:
+    """Show cumulative benchmark spend, and how it compares to the cap."""
+    root = repo_root()
+    config, _graph = _require_workspace(root)
+    spend = compute_spend(root)
+    spent = spend["total_usd"]
+    cap = config.get("budget")
+    cap_f = float(cap) if cap is not None else None
+    remaining = (cap_f - spent) if cap_f is not None else None
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "spent_usd": spent,
+            "cap_usd": cap_f,
+            "remaining_usd": remaining,
+            "input_tokens": spend["input_tokens"],
+            "output_tokens": spend["output_tokens"],
+            "trace_count": spend["trace_count"],
+            "unpriced_traces": spend["unpriced_traces"],
+            "per_experiment": spend["per_experiment"],
+        }, indent=2, sort_keys=True))
+        return 0
+
+    print(
+        f"spent:     ${spent:.2f}  (inputs {spend['input_tokens']:,} tok, "
+        f"outputs {spend['output_tokens']:,} tok, across {spend['trace_count']} traces)"
+    )
+    if cap_f is not None:
+        pct = (spent / cap_f * 100) if cap_f > 0 else 100.0
+        print(f"cap:       ${cap_f:.2f}")
+        print(f"remaining: ${remaining:.2f}  ({pct:.0f}% used)")
+        if spent >= cap_f:
+            print("status:    OVER CAP (warn-only; evo does not stop automatically)")
+    else:
+        print("cap:       <unset>  (set one with `evo config set budget <usd>`)")
+    if spend["unpriced_traces"]:
+        print(
+            f"note:      {spend['unpriced_traces']} trace(s) had a cost but no usd "
+            f"-> spent is a lower bound"
+        )
+    if getattr(args, "by_experiment", False) and spend["per_experiment"]:
+        print("by experiment:")
+        for exp_id in sorted(spend["per_experiment"]):
+            print(f"  {exp_id}: ${spend['per_experiment'][exp_id]:.2f}")
     return 0
 
 
@@ -6237,6 +6326,7 @@ def build_parser() -> argparse.ArgumentParser:
             "per-exp-timeout",
             "default-orchestrator",
             "task-skills",
+            "budget",
         ],
     )
     config_set_p.add_argument(
@@ -6270,6 +6360,7 @@ def build_parser() -> argparse.ArgumentParser:
             "per-exp-timeout",
             "default-orchestrator",
             "task-skills",
+            "budget",
         ],
     )
     config_get_p.add_argument("--json", action="store_true",
@@ -6612,6 +6703,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_p = sub.add_parser("status")
     status_p.set_defaults(func=cmd_status)
+
+    budget_p = sub.add_parser(
+        "budget",
+        help="show cumulative benchmark spend vs the configured budget cap",
+    )
+    budget_p.add_argument("--json", action="store_true", help="emit JSON")
+    budget_p.add_argument("--by-experiment", action="store_true",
+                          help="break spend down per experiment")
+    budget_p.set_defaults(func=cmd_budget)
 
     tree_p = sub.add_parser("tree")
     tree_p.set_defaults(func=cmd_tree)
