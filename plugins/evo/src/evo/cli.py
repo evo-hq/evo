@@ -2499,6 +2499,24 @@ def _resolve_run_timeout(args: argparse.Namespace, config: dict) -> int:
     return 1800
 
 
+def persist_aggregate_result(
+    result_path: Path, parsed: dict[str, Any] | None, aggregate: float
+) -> None:
+    """Write the variance-aware aggregate score back to result.json.
+
+    Each extra trial overwrites result.json with its own (raw) score, so after
+    aggregation the file holds the last trial's score rather than the aggregate.
+    A crash-recovery resume re-reads result.json without re-aggregating (the
+    ``benchmark_completed`` gate), so it would otherwise be scored by that single
+    noisy trial. Persisting the aggregate keeps recovery and every downstream
+    result.json reader consistent with the committed node score. The primary
+    trial's other fields are preserved.
+    """
+    base = dict(parsed) if isinstance(parsed, dict) else {}
+    base["score"] = aggregate
+    atomic_write_json(result_path, base)
+
+
 def run_extra_benchmark_trials(
     executor: Any,
     *,
@@ -2549,6 +2567,19 @@ def run_extra_benchmark_trials(
         if bench is not None and bench.timed_out:
             raise RuntimeError("benchmark_timeout")
         if bench is not None and (bench.exit_code or 0) != 0:
+            # Mirror the primary run: a non-zero remote exit may be an infra
+            # failure, which must be classified as such (not benchmark_exit) so
+            # telemetry failure_type stays accurate.
+            if remote:
+                _fetch_remote_artifacts(
+                    executor, sandbox_result_path, sandbox_traces_dir,
+                    result_path, traces_dir,
+                )
+                if sandbox_checkpoint_dir and checkpoint_dir is not None:
+                    executor.fetch_dir(sandbox_checkpoint_dir, checkpoint_dir)
+                infra_error = _remote_infra_error_for_log(benchmark_log)
+                if infra_error is not None:
+                    raise RuntimeError(f"remote_infra_failure:{infra_error}")
             raise RuntimeError(f"benchmark_exit_{bench.exit_code}")
 
         if remote:
@@ -3470,6 +3501,10 @@ def _cmd_run_impl(
                 {"score": s, "returncode": 0} for s in trial_scores
             ]
             benchmark_record["aggregate"] = {**agg_stats, "value": score}
+            # Persist the aggregate so a crash-recovery resume (which re-reads
+            # result.json without re-aggregating) is scored by the aggregate,
+            # not the last raw trial.
+            persist_aggregate_result(result_path, parsed, score)
             print(
                 f"BENCH_AGGREGATE {args.exp_id} method={aggregation} "
                 f"n={len(trial_scores)} score={score} "

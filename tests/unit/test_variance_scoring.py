@@ -11,8 +11,8 @@ import types
 import unittest
 from pathlib import Path
 
-from evo.cli import run_extra_benchmark_trials
-from evo.core import aggregate_trial_scores
+from evo.cli import persist_aggregate_result, run_extra_benchmark_trials
+from evo.core import aggregate_trial_scores, load_result
 
 
 class TestAggregateTrialScores(unittest.TestCase):
@@ -136,6 +136,100 @@ class TestRunExtraBenchmarkTrials(unittest.TestCase):
         ex = _FakeExecutor(self.result_path, [(None, 0, True)])
         with self.assertRaises(RuntimeError):
             self._call(ex, n_extra=1)
+
+
+class TestPersistAggregateResult(unittest.TestCase):
+    """The aggregate must be written back to result.json so a crash-recovery
+    resume (which re-reads result.json without re-aggregating) is scored by the
+    aggregate, not the last raw trial (Devin review, issue 1)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.rp = Path(self._tmp.name) / "result.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_overwrites_last_trial_score_with_aggregate(self):
+        # Simulate the last remote trial having overwritten result.json.
+        self.rp.write_text(json.dumps({"score": 0.99, "tasks": [{"id": "a"}]}))
+        persist_aggregate_result(self.rp, {"score": 0.99, "tasks": [{"id": "a"}]}, 0.5)
+        score, parsed = load_result(self.rp, "")
+        self.assertEqual(score, 0.5)  # aggregate, not the 0.99 raw trial
+        self.assertEqual(parsed["tasks"], [{"id": "a"}])  # other fields preserved
+
+    def test_handles_none_parsed(self):
+        persist_aggregate_result(self.rp, None, 0.42)
+        score, _ = load_result(self.rp, "")
+        self.assertEqual(score, 0.42)
+
+
+class _RemoteFakeExecutor:
+    """Remote-path fake: stream() returns the queued (exit_code, timed_out);
+    file_exists/read_bytes/fetch_dir/run are no-ops so _fetch_remote_artifacts
+    is exercised without a real sandbox."""
+
+    def __init__(self, trials):
+        self.trials = list(trials)
+        self.stream_calls = 0
+
+    def stream(self, cmd, **kwargs):
+        exit_code, timed_out = self.trials[self.stream_calls]
+        self.stream_calls += 1
+        return types.SimpleNamespace(stdout="", exit_code=exit_code, timed_out=timed_out)
+
+    def run(self, cmd, **kwargs):
+        return types.SimpleNamespace(stdout="", exit_code=0, timed_out=False)
+
+    def file_exists(self, path):
+        return False
+
+    def read_bytes(self, path):
+        return b""
+
+    def fetch_dir(self, remote, local):
+        return None
+
+
+class TestTrialLoopRemoteInfraClassification(unittest.TestCase):
+    """A remote infra failure in an extra trial must be classified as
+    remote_infra_failure (like the primary run), not benchmark_exit (issue 2)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self._tmp.name)
+        self.log = self.d / "bench.log"
+        self.log.write_text("")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _call(self, executor):
+        return run_extra_benchmark_trials(
+            executor, n_extra=1, benchmark_cmd="python bench.py",
+            run_cwd=self.d, env={}, timeout=None,
+            result_path=self.d / "result.json",
+            benchmark_log=self.log, benchmark_err=self.d / "bench_err.log",
+            remote=True, sandbox_result_path="/sb/result.json",
+            sandbox_traces_dir="/sb/traces", traces_dir=self.d / "traces",
+        )
+
+    def test_infra_journal_raises_remote_infra_failure(self):
+        # Journal companion marks the run as an infra failure.
+        self.log.with_name(self.log.name + ".remote.json").write_text(
+            json.dumps({"state": "failed_infra", "error": "sandbox died"})
+        )
+        ex = _RemoteFakeExecutor([(1, False)])
+        with self.assertRaises(RuntimeError) as ctx:
+            self._call(ex)
+        self.assertIn("remote_infra_failure", str(ctx.exception))
+
+    def test_plain_nonzero_exit_raises_benchmark_exit(self):
+        # No infra journal -> ordinary benchmark failure.
+        ex = _RemoteFakeExecutor([(3, False)])
+        with self.assertRaises(RuntimeError) as ctx:
+            self._call(ex)
+        self.assertIn("benchmark_exit_3", str(ctx.exception))
 
 
 if __name__ == "__main__":
