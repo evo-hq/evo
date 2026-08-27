@@ -4,6 +4,7 @@ import json
 import os
 import re
 import secrets
+import statistics
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -1105,6 +1106,52 @@ def compare_scores(metric: str, candidate: float, parent: float | None) -> bool:
     if metric == "min":
         return candidate <= parent
     raise ValueError(f"Unknown metric: {metric}")
+
+
+SCORE_AGGREGATIONS = ("median", "mean", "worst")
+
+
+def aggregate_trial_scores(
+    scores: list[float], method: str, metric: str
+) -> tuple[float, dict[str, Any]]:
+    """Collapse N noisy benchmark-trial scores into one comparable score.
+
+    Returns ``(aggregate, stats)`` where stats carries
+    ``{n, mean, median, min, max, stdev, method}`` for transparency.
+
+    ``method`` is one of :data:`SCORE_AGGREGATIONS`. ``worst`` is
+    direction-aware: the lowest score when ``metric == "max"`` (higher is
+    better), the highest score when ``metric == "min"``. ``median`` resists a
+    single lucky/unlucky run, which is why it is the default.
+    """
+    if not scores:
+        raise ValueError("aggregate_trial_scores requires at least one score")
+    if method not in SCORE_AGGREGATIONS:
+        raise ValueError(
+            f"Unknown score aggregation: {method!r} "
+            f"(expected one of {', '.join(SCORE_AGGREGATIONS)})"
+        )
+    if metric not in ("max", "min"):
+        raise ValueError(f"Unknown metric: {metric}")
+
+    values = [float(s) for s in scores]
+    if method == "mean":
+        aggregate = statistics.fmean(values)
+    elif method == "median":
+        aggregate = statistics.median(values)
+    else:  # worst -- direction-aware
+        aggregate = min(values) if metric == "max" else max(values)
+
+    stats = {
+        "n": len(values),
+        "mean": statistics.fmean(values),
+        "median": statistics.median(values),
+        "min": min(values),
+        "max": max(values),
+        "stdev": statistics.pstdev(values) if len(values) > 1 else 0.0,
+        "method": method,
+    }
+    return aggregate, stats
 
 
 def _normalized_prune_kind(node: dict[str, Any]) -> str | None:
