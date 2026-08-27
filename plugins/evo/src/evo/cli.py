@@ -519,6 +519,183 @@ def cmd_host(args: argparse.Namespace) -> int:
     raise RuntimeError(f"unknown host action: {action}")
 
 
+def cmd_asset(args: argparse.Namespace) -> int:
+    action = args.asset_action
+    if action == "put":
+        return cmd_asset_put(args)
+    if action == "get":
+        return cmd_asset_get(args)
+    if action == "list":
+        return cmd_asset_list(args)
+    if action == "use":
+        return cmd_asset_use(args)
+    if action == "rm":
+        return cmd_asset_rm(args)
+    raise RuntimeError(f"unknown asset action: {action}")
+
+
+def cmd_asset_put(args: argparse.Namespace) -> int:
+    from . import assets as _assets
+
+    root = repo_root()
+    _require_workspace(root)
+    try:
+        name = _assets.normalize_asset_name(args.name)
+    except ValueError as exc:
+        raise RuntimeError(str(exc))
+    source = Path(args.path)
+    if not source.exists():
+        raise RuntimeError(f"asset path does not exist: {source}")
+    tags = dict(_assets.parse_tag(t) for t in (args.tag or []))
+    with advisory_lock(lock_file_for(_assets.assets_path(root))):
+        reg = _assets.load_registry(root)
+        if name in reg.get("assets", {}):
+            raise RuntimeError(
+                f"asset {name!r} already exists; "
+                f"`evo asset rm {name}` first or pick another name"
+            )
+        backend_uri = getattr(args, "backend", None)
+        if backend_uri:
+            # Remote-backed asset: upload the local file to S3/HF and record the
+            # canonical uri; `get`/`use` download it back to a local cache.
+            from . import asset_backends
+            be = asset_backends.backend_for_uri(backend_uri)
+            be.upload(source, backend_uri)
+            scheme = backend_uri.split("://", 1)[0] if "://" in backend_uri else "local"
+            entry = {
+                "name": name,
+                "kind": args.kind,
+                "path": None,
+                "uri": backend_uri,
+                "backend": scheme,
+                "tags": tags,
+                "produced_by": args.exp,
+                "consumed_by": [],
+                "copied": False,
+                "created_at": utc_now(),
+            }
+            location = backend_uri
+        else:
+            if getattr(args, "copy", False):
+                path = _assets.materialize(root, name, source)
+                copied = True
+            else:
+                path = source.resolve()
+                copied = False
+            entry = {
+                "name": name,
+                "kind": args.kind,
+                "path": str(path),
+                "uri": None,
+                "backend": "local",
+                "tags": tags,
+                "produced_by": args.exp,
+                "consumed_by": [],
+                "copied": copied,
+                "created_at": utc_now(),
+            }
+            location = path
+        _assets.registry_put(reg, entry)
+        _assets.save_registry(root, reg)
+    print(f"asset {name} registered ({args.kind}) -> {location}")
+    return 0
+
+
+def cmd_asset_get(args: argparse.Namespace) -> int:
+    from . import assets as _assets
+
+    root = repo_root()
+    _require_workspace(root)
+    name = args.name.strip()
+    entry = _assets.load_registry(root).get("assets", {}).get(name)
+    if entry is None:
+        raise RuntimeError(f"unknown asset: {args.name}")
+    print(_resolve_asset_local_path(root, name, entry))
+    return 0
+
+
+def _resolve_asset_local_path(root: Path, name: str, entry: dict) -> str:
+    """Return a local path for an asset. Local assets return their stored path;
+    remote assets download to a per-asset cache (reusing an existing copy)."""
+    from . import assets as _assets
+
+    if (entry.get("backend") or "local") == "local":
+        return entry["path"]
+    from . import asset_backends
+
+    uri = entry["uri"]
+    cache = _assets.assets_cache_dir(root, name)
+    cached = cache / uri.rstrip("/").split("/")[-1]
+    if not cached.exists():
+        cached = asset_backends.backend_for_uri(uri).download(uri, cache)
+    return str(cached)
+
+
+def cmd_asset_list(args: argparse.Namespace) -> int:
+    from . import assets as _assets
+
+    root = repo_root()
+    _require_workspace(root)
+    tags = dict(_assets.parse_tag(t) for t in (getattr(args, "tag", None) or []))
+    entries = _assets.registry_filter(
+        _assets.load_registry(root),
+        kind=getattr(args, "kind", None),
+        tags=tags or None,
+        produced_by=getattr(args, "produced_by", None),
+        consumed_by=getattr(args, "consumed_by", None),
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(entries, indent=2))
+        return 0
+    if not entries:
+        print("<no assets>")
+        return 0
+    for e in sorted(entries, key=lambda x: x["name"]):
+        tagstr = ",".join(f"{k}={v}" for k, v in (e.get("tags") or {}).items())
+        print(
+            f"{e['name']}\t{e['kind']}\t{e['path']}"
+            f"\tproduced_by={e.get('produced_by') or '-'}"
+            f"\tconsumed_by={','.join(e.get('consumed_by') or []) or '-'}"
+            f"\t{tagstr}"
+        )
+    return 0
+
+
+def cmd_asset_use(args: argparse.Namespace) -> int:
+    from . import assets as _assets
+
+    root = repo_root()
+    _require_workspace(root)
+    name = args.name.strip()
+    with advisory_lock(lock_file_for(_assets.assets_path(root))):
+        reg = _assets.load_registry(root)
+        try:
+            entry = _assets.registry_record_use(reg, name, args.exp)
+        except KeyError:
+            raise RuntimeError(f"unknown asset: {args.name}")
+        _assets.save_registry(root, reg)
+    env_var = _assets.asset_env_var(name)
+    print(f"asset {name} used by {args.exp}; runs see {env_var}={entry['path']}")
+    return 0
+
+
+def cmd_asset_rm(args: argparse.Namespace) -> int:
+    from . import assets as _assets
+
+    root = repo_root()
+    _require_workspace(root)
+    name = args.name.strip()
+    with advisory_lock(lock_file_for(_assets.assets_path(root))):
+        reg = _assets.load_registry(root)
+        try:
+            _assets.registry_remove(reg, name, force=getattr(args, "force", False))
+        except KeyError:
+            raise RuntimeError(f"unknown asset: {args.name}")
+        _assets.save_registry(root, reg)
+    print(f"asset {name} removed")
+    return 0
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     if args.config_action == "show":
         return cmd_config_show(args)
@@ -2624,6 +2801,15 @@ def _runtime_env_for_attempt(
             env["EVO_PARENT_POLICY"] = _seed
     except Exception:
         pass  # best-effort; never block a run on seed-env resolution
+    # Asset registry (#55): expose EVO_ASSET_<NAME> for every asset this
+    # experiment consumes (via `evo asset use`), so the recipe reads them by
+    # stable handle instead of a hardcoded path. Best-effort like the seed block.
+    try:
+        from . import assets as _assets
+
+        env.update(_assets.asset_env_for_exp(_assets.load_registry(root), exp_id))
+    except Exception:
+        pass
     return env
 
 
@@ -6211,6 +6397,48 @@ def build_parser() -> argparse.ArgumentParser:
     telemetry_feedback_p.add_argument("--exp-id", help="optional related experiment id")
     telemetry_feedback_p.add_argument("--tag", action="append", default=[])
     telemetry_feedback_p.set_defaults(func=cmd_telemetry)
+
+    asset_p = sub.add_parser(
+        "asset",
+        help="workspace asset registry: name and reuse artifacts across experiments",
+    )
+    asset_sub = asset_p.add_subparsers(dest="asset_action", required=True)
+    asset_put_p = asset_sub.add_parser("put", help="register an asset by name")
+    asset_put_p.add_argument("path", help="local path to the asset (file or dir)")
+    asset_put_p.add_argument("--name", required=True, help="workspace-unique handle")
+    asset_put_p.add_argument("--kind", required=True,
+                             help="free-form: model, dataset, checkpoint, index, ...")
+    asset_put_p.add_argument("--exp", default=None,
+                             help="producer experiment id (sets produced_by)")
+    asset_put_p.add_argument("--tag", action="append", default=[],
+                             metavar="K=V", help="searchable metadata (repeatable)")
+    asset_put_p.add_argument("--copy", action="store_true",
+                             help="materialize a copy under the workspace assets dir")
+    asset_put_p.add_argument("--backend", default=None, metavar="URI",
+                             help="upload to a storage backend and record its uri "
+                                  "(s3://bucket/key or hf://owner/name/path); "
+                                  "get/use download it back to a local cache")
+    asset_put_p.set_defaults(func=cmd_asset)
+    asset_get_p = asset_sub.add_parser("get", help="print an asset's canonical local path")
+    asset_get_p.add_argument("name")
+    asset_get_p.set_defaults(func=cmd_asset)
+    asset_list_p = asset_sub.add_parser("list", help="list registered assets")
+    asset_list_p.add_argument("--kind", default=None)
+    asset_list_p.add_argument("--tag", action="append", default=[], metavar="K=V")
+    asset_list_p.add_argument("--produced-by", dest="produced_by", default=None)
+    asset_list_p.add_argument("--consumed-by", dest="consumed_by", default=None)
+    asset_list_p.add_argument("--json", action="store_true")
+    asset_list_p.set_defaults(func=cmd_asset)
+    asset_use_p = asset_sub.add_parser(
+        "use", help="record that an experiment consumes an asset (injects EVO_ASSET_<NAME>)")
+    asset_use_p.add_argument("name")
+    asset_use_p.add_argument("--exp", required=True, help="consumer experiment id")
+    asset_use_p.set_defaults(func=cmd_asset)
+    asset_rm_p = asset_sub.add_parser("rm", help="remove an asset")
+    asset_rm_p.add_argument("name")
+    asset_rm_p.add_argument("--force", action="store_true",
+                            help="remove even if still consumed")
+    asset_rm_p.set_defaults(func=cmd_asset)
 
     config_p = sub.add_parser(
         "config",
