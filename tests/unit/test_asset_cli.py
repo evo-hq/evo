@@ -117,6 +117,28 @@ class TestAssetCli(unittest.TestCase):
         cmd_asset_rm(argparse.Namespace(name="adapter", force=True))
         self.assertNotIn("adapter", load_registry(self.root)["assets"])
 
+    def test_put_normalizes_whitespace_name(self):
+        # A padded handle must register under the trimmed name and be reachable
+        # both by the trimmed name and by the padded string the user typed.
+        cmd_asset_put(_put_args(self.asset_file, "  spaced  ", "checkpoint"))
+        entry = load_registry(self.root)["assets"]["spaced"]
+        self.assertEqual(entry["name"], "spaced")
+        self.assertEqual(
+            self._capture(cmd_asset_get, argparse.Namespace(name="spaced")),
+            str(self.asset_file))
+        self.assertEqual(
+            self._capture(cmd_asset_get, argparse.Namespace(name="  spaced  ")),
+            str(self.asset_file))
+
+    def test_put_whitespace_name_duplicate_detected(self):
+        cmd_asset_put(_put_args(self.asset_file, "spaced", "checkpoint"))
+        with self.assertRaises(RuntimeError):
+            cmd_asset_put(_put_args(self.asset_file, "  spaced  ", "model"))
+
+    def test_put_blank_name_rejected(self):
+        with self.assertRaises(RuntimeError):
+            cmd_asset_put(_put_args(self.asset_file, "   ", "model"))
+
     def test_registry_file_location(self):
         cmd_asset_put(_put_args(self.asset_file, "adapter", "checkpoint"))
         self.assertTrue(assets_path(self.root).exists())

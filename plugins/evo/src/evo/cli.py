@@ -539,25 +539,29 @@ def cmd_asset_put(args: argparse.Namespace) -> int:
 
     root = repo_root()
     _require_workspace(root)
+    try:
+        name = _assets.normalize_asset_name(args.name)
+    except ValueError as exc:
+        raise RuntimeError(str(exc))
     source = Path(args.path)
     if not source.exists():
         raise RuntimeError(f"asset path does not exist: {source}")
     tags = dict(_assets.parse_tag(t) for t in (args.tag or []))
     with advisory_lock(lock_file_for(_assets.assets_path(root))):
         reg = _assets.load_registry(root)
-        if args.name in reg.get("assets", {}):
+        if name in reg.get("assets", {}):
             raise RuntimeError(
-                f"asset {args.name!r} already exists; "
-                f"`evo asset rm {args.name}` first or pick another name"
+                f"asset {name!r} already exists; "
+                f"`evo asset rm {name}` first or pick another name"
             )
         if getattr(args, "copy", False):
-            path = _assets.materialize(root, args.name, source)
+            path = _assets.materialize(root, name, source)
             copied = True
         else:
             path = source.resolve()
             copied = False
         entry = {
-            "name": args.name,
+            "name": name,
             "kind": args.kind,
             "path": str(path),
             "tags": tags,
@@ -568,7 +572,7 @@ def cmd_asset_put(args: argparse.Namespace) -> int:
         }
         _assets.registry_put(reg, entry)
         _assets.save_registry(root, reg)
-    print(f"asset {args.name} registered ({args.kind}) -> {path}")
+    print(f"asset {name} registered ({args.kind}) -> {path}")
     return 0
 
 
@@ -577,7 +581,8 @@ def cmd_asset_get(args: argparse.Namespace) -> int:
 
     root = repo_root()
     _require_workspace(root)
-    entry = _assets.load_registry(root).get("assets", {}).get(args.name)
+    name = args.name.strip()
+    entry = _assets.load_registry(root).get("assets", {}).get(name)
     if entry is None:
         raise RuntimeError(f"unknown asset: {args.name}")
     print(entry["path"])
@@ -619,15 +624,16 @@ def cmd_asset_use(args: argparse.Namespace) -> int:
 
     root = repo_root()
     _require_workspace(root)
+    name = args.name.strip()
     with advisory_lock(lock_file_for(_assets.assets_path(root))):
         reg = _assets.load_registry(root)
         try:
-            entry = _assets.registry_record_use(reg, args.name, args.exp)
+            entry = _assets.registry_record_use(reg, name, args.exp)
         except KeyError:
             raise RuntimeError(f"unknown asset: {args.name}")
         _assets.save_registry(root, reg)
-    env_var = _assets.asset_env_var(args.name)
-    print(f"asset {args.name} used by {args.exp}; runs see {env_var}={entry['path']}")
+    env_var = _assets.asset_env_var(name)
+    print(f"asset {name} used by {args.exp}; runs see {env_var}={entry['path']}")
     return 0
 
 
@@ -636,14 +642,15 @@ def cmd_asset_rm(args: argparse.Namespace) -> int:
 
     root = repo_root()
     _require_workspace(root)
+    name = args.name.strip()
     with advisory_lock(lock_file_for(_assets.assets_path(root))):
         reg = _assets.load_registry(root)
         try:
-            _assets.registry_remove(reg, args.name, force=getattr(args, "force", False))
+            _assets.registry_remove(reg, name, force=getattr(args, "force", False))
         except KeyError:
             raise RuntimeError(f"unknown asset: {args.name}")
         _assets.save_registry(root, reg)
-    print(f"asset {args.name} removed")
+    print(f"asset {name} removed")
     return 0
 
 

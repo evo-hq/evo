@@ -28,13 +28,25 @@ def empty_registry() -> dict[str, Any]:
 
 # --- pure registry logic (no I/O) ------------------------------------------
 
-def registry_put(reg: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
-    """Insert or replace an asset by name. Returns the stored entry."""
-    name = str(entry.get("name") or "").strip()
-    if not name:
+def normalize_asset_name(name: str) -> str:
+    """Canonical form of an asset handle (trimmed). Raises on empty/blank so the
+    stored key, the entry's name field, and every lookup agree on one form."""
+    normalized = str(name or "").strip()
+    if not normalized:
         raise ValueError("asset name must be non-empty")
+    return normalized
+
+
+def registry_put(reg: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+    """Insert or replace an asset by name. Returns the stored entry.
+
+    Keys the entry under its normalized name and rewrites ``entry['name']`` to
+    match, so the storage key and the name field can never diverge.
+    """
+    name = normalize_asset_name(entry.get("name") or "")
     if not str(entry.get("kind") or "").strip():
         raise ValueError("asset kind must be non-empty")
+    entry["name"] = name
     reg.setdefault("assets", {})[name] = entry
     return entry
 
