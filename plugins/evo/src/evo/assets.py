@@ -104,11 +104,15 @@ def registry_remove(reg: dict[str, Any], name: str, force: bool = False) -> dict
 
 def asset_env_for_exp(reg: dict[str, Any], exp_id: str) -> dict[str, str]:
     """Env vars to inject for a run: one EVO_ASSET_<NAME> per asset the
-    experiment consumes, mapping to the asset's canonical path."""
-    return {
-        asset_env_var(e["name"]): e["path"]
-        for e in registry_filter(reg, consumed_by=exp_id)
-    }
+    experiment consumes. Local assets map to their path; remote assets have no
+    local copy yet, so they expose the uri (the recipe resolves it via
+    `evo asset get`)."""
+    out: dict[str, str] = {}
+    for e in registry_filter(reg, consumed_by=exp_id):
+        value = e.get("path") or e.get("uri")
+        if value:
+            out[asset_env_var(e["name"])] = value
+    return out
 
 
 def asset_env_var(name: str) -> str:
@@ -135,6 +139,11 @@ def assets_path(root: Path) -> Path:
 def assets_dir(root: Path) -> Path:
     """Directory holding materialized (`put --copy` / `use`) asset copies."""
     return workspace_path(root) / "assets"
+
+
+def assets_cache_dir(root: Path, name: str) -> Path:
+    """Local cache dir where a remote asset is downloaded on `get`/`use`."""
+    return assets_dir(root) / "_cache" / name
 
 
 def load_registry(root: Path) -> dict[str, Any]:

@@ -554,25 +554,50 @@ def cmd_asset_put(args: argparse.Namespace) -> int:
                 f"asset {name!r} already exists; "
                 f"`evo asset rm {name}` first or pick another name"
             )
-        if getattr(args, "copy", False):
-            path = _assets.materialize(root, name, source)
-            copied = True
+        backend_uri = getattr(args, "backend", None)
+        if backend_uri:
+            # Remote-backed asset: upload the local file to S3/HF and record the
+            # canonical uri; `get`/`use` download it back to a local cache.
+            from . import asset_backends
+            be = asset_backends.backend_for_uri(backend_uri)
+            be.upload(source, backend_uri)
+            scheme = backend_uri.split("://", 1)[0] if "://" in backend_uri else "local"
+            entry = {
+                "name": name,
+                "kind": args.kind,
+                "path": None,
+                "uri": backend_uri,
+                "backend": scheme,
+                "tags": tags,
+                "produced_by": args.exp,
+                "consumed_by": [],
+                "copied": False,
+                "created_at": utc_now(),
+            }
+            location = backend_uri
         else:
-            path = source.resolve()
-            copied = False
-        entry = {
-            "name": name,
-            "kind": args.kind,
-            "path": str(path),
-            "tags": tags,
-            "produced_by": args.exp,
-            "consumed_by": [],
-            "copied": copied,
-            "created_at": utc_now(),
-        }
+            if getattr(args, "copy", False):
+                path = _assets.materialize(root, name, source)
+                copied = True
+            else:
+                path = source.resolve()
+                copied = False
+            entry = {
+                "name": name,
+                "kind": args.kind,
+                "path": str(path),
+                "uri": None,
+                "backend": "local",
+                "tags": tags,
+                "produced_by": args.exp,
+                "consumed_by": [],
+                "copied": copied,
+                "created_at": utc_now(),
+            }
+            location = path
         _assets.registry_put(reg, entry)
         _assets.save_registry(root, reg)
-    print(f"asset {name} registered ({args.kind}) -> {path}")
+    print(f"asset {name} registered ({args.kind}) -> {location}")
     return 0
 
 
@@ -585,8 +610,25 @@ def cmd_asset_get(args: argparse.Namespace) -> int:
     entry = _assets.load_registry(root).get("assets", {}).get(name)
     if entry is None:
         raise RuntimeError(f"unknown asset: {args.name}")
-    print(entry["path"])
+    print(_resolve_asset_local_path(root, name, entry))
     return 0
+
+
+def _resolve_asset_local_path(root: Path, name: str, entry: dict) -> str:
+    """Return a local path for an asset. Local assets return their stored path;
+    remote assets download to a per-asset cache (reusing an existing copy)."""
+    from . import assets as _assets
+
+    if (entry.get("backend") or "local") == "local":
+        return entry["path"]
+    from . import asset_backends
+
+    uri = entry["uri"]
+    cache = _assets.assets_cache_dir(root, name)
+    cached = cache / uri.rstrip("/").split("/")[-1]
+    if not cached.exists():
+        cached = asset_backends.backend_for_uri(uri).download(uri, cache)
+    return str(cached)
 
 
 def cmd_asset_list(args: argparse.Namespace) -> int:
@@ -6372,6 +6414,10 @@ def build_parser() -> argparse.ArgumentParser:
                              metavar="K=V", help="searchable metadata (repeatable)")
     asset_put_p.add_argument("--copy", action="store_true",
                              help="materialize a copy under the workspace assets dir")
+    asset_put_p.add_argument("--backend", default=None, metavar="URI",
+                             help="upload to a storage backend and record its uri "
+                                  "(s3://bucket/key or hf://owner/name/path); "
+                                  "get/use download it back to a local cache")
     asset_put_p.set_defaults(func=cmd_asset)
     asset_get_p = asset_sub.add_parser("get", help="print an asset's canonical local path")
     asset_get_p.add_argument("name")

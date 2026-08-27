@@ -11,6 +11,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from unittest import mock
+
 from evo.assets import assets_path, load_registry
 from evo.cli import (
     cmd_asset_get,
@@ -32,9 +34,27 @@ def _init_git_repo(root: Path) -> None:
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=root, check=True)
 
 
-def _put_args(path, name, kind, exp=None, tag=None, copy=False):
+def _put_args(path, name, kind, exp=None, tag=None, copy=False, backend=None):
     return argparse.Namespace(path=str(path), name=name, kind=kind, exp=exp,
-                              tag=tag or [], copy=copy)
+                              tag=tag or [], copy=copy, backend=backend)
+
+
+class _FakeRemoteBackend:
+    """In-memory stand-in for S3/HF: upload stores bytes by uri, download
+    writes them into dest_dir under the uri's basename."""
+    _store: dict = {}
+
+    def upload(self, local, uri):
+        type(self)._store[uri] = Path(local).read_bytes()
+
+    def download(self, uri, dest_dir):
+        Path(dest_dir).mkdir(parents=True, exist_ok=True)
+        dest = Path(dest_dir) / uri.rstrip("/").split("/")[-1]
+        dest.write_bytes(type(self)._store[uri])
+        return dest
+
+    def exists(self, uri):
+        return uri in type(self)._store
 
 
 class TestAssetCli(unittest.TestCase):
@@ -142,6 +162,36 @@ class TestAssetCli(unittest.TestCase):
     def test_registry_file_location(self):
         cmd_asset_put(_put_args(self.asset_file, "adapter", "checkpoint"))
         self.assertTrue(assets_path(self.root).exists())
+
+    # --- storage backends (#55 follow-up) -------------------------------
+
+    def test_put_backend_uploads_and_records_uri(self):
+        _FakeRemoteBackend._store = {}
+        with mock.patch("evo.asset_backends.backend_for_uri",
+                        return_value=_FakeRemoteBackend()):
+            cmd_asset_put(_put_args(self.asset_file, "remote-adapter", "checkpoint",
+                                    backend="s3://bucket/models/remote-adapter.bin"))
+        entry = load_registry(self.root)["assets"]["remote-adapter"]
+        self.assertEqual(entry["backend"], "s3")
+        self.assertEqual(entry["uri"], "s3://bucket/models/remote-adapter.bin")
+        self.assertIn("s3://bucket/models/remote-adapter.bin", _FakeRemoteBackend._store)
+
+    def test_get_remote_downloads_to_cache(self):
+        _FakeRemoteBackend._store = {}
+        with mock.patch("evo.asset_backends.backend_for_uri",
+                        return_value=_FakeRemoteBackend()):
+            cmd_asset_put(_put_args(self.asset_file, "remote-adapter", "checkpoint",
+                                    backend="s3://bucket/models/remote-adapter.bin"))
+            out = self._capture(cmd_asset_get, argparse.Namespace(name="remote-adapter"))
+        # get returns a LOCAL cache path whose contents match the uploaded file.
+        self.assertTrue(Path(out).exists())
+        self.assertEqual(Path(out).read_text(), "weights")
+        self.assertIn("_cache", Path(out).parts)
+
+    def test_local_put_records_local_backend(self):
+        cmd_asset_put(_put_args(self.asset_file, "adapter", "checkpoint"))
+        entry = load_registry(self.root)["assets"]["adapter"]
+        self.assertEqual(entry.get("backend", "local"), "local")
 
 
 if __name__ == "__main__":

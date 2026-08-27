@@ -120,6 +120,17 @@ class TestPureRegistry(unittest.TestCase):
         registry_put(reg, self._entry("base-model", consumed_by=["exp_0009"]))
         self.assertEqual(asset_env_for_exp(reg, "exp_0002"), {})
 
+    def test_asset_env_for_exp_remote_injects_uri(self):
+        # Remote assets have no local path yet; expose the uri so the recipe
+        # can `evo asset get` it.
+        reg = empty_registry()
+        entry = self._entry("model", path=None, consumed_by=["exp_0002"])
+        entry["uri"] = "s3://b/model.bin"
+        entry["backend"] = "s3"
+        registry_put(reg, entry)
+        self.assertEqual(asset_env_for_exp(reg, "exp_0002"),
+                         {"EVO_ASSET_MODEL": "s3://b/model.bin"})
+
 
 if __name__ == "__main__":
     unittest.main()
