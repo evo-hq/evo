@@ -38,6 +38,10 @@ from evo.host_install._hook_drain import (  # noqa: E402
 )
 
 HOOK_NAME = hook_drain_binary_name()
+
+# Hang guard for the hook subprocesses below, not a latency assertion: starting
+# node through a shell can take well over 10s on a loaded Windows CI runner.
+SUBPROCESS_TIMEOUT = 60
 REPO_WRAPPER = REPO_ROOT / "plugins" / "evo" / "bin" / "evo-hook-drain"
 
 
@@ -180,7 +184,7 @@ class TestCodexRestageSurvival(_CodexSandbox):
             capture_output=True,
             env=env,
             shell=True,
-            timeout=10,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), b"{}")
@@ -204,7 +208,7 @@ class TestCodexRestageSurvival(_CodexSandbox):
             capture_output=True,
             env=env,
             shell=True,
-            timeout=10,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), b"{}")
@@ -230,7 +234,7 @@ class TestCodexRestageSurvival(_CodexSandbox):
             capture_output=True,
             env=os.environ.copy(),
             shell=True,
-            timeout=10,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
@@ -255,7 +259,7 @@ class TestCodexRestageSurvival(_CodexSandbox):
             capture_output=True,
             env=os.environ.copy(),
             shell=True,
-            timeout=10,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), b"{}")
@@ -361,7 +365,7 @@ class TestCodexRestageSurvival(_CodexSandbox):
             capture_output=True,
             env=env,
             shell=True,
-            timeout=10,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), b"{}")
@@ -551,7 +555,7 @@ class TestWrapperFallback(_SandboxBase):
         stable.chmod(0o755)
         r = subprocess.run(
             [str(REPO_WRAPPER)], input=b"{}", capture_output=True,
-            env=os.environ.copy(), timeout=10,
+            env=os.environ.copy(), timeout=SUBPROCESS_TIMEOUT,
         )
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout.strip(), b"from-stable")
@@ -561,7 +565,7 @@ class TestWrapperFallback(_SandboxBase):
         import subprocess
         r = subprocess.run(
             [str(REPO_WRAPPER)], input=b"{}", capture_output=True,
-            env=os.environ.copy(), timeout=10,
+            env=os.environ.copy(), timeout=SUBPROCESS_TIMEOUT,
         )
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout.strip(), b"{}")
@@ -590,7 +594,7 @@ class TestWrapperFallback(_SandboxBase):
             capture_output=True,
             env=env,
             shell=True,
-            timeout=10,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), b"{}")
@@ -611,7 +615,7 @@ class TestWrapperFallback(_SandboxBase):
             capture_output=True,
             env=env,
             shell=True,
-            timeout=10,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), b"{}")
@@ -640,7 +644,7 @@ class TestWrapperFallback(_SandboxBase):
             capture_output=True,
             env=env,
             shell=True,
-            timeout=10,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), b"[evo-hint] test")
@@ -667,7 +671,7 @@ class TestWrapperFallback(_SandboxBase):
             capture_output=True,
             env=env,
             shell=True,
-            timeout=10,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(
@@ -693,7 +697,7 @@ class TestWrapperFallback(_SandboxBase):
             capture_output=True,
             env=env,
             shell=True,
-            timeout=10,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), b"{}")
