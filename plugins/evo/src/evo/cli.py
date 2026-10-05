@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -3536,10 +3537,17 @@ def _cmd_run_impl(
                 task_scores = {}
                 for tf in trace_files:
                     t = json.loads(tf.read_text(encoding="utf-8"))
-                    task_scores[t["task_id"]] = t.get("score", 0.0)
+                    task_score = t.get("score", 0.0)
+                    # NaN/Infinity would land on the failed node and break
+                    # /api/graph, which the dashboard parses as strict JSON.
+                    if not math.isfinite(task_score):
+                        continue
+                    task_scores[t["task_id"]] = task_score
                 if task_scores:
-                    salvaged_score = round(sum(task_scores.values()) / len(task_scores), 4)
-                    salvaged_result = {"score": salvaged_score, "tasks": task_scores}
+                    mean = sum(task_scores.values()) / len(task_scores)
+                    if math.isfinite(mean):
+                        salvaged_score = round(mean, 4)
+                        salvaged_result = {"score": salvaged_score, "tasks": task_scores}
         except Exception:
             pass
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import secrets
@@ -1076,7 +1077,7 @@ def load_result(result_path: Path, stdout: str) -> tuple[float, dict[str, Any] |
             raise ValueError(f"{result_path} is not valid JSON: {exc}") from exc
         if not isinstance(parsed, dict) or "score" not in parsed:
             raise ValueError(f"{result_path} missing 'score' field: {parsed!r}")
-        return float(parsed["score"]), parsed
+        return _finite_score(parsed["score"], str(result_path)), parsed
     return parse_score(stdout)
 
 
@@ -1094,7 +1095,16 @@ def parse_score(stdout: str) -> tuple[float, dict[str, Any] | None]:
         ) from exc
     if not isinstance(parsed, dict) or "score" not in parsed:
         raise ValueError(f"Benchmark stdout JSON missing 'score' field: {parsed!r}")
-    return float(parsed["score"]), parsed
+    return _finite_score(parsed["score"], "Benchmark stdout"), parsed
+
+
+def _finite_score(raw: Any, source: str) -> float:
+    """json.loads accepts NaN and Infinity. A NaN score never compares as
+    better than anything, and neither survives JSON.parse in the dashboard."""
+    score = float(raw)
+    if not math.isfinite(score):
+        raise ValueError(f"{source} 'score' is not a finite number: {raw!r}")
+    return score
 
 
 def compare_scores(metric: str, candidate: float, parent: float | None) -> bool:
