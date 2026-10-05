@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -242,10 +243,29 @@ def _pick_softmax(nodes: list[dict], params: dict, metric: str,
     temperature = float(params["temperature"])
     k = min(int(params["k"]), len(nodes))
     scores = [_score_of(n, metric) for n in nodes]
-    # Subtract max for numerical stability.
-    m = max(scores)
-    weights = [math.exp((s - m) / temperature) for s in scores]
-    return _weighted_sample_without_replacement(nodes, weights, k, rng)
+    if math.inf in scores:
+        # Infinite scores outrank everything: draw those first, then run the
+        # usual softmax over the rest so finite scores keep their ranking.
+        top = [n for n, s in zip(nodes, scores) if s == math.inf]
+        rest = [n for n, s in zip(nodes, scores) if s != math.inf]
+        picked = _log_weighted_sample_without_replacement(top, [0.0] * len(top), k, rng)
+        picked += _pick_softmax(rest, {**params, "k": k - len(picked)}, metric, outcomes, rng)
+        return [{**n, "rank": i + 1} for i, n in enumerate(picked)]
+    # Subtract max for numerical stability, and stay in log space: exp() of a
+    # gap wider than ~745 * T underflows to 0.0, which would drop that node
+    # from the draw entirely instead of just ranking it last.
+    # Every node stays drawable: anything that has no usable log weight
+    # (missing score, NaN, or a gap so wide it overflows) gets a finite floor
+    # instead, so it ranks last rather than vanishing.
+    floor = -sys.float_info.max
+    ranked = [s for s in scores if s > -math.inf]  # drops NaN and -inf
+    if not ranked:
+        log_weights = [0.0] * len(scores)  # nothing to rank by: uniform
+    else:
+        m = max(ranked)
+        log_weights = [(s - m) / temperature for s in scores]
+        log_weights = [lw if math.isfinite(lw) else floor for lw in log_weights]
+    return _log_weighted_sample_without_replacement(nodes, log_weights, k, rng)
 
 
 def _pick_pareto_per_task(nodes: list[dict], params: dict, metric: str,
@@ -418,20 +438,34 @@ def _weighted_sample_without_replacement(items: list[dict], weights: list[float]
 
     Returns items in sampled order, ranked 1..k.
     """
+    log_weights = [math.log(w) if w > 0 else -math.inf for w in weights]
+    return _log_weighted_sample_without_replacement(items, log_weights, k, rng)
+
+
+def _log_weighted_sample_without_replacement(items: list[dict], log_weights: list[float],
+                                              k: int, rng: random.Random) -> list[dict]:
+    """Same draw as `_weighted_sample_without_replacement`, with weights given
+    as logs. Ranking by log(w) - log(-log(u)) orders items exactly like
+    log(u) / w, but never needs w itself, so tiny weights are not lost.
+
+    Returns items in sampled order, ranked 1..k.
+    """
     if k <= 0 or not items:
         return []
     paired = []
-    for item, w in zip(items, weights):
-        if w <= 0:
+    for item, lw in zip(items, log_weights):
+        if not lw > -math.inf:  # zero weight (or NaN): never drawn
             continue
         u = rng.random()
         if u == 0.0:
             u = 1e-12
-        key = math.log(u) / w
-        paired.append((key, item))
+        noise = -math.log(-math.log(u))
+        # When log weights dwarf the noise, keys tie; the noise itself then
+        # breaks the tie so those items still come out in random order.
+        paired.append((lw + noise, noise, item))
     # Top k by key (largest key = highest priority in this formulation).
-    paired.sort(key=lambda x: x[0], reverse=True)
-    picked = [item for _, item in paired[:k]]
+    paired.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    picked = [item for _, _, item in paired[:k]]
     return [_node_summary(n, i + 1) for i, n in enumerate(picked)]
 
 
