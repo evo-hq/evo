@@ -107,12 +107,27 @@ def _load_azure(config: dict[str, Any]) -> SandboxProvider:
     return _azure_module.AzureProvider(config)
 
 
+def _load_tenki(config: dict[str, Any]) -> SandboxProvider:
+    try:
+        from . import tenki as _tenki_module
+    except ImportError as exc:
+        raise RemoteBackendUnavailable(
+            "Tenki provider requested but the 'tenki' Python SDK is "
+            "not installed. Install it with: python -m pip install "
+            "'evo-hq-cli[tenki]' "
+            "(or `pipx inject evo-hq-cli tenki` if evo itself was "
+            "installed with pipx)."
+        ) from exc
+    return _tenki_module.TenkiProvider(config)
+
+
 _LOADERS: dict[str, Callable[[dict[str, Any]], SandboxProvider]] = {
     "modal": _load_modal,
     "manual": _load_manual,
     "ssh": _load_ssh,
     "e2b": _load_e2b,
     "daytona": _load_daytona,
+    "tenki": _load_tenki,
     "aws": _load_aws,
     "azure": _load_azure,
 }

@@ -230,6 +230,16 @@ def _provider_readiness(config: dict[str, Any]) -> dict[str, Any]:
         if provider == "e2b" and provider_config.get("api_key")
         else ("env" if os.environ.get("E2B_API_KEY") else "missing")
     )
+    if provider == "tenki" and (
+        provider_config.get("auth_token") or provider_config.get("api_key")
+    ):
+        tenki_source = "workspace-config"
+    elif os.environ.get("TENKI_AUTH_TOKEN"):
+        tenki_source = "env (TENKI_AUTH_TOKEN)"
+    elif os.environ.get("TENKI_API_KEY"):
+        tenki_source = "env (TENKI_API_KEY)"
+    else:
+        tenki_source = "missing"
     manual_cfg = provider_config if provider == "manual" else {}
     ssh_cfg = provider_config if provider == "ssh" else {}
     return {
@@ -251,6 +261,11 @@ def _provider_readiness(config: dict[str, Any]) -> dict[str, Any]:
             "sdk_installed": _module_available("daytona"),
             "auth_present": daytona_auth_present,
             "auth_source": "env" if daytona_auth_present else "missing",
+        },
+        "tenki": {
+            "sdk_installed": _module_available("tenki"),
+            "auth_present": tenki_source != "missing",
+            "auth_source": tenki_source,
         },
         "aws": {
             "sdk_installed": _module_available("boto3"),
