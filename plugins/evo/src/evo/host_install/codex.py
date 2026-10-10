@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -62,6 +64,41 @@ def _stable_hook_command() -> str:
     return f"node -e \"eval(Buffer.from('{encoded}','base64').toString())\""
 
 
+def _is_evo_hook_drain_command(command: str) -> bool:
+    """Recognize source and already-materialized evo drain commands."""
+    if command.strip() == "${CLAUDE_PLUGIN_ROOT}/bin/evo-hook-drain":
+        return True
+
+    try:
+        tokens = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        tokens = []
+    if len(tokens) == 1:
+        candidate = tokens[0]
+        if os.name == "nt" and len(candidate) >= 2:
+            if candidate[0] == candidate[-1] and candidate[0] in "'\"":
+                candidate = candidate[1:-1]
+        path = Path(candidate)
+        if (
+            path.is_absolute()
+            and path.parent.name.lower() == "bin"
+            and path.name.lower() in {"evo-hook-drain", "evo-hook-drain.exe"}
+        ):
+            return True
+
+    prefix = "node -e \"eval(Buffer.from('"
+    suffix = "','base64').toString())\""
+    if not command.startswith(prefix) or not command.endswith(suffix):
+        return False
+
+    encoded = command[len(prefix):-len(suffix)]
+    try:
+        script = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return False
+    return "evo-hook-drain" in script
+
+
 def _materialize_codex_hooks(hooks_json_path: Path) -> bool:
     """Rewrite an installed Codex hooks.json to use machine-local commands.
 
@@ -88,7 +125,7 @@ def _materialize_codex_hooks(hooks_json_path: Path) -> bool:
                     handlers.append(handler)
                     continue
                 cmd = str(handler.get("command") or "")
-                if "evo-hook-drain" in cmd:
+                if _is_evo_hook_drain_command(cmd):
                     if cmd != drain_cmd:
                         handler = {**handler, "command": drain_cmd}
                         changed = True

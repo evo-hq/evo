@@ -24,11 +24,15 @@ unrelated entries stay.
 
 from __future__ import annotations
 
+import json
 import os
+import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "plugins" / "evo" / "src"))
@@ -361,6 +365,99 @@ class TestCodexConfigConvergence(_Base):
         text = self._read_config()
         self.assertNotIn("[hooks.state.", text)
         self.assertIn('[plugins."github@openai-curated"]', text)
+
+
+class TestCodexHookMaterialization(_Base):
+
+    def _write_hooks(self, command: str) -> Path:
+        hooks_path = self.codex_home / "hooks.json"
+        payload = {
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {"type": "command", "command": command},
+                        ],
+                    },
+                ],
+            },
+        }
+        hooks_path.write_text(json.dumps(payload))
+        return hooks_path
+
+    def _read_command(self, hooks_path: Path) -> str:
+        data = json.loads(hooks_path.read_text())
+        return data["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+
+    def test_rewrites_an_already_encoded_drain_command(self):
+        from evo.host_install import codex
+
+        old_command = codex._stable_hook_command()
+        hooks_path = self._write_hooks(old_command)
+        replacement = "replacement-evo-drain-command"
+
+        with mock.patch.object(
+            codex, "_stable_hook_command", return_value=replacement
+        ):
+            changed = codex._materialize_codex_hooks(hooks_path)
+
+        self.assertTrue(changed)
+        self.assertEqual(self._read_command(hooks_path), replacement)
+
+    def test_current_encoded_drain_command_is_idempotent(self):
+        from evo.host_install import codex
+
+        command = codex._stable_hook_command()
+        hooks_path = self._write_hooks(command)
+        before = hooks_path.read_bytes()
+
+        self.assertFalse(codex._materialize_codex_hooks(hooks_path))
+        self.assertEqual(hooks_path.read_bytes(), before)
+
+    def test_plaintext_drain_command_still_materializes(self):
+        from evo.host_install import codex
+
+        hooks_path = self._write_hooks(
+            "${CLAUDE_PLUGIN_ROOT}/bin/evo-hook-drain"
+        )
+
+        self.assertTrue(codex._materialize_codex_hooks(hooks_path))
+        self.assertEqual(
+            self._read_command(hooks_path), codex._stable_hook_command()
+        )
+
+    def test_legacy_absolute_drain_path_still_materializes(self):
+        from evo.host_install import codex
+
+        stable_path = str(codex.stable_binary_path().resolve())
+        command = (
+            subprocess.list2cmdline([stable_path])
+            if os.name == "nt"
+            else shlex.quote(stable_path)
+        )
+        hooks_path = self._write_hooks(command)
+
+        self.assertTrue(codex._materialize_codex_hooks(hooks_path))
+        self.assertEqual(
+            self._read_command(hooks_path), codex._stable_hook_command()
+        )
+
+    def test_malformed_and_unrelated_wrappers_are_untouched(self):
+        from evo.host_install import codex
+
+        commands = (
+            "node -e \"eval(Buffer.from('not-base64!','base64').toString())\"",
+            "node -e \"eval(Buffer.from('Y29uc29sZS5sb2coJ29rJyk=','base64').toString())\"",
+            "node -e \"console.log('evo-hook-drain')\"",
+            "relative/bin/evo-hook-drain",
+            "/tmp/bin/evo-hook-drain --verbose",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                hooks_path = self._write_hooks(command)
+                before = hooks_path.read_bytes()
+                self.assertFalse(codex._materialize_codex_hooks(hooks_path))
+                self.assertEqual(hooks_path.read_bytes(), before)
 
 
 class TestDoctorHookBinary(_Base):
