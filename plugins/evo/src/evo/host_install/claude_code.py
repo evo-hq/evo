@@ -50,6 +50,14 @@ def _claude_config_dir() -> Path:
     return Path(cfg) if cfg else Path.home() / ".claude"
 
 
+def _ver_key(name: str):
+    """Numeric-aware sort key so 0.10.0 sorts after 0.9.0 (plain sorted() is
+    lexicographic and would invert that). Non-numeric segments (pre-release
+    tags) fall into a separate rank so int/str never compare."""
+    return [(0, int(s)) if s.isdigit() else (1, s)
+            for s in re.split(r"[.-]", name)]
+
+
 def _latest_cache_dir() -> Path | None:
     """Return the latest-version plugin cache dir, or None if not installed.
     Cache layout: <claude-config-dir>/plugins/cache/<mkt>/evo/<version>/
@@ -57,7 +65,8 @@ def _latest_cache_dir() -> Path | None:
     root = _claude_config_dir() / "plugins" / "cache" / _MARKETPLACE_NAME / "evo"
     if not root.exists():
         return None
-    versions = sorted(p for p in root.iterdir() if p.is_dir())
+    versions = sorted((p for p in root.iterdir() if p.is_dir()),
+                      key=lambda p: _ver_key(p.name))
     return versions[-1] if versions else None
 
 
@@ -323,7 +332,8 @@ def doctor(args: argparse.Namespace) -> int:
     )
     if plugin_cache_root.exists() and mkt_manifest.exists():
         installed_versions = sorted(
-            p.name for p in plugin_cache_root.iterdir() if p.is_dir()
+            (p.name for p in plugin_cache_root.iterdir() if p.is_dir()),
+            key=_ver_key,
         )
         if installed_versions:
             installed = installed_versions[-1]
