@@ -258,24 +258,42 @@ class TestDescendantPids(unittest.TestCase):
         from evo.cli import _descendant_pids
         # parent python spawns a child python that sleeps, then sleeps itself.
         # A python child (not the `sleep` binary) keeps this portable to Windows.
-        spawn = (
-            "import subprocess, sys, time; "
-            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
-            "time.sleep(30)"
-        )
-        parent = subprocess.Popen([PY, "-c", spawn])
-        kids = []
-        try:
-            time.sleep(2.5)  # let the child spawn and the process table settle
-            kids = _descendant_pids(parent.pid)
-            self.assertTrue(len(kids) >= 1, f"expected >=1 descendant, got {kids}")
-        finally:
-            # captured before killing the parent (descendants reparent on kill);
-            # os.kill(pid, 9) maps to TerminateProcess on Windows.
-            for pid in kids:
+        # The parent records the child's pid in a file (not a blocking pipe read,
+        # which could hang the job), so the child can be killed in `finally` even
+        # when _descendant_pids finds nothing.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+            pidfile = os.path.join(d, "child.pid")
+            tmp = pidfile + ".tmp"
+            spawn = (
+                "import os, subprocess, sys, time; "
+                "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                f"open({tmp!r}, 'w').write(str(c.pid)); os.replace({tmp!r}, {pidfile!r}); "
+                "time.sleep(60)"
+            )
+            parent = subprocess.Popen([PY, "-c", spawn])
+            kids = []
+            try:
+                # Poll instead of sleeping once: on a loaded Windows runner the child
+                # can be slow to spawn, and the PowerShell process-table query
+                # (capped at 10s inside _descendant_pids) can time out and return []
+                # on an attempt. The tree above lives 60s, so it outlives this 45s
+                # window (a shorter-lived tree would exit before the polling ends).
+                deadline = time.monotonic() + 45
+                while not kids and time.monotonic() < deadline:
+                    time.sleep(1)
+                    kids = _descendant_pids(parent.pid)
+                self.assertTrue(len(kids) >= 1, f"expected >=1 descendant, got {kids}")
+            finally:
                 try:
-                    os.kill(pid, 9)
-                except OSError:
-                    pass
-            parent.kill()
-            parent.wait(timeout=5)
+                    child_pid = int(Path(pidfile).read_text())
+                except (OSError, ValueError):
+                    child_pid = None  # helper never reported one
+                # captured before killing the parent (descendants reparent on kill);
+                # os.kill(pid, 9) maps to TerminateProcess on Windows.
+                for pid in {p for p in (child_pid, *kids) if p}:
+                    try:
+                        os.kill(pid, 9)
+                    except OSError:
+                        pass
+                parent.kill()
+                parent.wait(timeout=5)
