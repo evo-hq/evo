@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -4585,19 +4586,16 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     node = _read_node(root, args.exp_id)
     attempt = int(node.get("current_attempt", 0))
     if attempt == 0:
-        print("[]")
         return 0
-    target = attempt_log_path(root, args.exp_id, attempt, "metrics.jsonl")
-    if not target.exists():
-        fallback = Path(node.get("worktree", "")) / "metrics.jsonl"
-        if fallback.exists():
-            target = fallback
-        else:
-            print("[]")
-            return 0
+    target = _metrics_path(root, args.exp_id, node, attempt)
+    if target is None and not args.tail:
+        return 0
     if args.tail:
-        fragment, seen_size = _print_metrics_lines(target, offset=0)
         try:
+            while target is None:
+                time.sleep(2)
+                target = _metrics_path(root, args.exp_id, node, attempt)
+            fragment, seen_size = _print_metrics_lines(target, offset=0)
             while True:
                 time.sleep(2)
                 current = target.stat().st_size
@@ -4611,6 +4609,26 @@ def cmd_metrics(args: argparse.Namespace) -> int:
         return 0
     _print_metrics_lines(target, offset=0)
     return 0
+
+
+def _metrics_path(root: Path, exp_id: str, node: dict, attempt: int) -> Path | None:
+    target = attempt_log_path(root, exp_id, attempt, "metrics.jsonl")
+    if target.exists():
+        return target
+    worktree = node.get("worktree")
+    if not worktree:
+        return None
+    fallback = Path(worktree) / "metrics.jsonl"
+    if not fallback.exists():
+        return None
+    stamp = (_read_attempt_state(root, exp_id, attempt) or {}).get("started_at")
+    try:
+        started = datetime.fromisoformat(stamp).timestamp() if stamp else None
+    except (TypeError, ValueError):
+        started = None
+    if started is not None and fallback.stat().st_mtime < started:
+        return None
+    return fallback
 
 
 def _print_metrics_lines(path: Path, *, offset: int, fragment: bytes = b"") -> tuple[bytes, int]:
