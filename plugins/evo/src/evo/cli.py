@@ -4596,10 +4596,7 @@ def cmd_metrics(args: argparse.Namespace) -> int:
             print("[]")
             return 0
     if args.tail:
-        fragment = b""
-        seen_size = 0
-        fragment = _print_metrics_lines(target, offset=0, fragment=b"")
-        seen_size = target.stat().st_size
+        fragment, seen_size = _print_metrics_lines(target, offset=0)
         try:
             while True:
                 time.sleep(2)
@@ -4608,8 +4605,7 @@ def cmd_metrics(args: argparse.Namespace) -> int:
                     seen_size = 0
                     fragment = b""
                 if current > seen_size:
-                    fragment = _print_metrics_lines(target, offset=seen_size, fragment=fragment)
-                    seen_size = current
+                    fragment, seen_size = _print_metrics_lines(target, offset=seen_size, fragment=fragment)
         except KeyboardInterrupt:
             pass
         return 0
@@ -4617,23 +4613,24 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_metrics_lines(path: Path, *, offset: int, fragment: bytes = b"") -> bytes:
-    size = path.stat().st_size
-    if offset >= size:
-        return fragment
+def _print_metrics_lines(path: Path, *, offset: int, fragment: bytes = b"") -> tuple[bytes, int]:
     with path.open("rb") as fh:
         fh.seek(offset)
-        raw = fragment + fh.read()
+        data = fh.read()
+    end = offset + len(data)
+    if not data:
+        return fragment, end
+    raw = fragment + data
     last_nl = raw.rfind(b"\n")
     if last_nl < 0:
         if not fragment:
             try:
                 parsed = json.loads(raw.decode("utf-8", errors="replace"))
-                print(json.dumps(parsed))
-                return b""
+                print(json.dumps(parsed), flush=True)
+                return b"", end
             except json.JSONDecodeError:
                 pass
-        return raw
+        return raw, end
     new_fragment = raw[last_nl + 1:]
     complete = raw[:last_nl]
     text = complete.decode("utf-8", errors="replace")
@@ -4643,17 +4640,17 @@ def _print_metrics_lines(path: Path, *, offset: int, fragment: bytes = b"") -> b
             continue
         try:
             parsed = json.loads(line)
-            print(json.dumps(parsed))
+            print(json.dumps(parsed), flush=True)
         except json.JSONDecodeError:
             pass
     if new_fragment:
         try:
             parsed = json.loads(new_fragment.decode("utf-8", errors="replace"))
-            print(json.dumps(parsed))
-            return b""
+            print(json.dumps(parsed), flush=True)
+            return b"", end
         except json.JSONDecodeError:
             pass
-    return new_fragment
+    return new_fragment, end
 
 
 def cmd_annotate(args: argparse.Namespace) -> int:

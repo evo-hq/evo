@@ -495,12 +495,18 @@ async function fetchAll() {
       fetch('/api/workspace').then(r => r.json()),
       fetch('/api/frontier').then(r => r.json()).catch(() => null),
     ]);
+    const attemptKey = (g) => {
+      const a = g?.nodes?.[state.selectedNode]?.active_attempt;
+      return a ? `${a.n}:${a.phase}:${a.status}` : '';
+    };
+    const attemptChanged = attemptKey(state.graph) !== attemptKey(graph);
     state.stats = stats;
     state.graph = graph;
     state.runs = runs;
     state.workspace = workspace;
     state.frontier = frontier;
     render();
+    if (attemptChanged && state.selectedNode && (state.sidebarTab || 'summary') === 'summary') openDrawer(state.selectedNode, { fromHistory: true });
   } catch (e) {
     console.error('fetch error:', e);
   } finally {
