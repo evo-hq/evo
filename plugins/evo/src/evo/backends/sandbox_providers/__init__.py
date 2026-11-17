@@ -74,7 +74,7 @@ def _load_daytona(config: dict[str, Any]) -> SandboxProvider:
             "Daytona provider requested but the 'daytona' Python SDK is not "
             "installed. Install it with: python -m pip install "
             "'evo-hq-cli[daytona]' "
-            "(or `pipx inject evo-hq-cli daytona` if evo itself was installed "
+            "(or `pipx inject evo-hq-cli 'daytona<1'` if evo itself was installed "
             "with pipx)."
         ) from exc
     return _daytona_module.DaytonaProvider(config)
